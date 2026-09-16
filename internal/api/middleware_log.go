@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -67,11 +66,7 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 				)
 
 				w.Header().Set("Connection", "close")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error": "the server encountered a problem and could not process your request",
-				})
+				serverErrorResponse(w)
 			}
 		}()
 
