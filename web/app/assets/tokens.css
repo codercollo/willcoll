@@ -1,0 +1,68 @@
+:root {
+  /* 1. COLOR — base brand, neutrals, status (LOCKED) */
+  --color-bg-canvas: #F5F6F8;
+  --sidebar-bg: #FFFFFF;
+  --color-border-subtle: #E2E5E9;
+  --sidebar-item-active-bar: #E8702A;
+  --sidebar-item-active-bg: rgba(245, 181, 145, 0.10);
+  --color-action-primary-hover: #CC5F1F;
+  --color-action-primary-pressed: #A84E17;
+  --color-text-primary: #1F2320;
+  --color-text-muted: #6B7280;
+  --color-text-inverse: #FFFFFF;
+  --color-bg-inverse: #1F2320;
+  --color-status-success: #1E8E5A;
+  --color-status-success-bg: rgba(30, 142, 90, 0.12);
+  --color-status-warning: #C9821A;
+  --color-status-warning-bg: rgba(201, 130, 26, 0.12);
+  --color-status-error: #C6362E;
+  --color-status-error-bg: rgba(198, 54, 46, 0.12);
+
+  /* 2. TYPOGRAPHY */
+  --font-display: 'Fraunces', serif;
+  --font-ui: 'General Sans', sans-serif;
+  --text-display-2xl: 3.052rem;
+  --text-display-xl: 2.441rem;
+  --text-display-lg: 1.953rem;
+  --text-display-md: 1.563rem;
+  --text-ui-lg: 1.25rem;
+  --text-ui-base: 1rem;
+  --text-ui-sm: 0.875rem;
+  --text-ui-xs: 0.75rem;
+  --leading-display: 1.15;
+  --leading-ui-body: 1.5;
+  --leading-ui-dense: 1.35;
+
+  /* 3. SPACING AND LAYOUT */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --spacing-lg: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --layout-sidebar-width: 260px;
+  --layout-sidebar-collapsed: 72px;
+  --layout-header-height: 68px;
+  --layout-card-radius: 10px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-none: 0px;
+  --border-hairline: 1px solid var(--color-border-subtle);
+  --shadow-card: 0 1px 2px rgba(31, 35, 32, 0.04), 0 2px 8px rgba(31, 35, 32, 0.06);
+
+  /* 4. MOTION */
+  --motion-instant: 80ms;
+  --motion-quick: 160ms;
+  --motion-settle: 280ms;
+  --motion-slow: 420ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-settle: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 6. ELEVATION AND SURFACE TREATMENT */
+  --surface-flat: var(--color-bg-canvas);
+  --surface-panel: #FFFFFF;
+  --surface-card: #FFFFFF;
+  --surface-inverse: var(--color-bg-inverse);
+}

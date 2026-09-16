@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-sidecar"
+version = "0.1.0"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "joblib",
+    "scikit-learn",
+    "pydantic",
+    "alembic",
+    "psycopg2-binary",
+    "pytest"
+]

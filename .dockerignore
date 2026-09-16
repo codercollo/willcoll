@@ -1,0 +1,10 @@
+# Keeps Docker build contexts small
+.env
+node_modules
+web/node_modules
+web/.nuxt
+web/app/dist
+web/app/.output
+docs
+.git
+*.log

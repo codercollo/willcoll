@@ -1,0 +1,52 @@
+# Willcoll API configuration — SANDBOX / default values only.
+#
+# Never commit real secrets here. Production values come from environment
+# variables (see .env.example) or from a separate, git-ignored
+# configs/config.production.yaml that overrides these keys. Viper reads every
+# configs/*.yaml file in alphabetical order, so later files win; environment
+# variables win over every yaml file.
+
+database:
+  # Single PostgreSQL DSN. Override via DATABASE_DSN.
+  dsn: "postgres://willcoll:willcoll@localhost:5432/willcoll?sslmode=disable"
+  # pgxpool tuning (LGF §5.3); durations are Go duration strings ("30m", "1h").
+  max_conns: 10              # pool size
+  max_conn_idle_time: "30m"  # "max idle": connection idle timeout
+  max_conn_lifetime: "1h"    # connection max lifetime
+
+server:
+  # HTTP listen address (host:port) for the API. Override via SERVER_ADDR.
+  addr: ":4000"
+
+paseto:
+  # 32-byte symmetric key for v2.local token signing. Override via
+  # PASETO_SYMMETRIC_KEY; generate with `openssl rand -hex 32`.
+  key: ""
+
+smtp:
+  # Mailtrap sandbox in dev/staging; a real provider in production (Phase 11).
+  host: "sandbox.smtp.mailtrap.io"
+  port: "2525"
+  username: ""
+  password: ""
+  sender: "no-reply@willcoll.local"
+
+sms:
+  # Provider-agnostic gateway keys (vendor TBD, spec §11.3).
+  api_key: ""
+  api_secret: ""
+  gateway_url: ""
+  sender_id: "WILLCOLL"
+
+intasend:
+  # IntaSend payment gateway — sandbox in dev/staging, live only in production.
+  publishable_key: ""
+  secret_key: ""
+  webhook_secret: ""
+  environment: "sandbox"
+
+scoring:
+  # ml-sidecar FastAPI service (spec §13.3). In Docker Compose, override via
+  # SIDECAR_BASE_URL=http://ml-sidecar:8000 (the sidecar exposes no host port).
+  sidecar_base_url: "http://localhost:8000"
+  shared_secret: ""

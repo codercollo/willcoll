@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+joblib
+scikit-learn
+pydantic
+alembic
+psycopg2-binary
+pytest

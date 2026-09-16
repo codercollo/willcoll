@@ -1,0 +1,625 @@
+willcoll/                              # Single monorepo — one backend, one frontend, ONE shared deployment
+│                                       # hosting MANY independent letting businesses (Organizations, spec
+│                                       # §1a). Multi-tenancy is a core, day-one design constraint, not a
+│                                       # bolt-on: every business-data table carries organization_id and is
+│                                       # protected by Postgres Row-Level Security, and every Organization can
+│                                       # dynamically brand its own instance with its own business name/logo/
+│                                       # accent color (spec §1b) — "Willcoll" is just the name of the default/
+│                                       # first Organization, not the platform's only identity. Backend follows
+│                                       # the Standard Go Project Layout (github.com/golang-standards/
+│                                       # project-layout) so that /internal, /pkg, and /cmd carry their
+│                                       # conventional Go meaning — not just loosely-organized folders. Renter
+│                                       # Tenants never touch the Nuxt back-office UI in this repo — their
+│                                       # entire experience is SMS (internal/notify), branded with their own
+│                                       # Manager's Organization name, plus, when a Manager has a verified
+│                                       # IntaSend sub-account, an SMS-linked M-Pesa/card checkout
+│                                       # (internal/payments, spec §5.5). Managers and Agents are reached only
+│                                       # by SMTP email (internal/mailer), also Organization-branded.
+│                                       # NOTE — naming collision, resolved once here: "Organization" always
+│                                       # means the SaaS tenancy boundary (a letting business); "Tenant" always
+│                                       # means the renter. Never conflate the two, in code or in comments.
+│                                       # CODE STYLE — object-oriented throughout: every internal/* package
+│                                       # that has behavior exposes a `Service` struct with a constructor
+│                                       # (`NewService(...) *Service`) holding its dependencies; internal/domain
+│                                       # types are entities carrying the methods intrinsic to their own
+│                                       # fields. Handlers are thin controllers that call one service method
+│                                       # each — never a bare package-level function performing business logic.
+│
+├── cmd/                                 # Main source files. One subfolder per binary this repo produces.
+│   ├── willcoll/
+│   │   └── main.go                       # The API server: wires config, DB pool, router, background SMS
+│   │                                      # worker, nightly late-fee job, starts HTTP server, graceful shutdown.
+│   └── willcoll-seed/
+│       └── main.go                       # Standalone CLI: seeds a demo portfolio (manager, property, units,
+│                                          # leases, sample payments) — separate binary so `make seed` never
+│                                          # ships in the production image.
+│
+├── internal/                            # Private code — cannot be imported by anything outside this module.
+│   │                                     # This is where all Willcoll-specific business logic and domain
+│   │                                     # knowledge lives (as opposed to /pkg, which is generic and reusable).
+│   ├── api/                               # Handlers are thin controllers only — each holds the service
+│   │   │                                  # object(s) it needs (constructor-injected in server.go's wiring,
+│   │   │                                  # rule 1), decodes/validates the request, calls ONE service method,
+│   │   │                                  # maps the result to JSON. No business logic lives here.
+│   │   ├── server.go                      # HTTP server bootstrap: constructs every internal/* Service ONCE
+│   │   │                                  # (auth, tenancy, money, billing, payments, branding, notify,
+│   │   │                                  # mailer, scoring) and injects them into the handler structs;
+│   │   │                                  # graceful shutdown wiring
+│   │   ├── router.go                      # Explicit route table (httprouter.HandlerFunc, hand-wired — no
+│   │   │                                  # framework route groups), grouped by role/permission (spec §6.1)
+│   │   ├── middleware_auth.go             # Calls authService.VerifyToken — manager/agent/landlord token scopes
+│   │   ├── middleware_tenant.go           # RUNS IMMEDIATELY AFTER middleware_auth.go, BEFORE permissions:
+│   │   │                                  # reads organization_id off the verified token claims (never the
+│   │   │                                  # request body/path/header) and calls tenancyService.Scope(tx, orgID)
+│   │   │                                  # to `SET LOCAL app.current_org_id` on the request's DB transaction —
+│   │   │                                  # every downstream query in that request is now RLS-scoped (spec §1a)
+│   │   ├── middleware_permissions.go      # RBAC role check + PBAC per-property grant check
+│   │   │                                  # (agent_property_grants lookup keyed on :property_id in path)
+│   │   ├── middleware_ratelimit.go        # Hand-rolled token-bucket rate limiting (per-IP on /auth/*,
+│   │   │                                  # per-user on /payments to blunt double-submit storms)
+│   │   ├── middleware_log.go              # Structured JSON request logging, panic recovery
+│   │   ├── middleware_cors.go             # CORS defense-in-depth (Caddy same-origin is primary)
+│   │   ├── validate.go                    # Hand-written per-endpoint validation: KES amounts, Kenyan
+│   │   │                                  # MSISDN (delegates to pkg/msisdn), meter-reading monotonicity
+│   │   ├── handlers_auth.go               # POST /auth/login, /refresh, /invite-agent, /accept-invite
+│   │   ├── handlers_organizations.go      # POST /v1/auth/register-manager (self-signup: creates Organization
+│   │   │                                  # + first Manager in ONE transaction, spec §3.1a), GET/PATCH
+│   │   │                                  # /v1/organization (name/slug, Manager-only, super-manager gated)
+│   │   ├── handlers_branding.go           # PATCH /v1/organization/branding (brand_name, logo upload,
+│   │   │                                  # accent_key — validated against the approved accent list in
+│   │   │                                  # design-tokens.txt, spec §1b) — Manager-only, super-manager gated;
+│   │   │                                  # GET /v1/public/branding?slug=... — UNAUTHENTICATED, no RLS session
+│   │   │                                  # needed since it takes an explicit slug, not a token; used by the
+│   │   │                                  # Nuxt app to paint the login screen before any session exists
+│   │   ├── handlers_properties.go         # CRUD properties + units, CSV import of an existing unit ledger
+│   │   ├── handlers_tenant_import.go      # POST /v1/properties/:id/tenants/import — bulk CSV import of
+│   │   │                                  # units + sitting tenants + leases (spec §3.2a); 409s if the
+│   │   │                                  # property has no property_ownership row yet (Landlord required
+│   │   │                                  # first); writes one tenant_import_batches row per upload
+│   │   ├── handlers_leases.go             # Create lease (move-in, posts deposit tx), terminate (move-out)
+│   │   ├── handlers_meters.go             # Record monthly reading → generates water_garbage invoice
+│   │   ├── handlers_payments.go           # POST /payments (rent/water), /:id/reverse — calls moneyService's
+│   │   │                                  # matching Execute*Tx/ReverseTransferTx method
+│   │   ├── handlers_remittances.go        # Manager → Landlord remittance (moneyService.ExecuteRemittanceTx)
+│   │   ├── handlers_agent_grants.go       # Manager sets/updates an Agent's PBAC bitset per property
+│   │   ├── handlers_reports.go            # Arrears, collections, portfolio (Landlord-scoped) reports
+│   │   ├── handlers_scores.go             # POST/GET /v1/properties/:id/score, GET .../score/history —
+│   │   │                                  # Manager-only POST (premium-gated via scoringService.IsAddonActive,
+│   │   │                                  # spec §13.4), Manager+owning-Landlord GET; POST/cancel for
+│   │   │                                  # /v1/organization/addons/verified-property-score (spec §12.3)
+│   │   ├── handlers_audit.go              # GET /audit-log?property_id=
+│   │   └── handlers_health.go             # GET /healthz, /readyz, /debug/vars
+│   │
+│   ├── domain/                            # OOP entities: unexported fields + constructor functions
+│   │   │                                  # (`NewX(...) (*X, error)`) validating invariants at construction;
+│   │   │                                  # each entity carries the METHODS that only need its own fields —
+│   │   │                                  # anything needing another package's state is a service method
+│   │   │                                  # instead (internal/money, internal/billing, etc.), never a free
+│   │   │                                  # function reaching into these structs from outside.
+│   │   ├── property.go                    # Property entity (rates, late-fee %, rent due day)
+│   │   ├── unit.go                        # Unit entity ("HSE NO." — the durable entity, spec §3.2) —
+│   │   │                                  # Unit.IsVacant(), Unit.IsOccupied()
+│   │   ├── tenant.go                      # Tenant entity (name, phone — the SMS target)
+│   │   ├── lease.go                       # Lease entity — snapshot of rent/deposit/late-fee at signing —
+│   │   │                                  # Lease.IsActive(), Lease.DaysPastDue(asOf time.Time)
+│   │   ├── meter.go                       # Meter, MeterReading entities (current/previous/units/amount) —
+│   │   │                                  # MeterReading.UnitsConsumed(), MeterReading.Validate(previous)
+│   │   │                                  # encapsulates the monotonicity rule (spec's validation rule)
+│   │   ├── invoice.go                     # Invoice entity — amount_due vs amount_paid (read-model only,
+│   │   │                                  # written exclusively by internal/money.Service) —
+│   │   │                                  # Invoice.RemainingBalance(), Invoice.IsSettled()
+│   │   ├── ledger.go                      # Account, Entry, Transfer entities — the money-ledger model
+│   │   │                                  # (simplebank pattern, see internal/money.Service)
+│   │   ├── user.go                        # User, Role, AgentPropertyGrant entities (RBAC + PBAC) —
+│   │   │                                  # AgentPropertyGrant.Allows(action) encapsulates the bitset check
+│   │   ├── electricity.go                 # ElectricityTopup — informational only, never touches the ledger
+│   │   └── audit.go                       # AuditLogEntry (append-only)
+│   │
+│   ├── money/                             # Core money-movement package — simplebank "transfer" pattern
+│   │   │                                  # applied to rent instead of bank transfers. Owns EVERY write to
+│   │   │                                  # ledger_accounts.balance and invoices.amount_paid; nothing else
+│   │   │                                  # touches those tables (spec §4.3).
+│   │   ├── service.go                      # `Service` struct (DB pool) + `NewService(pool) *Service` — every
+│   │   │                                   # Execute*Tx below is a METHOD on Service, not a package function;
+│   │   │                                   # this is the ONLY constructor `internal/api` handlers ever call
+│   │   ├── ledger.go                       # Account & Entry model: tenant, property_till, landlord_payable,
+│   │   │                                   # deposit_holding — one row per unit/property/landlord
+│   │   ├── transfer.go                     # Service.ExecuteRentPaymentTx, Service.ExecuteWaterGarbageTx,
+│   │   │                                   # Service.ExecuteDepositTx, Service.ExecuteDepositRefundTx,
+│   │   │                                   # Service.ExecuteLateFeeChargeTx, Service.ExecuteRemittanceTx,
+│   │   │                                   # Service.ReverseTransferTx — each atomic (REPEATABLE READ),
+│   │   │                                   # idempotency-key guarded (spec §4.3)
+│   │   ├── locking.go                      # Consistent ascending-ID lock ordering to prevent deadlocks under
+│   │   │                                   # concurrent Manager/Agent payment recording on the same unit
+│   │   ├── reconcile.go                    # Service.Reconcile(ctx) — daily job: SUM(ledger_entries) vs
+│   │   │                                   # ledger_accounts.balance cache per account; SMS-alerts the
+│   │   │                                   # super-manager on any drift
+│   │   └── transfer_test.go                # Concurrency tests: N goroutines hammering the same unit/account,
+│   │                                       # asserting no deadlock and a correct final balance
+│   │
+│   ├── billing/                           # Late-fee computation — deliberately separate from internal/money's
+│   │   │                                  # transfer execution so the *policy* (1%/day past due day, spec §4.3)
+│   │   │                                  # can change per property without touching ledger mechanics
+│   │   └── latefees.go                     # `Service` struct (holds a `*money.Service` dependency) +
+│   │                                       # `NewService(moneyService) *Service`; `Service.ChargeLateFees(ctx)` —
+│   │                                       # nightly job: finds invoices past rent_due_day, computes and
+│   │                                       # calls moneyService.ExecuteLateFeeChargeTx
+│   │
+│   ├── scoring/                           # Verified Property Score (spec §13) — the ONLY package allowed
+│   │   │                                  # to call the ml-sidecar/ FastAPI service or write property_scores.
+│   │   ├── service.go                      # `Service` struct (DB pool, sidecar HTTP client, shared secret)
+│   │   │                                   # + `NewService(pool, sidecarBaseURL, sharedSecret) *Service`
+│   │   ├── client.go                       # Service.RequestScore(ctx, propertyID) — POSTs to the sidecar's
+│   │   │                                   # /v1/score/{property_id} with the shared-secret header (spec
+│   │   │                                   # §13.3), parses the response, calls persistScore below
+│   │   ├── persist.go                      # Service.persistScore(...) — the ONLY writer of property_scores
+│   │   │                                   # (append-only insert, never an UPDATE, spec §3.5)
+│   │   └── addon_gate.go                   # Service.IsAddonActive(ctx, organizationID) — checks
+│   │                                       # organization_addons.status='active' (spec §3.5, §12.3) before
+│   │                                       # any handler calls RequestScore; the sidecar's own
+│   │                                       # app/dependencies.py performs the same check independently
+│   │                                       # (defense in depth — spec §13.5)
+│   │
+│   ├── payments/                          # IntaSend integration (spec §3.1b, §5.5) — the ONLY package
+│   │   │                                  # allowed to call the IntaSend API or write
+│   │   │                                  # payment_gateway_transactions.
+│   │   ├── service.go                      # `Gateway` interface (the genuine seam — IntaSend today, a test
+│   │   │                                   # double in payments_test.go) + `Service` struct (DB pool,
+│   │   │                                   # `*money.Service`, `Gateway`) + `NewService(...) *Service`
+│   │   ├── intasend_client.go              # Service.InitiateCheckout(...): starts an M-Pesa STK push /
+│   │   │                                   # hosted card checkout for a given invoice via pkg/intasendclient,
+│   │   │                                   # tagging checkout metadata with unit_id + invoice_id + a
+│   │   │                                   # client-generated reference
+│   │   ├── webhook_handler.go              # POST /v1/webhooks/intasend target: Service.HandleWebhook verifies
+│   │   │                                   # the IntaSend signature, upserts payment_gateway_transactions keyed
+│   │   │                                   # on (gateway_provider, gateway_reference) — the DB-level duplicate
+│   │   │                                   # guard — then on a first-time COMPLETE status calls
+│   │   │                                   # moneyService.ExecuteRentPaymentTx/ExecuteWaterGarbageTx
+│   │   ├── payout_accounts.go              # Service methods for Manager payout onboarding: validates bank
+│   │   │                                   # details + KYC doc references, writes manager_payout_accounts
+│   │   │                                   # (kyc_status='pending'), and the verification step that sets
+│   │   │                                   # gateway_subaccount_id once IntaSend clears KYC
+│   │   └── payments_test.go                # Duplicate-webhook-delivery test: same gateway_reference
+│   │                                       # posted twice asserts exactly one ledger_transfers row exists
+│   │
+│   ├── auth/
+│   │   ├── service.go                     # `Service` struct (PASETO key, DB pool) + `NewService(key, pool)
+│   │   │                                  # *Service` — every method below hangs off this one Service
+│   │   ├── paseto.go                      # Service.IssueToken/Service.VerifyToken (v2.local) — manager, agent,
+│   │   │                                  # and landlord token scopes, each signed with a separate key
+│   │   ├── password.go                    # Service.HashPassword/Service.ComparePassword (bcrypt) —
+│   │   │                                  # Manager/Agent/Landlord web login
+│   │   ├── permissions.go                 # Service.Authorize(role, action) + per-property PBAC grant check —
+│   │   │                                  # role permission table lives here as unexported service state
+│   │   └── tokens.go                      # Service.IssueActivationToken/Service.ConsumeToken —
+│   │                                      # Let's Go Further ch.15 pattern: random bytes → base32 for the
+│   │                                      # emailed link, SHA-256 hash persisted in the `tokens` table,
+│   │                                      # single-use, scope + expiry checked on consumption
+│   │
+│   ├── tenancy/                           # THE multi-tenancy package (spec §1a). Small and boring on purpose —
+│   │   │                                  # this is the one package every other package's DB access implicitly
+│   │   │                                  # trusts, so it does exactly one job and nothing else.
+│   │   ├── service.go                      # `Service` struct (DB pool) + `NewService(pool) *Service`
+│   │   ├── scope.go                        # Service.Scope(ctx, tx, organizationID) — runs
+│   │   │                                   # `SET LOCAL app.current_org_id` as the FIRST statement of a
+│   │   │                                   # request's transaction; called only from middleware_tenant.go,
+│   │   │                                   # never from a handler directly
+│   │   ├── organization.go                 # Organization entity + Service.CreateOrganizationWithFirstManagerTx —
+│   │   │                                   # the one place an organizations row and its first users row are
+│   │   │                                   # created together, atomically (spec §3.1, "self-signup creates both")
+│   │   └── platform_admin.go               # Service.WithPlatformAdmin(ctx, fn) — the narrow, logged,
+│   │                                       # BYPASSRLS-role code path used ONLY by cross-Organization platform
+│   │                                       # jobs (§12 tier billing rollup, moneyService.Reconcile's cross-org
+│   │                                       # drift check) — never reachable from internal/api; every call is
+│   │                                       # written to audit.go
+│   │
+│   ├── branding/                          # Organization-level white-label settings (spec §1b). Owns the ONLY
+│   │   │                                  # writes to organizations.brand_name/logo_url/accent_key/sms_sender_id/
+│   │   │                                  # email_from_name — no handler outside this package touches those columns.
+│   │   ├── branding.go                     # `Service` struct (DB pool) + `NewService(pool) *Service`;
+│   │   │                                   # Service.GetBranding(orgID) / Service.GetBrandingBySlug(slug)
+│   │   │                                   # (public, unauthenticated path) / Service.UpdateBranding(orgID,
+│   │   │                                   # input) — validates accent_key against the fixed approved-accent
+│   │   │                                   # list (never a freeform hex, spec §1b) and brand_name
+│   │   │                                   # length/character rules before writing
+│   │   ├── logo_upload.go                  # Service.UploadLogo(orgID, file) — accepts PNG/SVG/JPEG up to a
+│   │   │                                   # fixed size cap, stores under
+│   │   │                                   # /var/lib/willcoll/logos/{organization_id}.{ext} (served by Caddy as a
+│   │   │                                   # static path, spec §1b), writes only the resulting logo_url column
+│   │   └── template_vars.go                # Service.BrandVars(orgID) → {BrandName, LogoURL} struct injected
+│   │                                       # into every SMS (internal/notify) and email (internal/mailer)
+│   │                                       # template so a template file never hardcodes the literal string
+│   │                                       # "Willcoll"
+│   │
+│   ├── notify/                            # Background dispatch (Let's Go Further ch.14 pattern) — SMS to
+│   │   │                                  # Tenants and Landlords ONLY. Managers/Agents never get SMS.
+│   │   ├── service.go                      # `SMSGateway` interface (the genuine seam, rule 1) + `Service`
+│   │   │                                   # struct (implements background dispatch) + `NewService(gateway
+│   │   │                                   # SMSGateway) *Service`
+│   │   ├── dispatcher.go                   # Worker pool + WaitGroup, drained on graceful shutdown
+│   │   ├── sms.go                          # SMS gateway client (Africa's Talking or similar), built on
+│   │   │                                   # pkg/smsclient, implements the SMSGateway interface
+│   │   └── templates/                     # ALL of these render {{.BrandName}} (never the literal "Willcoll")
+│   │       │                              # via brandingService.BrandVars — see spec §1b
+│   │       ├── tenant_rent_due.tmpl
+│   │       ├── tenant_rent_received.tmpl
+│   │       ├── tenant_arrears_notice.tmpl
+│   │       ├── tenant_welcome.tmpl             # sent on lease creation (move-in)
+│   │       ├── landlord_digest.tmpl            # daily/real-time rent-received digest
+│   │       └── landlord_remittance_confirmed.tmpl
+│   │
+│   ├── mailer/                            # Background dispatch (Let's Go Further ch.14 pattern) — SMTP email
+│   │   │                                  # to Managers/Agents ONLY. This is the ONLY path an Agent account
+│   │   │                                  # is ever activated or reset through; nothing here touches Tenants.
+│   │   ├── mailer.go                       # `Mailer` interface (the genuine seam, rule 1 — Mailtrap vs. prod
+│   │   │                                   # SMTP) + `Service` struct implementing it + `NewService(smtpCfg)
+│   │   │                                   # *Service`; Service.Send(recipient, templateFile, data) — embeds
+│   │   │                                   # templates via embed.FS (ch.14.2 pattern), renders subject/plain/
+│   │   │                                   # HTML parts
+│   │   ├── dispatcher.go                   # Worker pool + WaitGroup, drained on graceful shutdown
+│   │   ├── smtp.go                         # net/smtp client — Mailtrap host:port:creds in dev/staging config,
+│   │   │                                   # a real transactional SMTP provider in production; same Mailer
+│   │   │                                   # interface
+│   │   └── templates/                     # Both render {{.BrandName}}/{{.LogoURL}} via brandingService.BrandVars
+│   │       │                              # (e.g. "The Rentman team has invited you...") — spec §1b
+│   │       ├── activation-password.tmpl    # Sent on POST /v1/agents — contains the activation link with
+│   │       │                               # the plaintext token; Agent sets their password on first click
+│   │       └── reset-password.tmpl         # Sent on POST /v1/agents/:id/reset-password (Manager-triggered) —
+│   │                                       # contains the reset link; Agent sets a new password on click
+│   │
+│   ├── db/                                # sqlc-generated Go from hand-written SQL — no ORM
+│   │   ├── query/
+│   │   │   ├── properties.sql, units.sql, leases.sql, meters.sql
+│   │   │   ├── invoices.sql, ledger_accounts.sql, ledger_entries.sql, ledger_transfers.sql
+│   │   │   ├── users.sql, tokens.sql, agent_property_grants.sql, audit_log.sql
+│   │   │   └── views.sql                   # v_unit_statement (spec §4.4)
+│   │   └── migrations/                     # golang-migrate, forward-only in production
+│   │       ├── 000001_init.up.sql / .down.sql   # INCLUDES organizations, users.organization_id, and
+│   │       │                                    # `ENABLE ROW LEVEL SECURITY` + policy on every table created
+│   │       │                                    # here — RLS ships on day one, never retrofitted (spec §1a, §7)
+│   │       ├── 000002_ledger.up.sql / .down.sql
+│   │       ├── 000003_electricity_topups.up.sql / .down.sql
+│   │       ├── 000004_tokens.up.sql / .down.sql    # activation/password-reset tokens table (spec §3.1)
+│   │       ├── 000005_intasend_payments.up.sql / .down.sql   # manager_payout_accounts +
+│   │       │                                                 # payment_gateway_transactions (spec §3.1b) —
+│   │       │                                                 # the unique (gateway_provider, gateway_reference)
+│   │       │                                                 # constraint is the duplicate-payment guard
+│   │       ├── 000006_organization_branding.up.sql / .down.sql   # adds organizations.brand_name, .slug
+│   │       │                                                     # (UNIQUE, URL-safe), .logo_url, .accent_key,
+│   │       │                                                     # .sms_sender_id, .email_from_name (spec §1b)
+│   │       ├── 000007_tenant_import_batches.up.sql / .down.sql   # adds tenant_import_batches (spec §3.2a) —
+│   │       │                                                     # audit trail for bulk CSV tenant/unit onboarding
+│   │       ├── 000008_organization_addons.up.sql / .down.sql     # adds organization_addons (spec §3.5, §12.3) —
+│   │       │                                                     # premium add-on gating, billed via the SAME
+│   │       │                                                     # subscription mechanism as the base tier
+│   │       └── 000009_property_scores.up.sql / .down.sql         # adds property_scores (spec §3.5) — append-only,
+│   │                                                              # no UPDATE/DELETE query ever generated against it
+│   │
+│   └── config/
+│       └── config.go                       # Viper loader — reads /configs/*.yaml + env overrides
+│                                           # (DB DSN, PASETO keys, SMS gateway keys, SMTP host/port/creds/
+│                                           # sender, intasend.publishable_key/secret_key/webhook_secret/
+│                                           # environment — sandbox in dev/staging, live only in production,
+│                                           # scoring.sidecar_base_url/scoring.shared_secret for
+│                                           # internal/scoring's server-to-server call to ml-sidecar, spec §13.3)
+│
+├── pkg/                                  # Public code, safe to import from outside this module — generic,
+│   │                                     # Willcoll-agnostic utilities. If it needs to know what a "lease" or
+│   │                                     # "landlord" is, it belongs in /internal, not here.
+│   ├── kesmoney/
+│   │   └── kesmoney.go                     # KES fixed-point money type (integer cents), arithmetic +
+│   │                                       # formatting helpers — used by internal/money and internal/api
+│   ├── msisdn/
+│   │   └── msisdn.go                       # Kenyan phone-number parsing/normalization/validation
+│   ├── idempotency/
+│   │   └── key.go                          # Idempotency-key generation/verification helper (spec §4.3, §6.2)
+│   ├── smsclient/
+│   │   └── client.go                       # Thin, provider-agnostic SMS gateway interface + implementation;
+│   │                                       # reusable by any future Willcoll service, not just this API
+│   └── intasendclient/
+│       └── client.go                       # Thin wrapper over IntaSend's Collection API (STK push, card
+│                                           # checkout) and Sub-Account/KYC endpoints — generic enough to
+│                                           # reuse outside internal/payments if Willcoll ever adds a second
+│                                           # product on the same gateway
+│
+├── test/                                 # Additional external tests + fixtures. Ordinary unit tests stay
+│   │                                     # next to their package (Go convention); this folder is for
+│   │                                     # cross-package integration/e2e tests and test data only.
+│   ├── integration/
+│   │   ├── payments_flow_test.go           # End-to-end: create lease → record rent → verify ledger + invoice
+│   │   ├── meter_billing_flow_test.go      # End-to-end: post reading → invoice generated → payment → SMS sent
+│   │   ├── rbac_pbac_test.go               # Agent granted on Property A, denied on Property B, end-to-end
+│   │   ├── intasend_webhook_flow_test.go   # End-to-end: initiate → simulated IntaSend webhook (incl. a
+│   │   │                                   # deliberately re-sent duplicate) → exactly one ledger transfer
+│   │   ├── tenant_csv_import_flow_test.go  # End-to-end: create property → attach Landlord → upload CSV
+│   │   │                                   # (spec §3.2a) → units/tenants/leases created, one bad row
+│   │   │                                   # skipped-not-rolled-back, tenant_import_batches row written
+│   │   └── verified_score_flow_test.go     # End-to-end: activate addon → record ledger history → request
+│   │                                       # score → ml-sidecar called → property_scores row persisted;
+│   │                                       # asserts a second property's data is never read (spec §13.3.1)
+│   └── testdata/
+│       ├── sample_unit_import.csv          # Mirrors the paper ledger columns (HSE NO., NAME, readings)
+│       ├── sample_tenant_import.csv        # Bulk unit+tenant+lease onboarding template (spec §3.2a)
+│       └── fixtures.sql                    # Deterministic seed rows for integration tests
+│
+├── configs/                              # Configuration files (no secrets committed)
+│   ├── config.example.yaml                # Local dev defaults — SMTP block points at Mailtrap sandbox,
+│   │                                      # intasend block points at IntaSend's sandbox environment
+│   ├── config.staging.yaml
+│   └── config.production.yaml.example     # Template only — real file (incl. production SMTP creds and
+│                                          # live IntaSend keys, never Mailtrap/sandbox) lives outside git
+│                                          # on the VPS
+│
+├── docs/                                 # Design and user documents
+│   ├── willcoll-spec.md                   # Full specification — source of truth
+│   └── db-diagram.dbml                    # Schema source for dbdiagram.io
+│
+├── examples/                             # Examples for the API and the CSV import format
+│   ├── api-requests/
+│   │   ├── create-lease.http               # Example request bodies (REST Client / httpie style)
+│   │   ├── record-rent-payment.http
+│   │   ├── post-meter-reading.http
+│   │   ├── initiate-intasend-payment.http  # POST /v1/payments/initiate example body
+│   │   ├── intasend-webhook-payload.http   # Sample IntaSend webhook body, for local handler testing
+│   │   └── request-verified-score.http     # POST /v1/properties/:id/score example body (spec §13)
+│   ├── unit-ledger-import-template.csv     # Blank template matching the paper ledger, for a new property
+│   └── tenant-import-template.csv          # Blank unit+tenant+lease bulk-onboarding template (spec §3.2a) —
+│                                            # columns: unit_label, unit_type, base_rent, deposit_amount,
+│                                            # tenant_full_name, tenant_phone, tenant_id_number,
+│                                            # lease_start_date, monthly_rent, rent_due_day, late_fee_pct_per_day
+│
+├── api/                                  # API contract files
+│   └── openapi.yaml                       # OpenAPI 3.0 contract — source of truth for the route table in
+│                                           # internal/api/router.go and for generating Nuxt API client types
+│
+├── web/                                  # Web application root. Holds the Nuxt project plus anything else
+│   │                                     # web-facing (e.g. a future marketing page) that isn't the app itself.
+│   └── app/                               # THE WORKING DIRECTORY — Nuxt 4 / Vue 3, ONE codebase, static
+│       │                                  # export (ssr:false, output:'static' in nuxt.config.ts). No Node
+│       │                                  # runtime needed to serve it; Caddy serves the export directly.
+│       │                                  # `cd web/app && npm run dev` for local development.
+│       ├── nuxt.config.ts
+│       ├── assets/
+│       │   └── tokens.css                # Generated 1:1 from design-tokens.txt's LOCKED base tokens only —
+│       │                                 # the small set of Organization-overridable brand tokens (spec §1b:
+│       │                                 # --brand-name, --brand-logo-url, --color-action-primary) are NEVER
+│       │                                 # baked into this file; they're set at runtime by useBranding.ts
+│       ├── layouts/
+│       │   └── default.vue               # AppSidebar + AppHeader shell — reads useBranding() for the header
+│       │                                 # logo/name, never a hardcoded "Willcoll" string or image
+│       ├── plugins/
+│       │   └── branding.client.ts        # Runs BEFORE the app mounts: resolves the Organization slug (from
+│       │                                 # the URL path prefix, spec §1b), calls GET /v1/public/branding,
+│       │                                 # sets document.title + favicon + the CSS custom properties above,
+│       │                                 # and populates useBranding()'s state — so even the unauthenticated
+│       │                                 # /login screen shows the right Organization's name/logo/accent
+│       ├── pages/
+│       │   ├── login.vue                 # Manager/Agent/Landlord password login — reads the Organization
+│       │   │                             # slug from the URL (e.g. /rentman/login) so branding.client.ts
+│       │   │                             # knows which Organization to paint before any credentials are entered
+│       │   ├── activate.vue              # ?token=... — Agent's first-ever password set (from email link);
+│       │   │                             # redirects to /login on success, shows expired/invalid-link state
+│       │   ├── reset-password.vue        # ?token=... — Agent's new-password screen (Manager-triggered
+│       │   │                             # reset email); redirects to /login on success
+│       │   ├── properties/
+│       │   │   ├── index.vue             # Multi-apartment grid — branding, location, live rent indicator
+│       │   │   └── [id]/
+│       │   │       ├── units/
+│       │   │       │   ├── index.vue     # Flex unit list (status badge, balance, quick Record Payment)
+│       │   │       │   └── [unitId].vue  # Unit statement + LedgerTimeline + PaymentDrawer
+│       │   │       └── meters.vue        # Monthly reading entry grid (mirrors the paper ledger, spec §9.4)
+│       │   ├── agents/
+│       │   │   └── index.vue             # Invite Agent (emails activation link) + per-Agent "Reset password"
+│       │   │                             # action (emails reset link) + PBAC grant matrix editor (spec §9.5)
+│       │   ├── reports/
+│       │   │   ├── arrears.vue
+│       │   │   ├── collections.vue
+│       │   │   └── portfolio.vue         # Landlord-scoped consolidated view
+│       │   └── settings/
+│       │       ├── sms-templates.vue
+│       │       ├── payout-account.vue    # Manager's IntaSend onboarding form (bank details + KYC docs)
+│       │       │                         # and live kyc_status/sub-account verification indicator
+│       │       └── branding.vue          # Manager-only, super-manager gated (spec §1b): brand_name field,
+│       │                                 # logo upload with live preview, accent-color picker limited to the
+│       │                                 # fixed approved swatches in design-tokens.txt (never a freeform
+│       │                                 # color input) — saves via PATCH /v1/organization/branding
+│       ├── components/
+│       │   ├── layout/
+│       │   │   ├── AppSidebar.vue
+│       │   │   └── AppHeader.vue         # property switcher, collection-rate chip, arrears bell
+│       │   ├── property/
+│       │   │   └── PropertySwitcherCard.vue  # logo/brand + location + rent-collected indicator (grid item)
+│       │   ├── ledger/
+│       │   │   ├── PaymentDrawer.vue     # record rent/water payment, allocation split
+│       │   │   └── LedgerTimeline.vue    # append-only feed, visually reinforces immutability
+│       │   └── shared/
+│       │       ├── StatusBadge.vue       # uses --color-status-* tokens
+│       │       └── RoleGate.vue          # renders by RBAC role AND per-property PBAC grant
+│       ├── composables/
+│       │   ├── useAuth.ts
+│       │   ├── usePermissions.ts         # RBAC + PBAC check helpers, mirrors internal/auth
+│       │   ├── useLedger.ts
+│       │   └── useBranding.ts            # Reactive { brandName, logoUrl, accentKey } populated by
+│       │                                 # plugins/branding.client.ts; every component reads brand text/logo
+│       │                                 # ONLY through this composable — never a literal "Willcoll" string
+│       ├── dist/                         # Build output of `npm run generate` — the static export Caddy
+│       │                                 # serves in production (git-ignored; produced by build/ci)
+│       └── package.json
+│
+├── ml/                           # Verified Property Score — FastAPI sidecar (spec §13). Runs
+│   │                                     # alongside the Go API in the same Docker Compose stack as a 7th
+│   │                                     # service — no separate deployment pipeline, no GPU fleet. The
+│   │                                     # ONLY caller is internal/scoring's server-to-server HTTP client
+│   │                                     # (shared-secret auth, spec §13.3); never exposed publicly.
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py                       # Application factory — mounts the v1 router; started via uvicorn
+│   │   │                                 # inside the sidecar container, no public host port bound
+│   │   ├── config.py                     # Pydantic Settings — DATABASE_URL (read-only role), MODEL_PATH,
+│   │   │                                 # SIDECAR_SHARED_SECRET (spec §13.3, matches api's .env.example)
+│   │   ├── database.py                   # SQLAlchemy session setup against the SAME Postgres instance as
+│   │   │                                 # the Go API (spec §13.3.1) — a dedicated read-only role, RLS
+│   │   │                                 # (spec §1a) still applies to every query this service runs
+│   │   ├── dependencies.py               # Shared dependencies — the premium-addon gate: checks
+│   │   │                                 # organization_addons.status='active' (spec §3.5, §12.3) before
+│   │   │                                 # any /v1/score/{property_id} request proceeds, independently of
+│   │   │                                 # internal/scoring.IsAddonActive's own check (defense in depth)
+│   │   ├── exceptions.py                 # Custom exception handlers — insufficient ledger history,
+│   │   │                                 # property not found, addon not active
+│   │   ├── middleware.py                 # Shared-secret verification middleware — rejects any request not
+│   │   │                                 # signed with SIDECAR_SHARED_SECRET before it reaches a route
+│   │   ├── api/
+│   │   │   ├── __init__.py
+│   │   │   ├── router.py                 # Root router aggregation
+│   │   │   ├── v1/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── router.py             # v1 router
+│   │   │   │   ├── scores.py             # POST /v1/score/{property_id} — the ONLY scoring endpoint; takes
+│   │   │   │   │                         # exactly one property_id, never a list (spec §13.3, single-
+│   │   │   │   │                         # property isolation enforced structurally, not by convention)
+│   │   │   │   └── health.py             # GET /healthz — model loaded + DB reachable
+│   │   │   └── v2/
+│   │   │       └── ...                   # reserved, unused in v0.1
+│   │   ├── models/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py                   # SQLAlchemy declarative base
+│   │   │   ├── ledger_view.py            # Read-only mapped views of ledger_entries/invoices/leases/units
+│   │   │   │                             # (spec §4) — this service never writes to any of these
+│   │   │   └── property_score.py         # Maps property_scores (spec §3.5) — the ONE table this service
+│   │   │                                 # writes to, append-only, never an UPDATE
+│   │   ├── schemas/
+│   │   │   ├── __init__.py
+│   │   │   ├── score_request.py          # property_id, as_of_date
+│   │   │   └── score_response.py         # noi, dscr, score_value, score_band, computed_at, model_version,
+│   │   │                                 # feature_snapshot (spec §13.2)
+│   │   ├── services/
+│   │   │   ├── __init__.py
+│   │   │   ├── feature_extraction_service.py   # Reads ONE property's ledger history (spec §13.2, §13.3.1):
+│   │   │   │                                   # rent collected per unit over time, vacancy periods,
+│   │   │   │                                   # arrears-recovery speed — builds the fixed-width feature
+│   │   │   │                                   # vector the GBDT model expects
+│   │   │   ├── scoring_service.py               # Runs inference via the loaded GBDT model, computes
+│   │   │   │                                    # NOI/DSCR from the same feature vector, maps the raw score
+│   │   │   │                                    # to a lender-familiar score_band (spec §13.2)
+│   │   │   └── persistence_service.py           # Writes the property_scores row — a new score is always a
+│   │   │                                        # new row, never an UPDATE of a prior one (spec §3.5, §4.2's
+│   │   │                                        # "never edit, only append" ethos applied here too)
+│   │   ├── repositories/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py                   # Generic repository
+│   │   │   ├── ledger_repo.py            # Read-only queries scoped to one property_id — the representative
+│   │   │   │                             # join (units ⋈ leases ⋈ invoices ⋈ ledger_entries) is documented
+│   │   │   │                             # in spec §13.3.1; RLS (spec §1a) still narrows to one organization,
+│   │   │   │                             # this repo additionally narrows to one property within it
+│   │   │   └── score_repo.py             # Create + read only on property_scores — no update()/delete()
+│   │   │                                 # method exists on this repository at all
+│   │   └── core/
+│   │       ├── __init__.py
+│   │       ├── security.py               # Shared-secret verification helper (server-to-server, spec §13.4
+│   │       │                             # — the sidecar has no end users of its own)
+│   │       ├── logging.py                # Structured logging — every score computation logs
+│   │       │                             # organization_id, property_id, model_version (mirrors
+│   │       │                             # handlers_audit.go's audit trail)
+│   │       └── model_loader.py           # Loads ../ml/model.joblib once at process startup; hot-reloadable
+│   │                                     # via SIGHUP without a container restart
+│   ├── ml/                               # Everything about the model itself, separate from the request-
+│   │   │                                 # serving app/ package above
+│   │   ├── model.joblib                  # The trained GBDT ensemble artifact — sub-MB, CPU-only, versioned
+│   │   │                                 # (spec §13.1: no LLM, no GPU — the value here is trustworthy
+│   │   │                                 # input data, not a smarter algorithm)
+│   │   ├── train.py                      # Offline training script, run manually/on a schedule OUTSIDE the
+│   │   │                                 # request path — app/ never trains or fine-tunes on live customer
+│   │   │                                 # data (spec §13.5); produces model.joblib + model_card.md
+│   │   ├── model_card.md                 # Feature list, training-data description, version, known
+│   │   │                                 # limitations — model_version in property_scores rows (spec §3.5)
+│   │   │                                 # matches this file's version header
+│   │   └── features.py                   # Shared feature-definition module, imported by BOTH train.py and
+│   │                                     # app/services/feature_extraction_service.py so training and live
+│   │                                     # inference can never silently drift apart
+│   ├── migrations/
+│   │   └── versions/                     # Alembic — additive only against the SAME Postgres instance
+│   │                                     # golang-migrate already owns (spec §7): creates property_scores
+│   │                                     # and grants this service's read-only role SELECT on the existing
+│   │                                     # ledger tables; never runs golang-migrate's own path, never
+│   │                                     # touches a table internal/money owns
+│   ├── tests/
+│   │   ├── conftest.py
+│   │   ├── test_scores.py                # Single-property isolation test: scoring property A never reads
+│   │   │                                 # a row belonging to property B, even within the same
+│   │   │                                 # organization_id (spec §13.3.1) — the one test CI treats as a
+│   │   │                                 # release blocker, per test.yml above
+│   │   └── test_feature_extraction.py
+│   ├── Dockerfile                        # Non-root, CPU-only base image — no CUDA/GPU layer; small, since
+│   │                                     # the model itself is sub-MB (spec §13.1)
+│   ├── docker-compose.yml                # Adds the `ml-sidecar` service to the stack (spec §7) — same
+│   │                                     # Postgres instance, dedicated read-only DB role, no exposed
+│   │                                     # public port
+│   ├── pyproject.toml                    # fastapi, sqlalchemy, alembic, pydantic-settings, and
+│   │                                     # scikit-learn/lightgbm (whichever backs the GBDT) — deliberately
+│   │                                     # NOT torch/tensorflow (spec §13.1)
+│   ├── alembic.ini
+│   └── .env.example                      # DATABASE_URL (read-only role), SIDECAR_SHARED_SECRET (matches
+│                                         # the root .env.example), MODEL_PATH
+│
+├── build/                                # Packaging and CI/CD support files (not the CI *trigger* config
+│   │                                     # itself — that's .github/workflows/, see below — but everything
+│   │                                     # those workflows invoke).
+│   ├── package/
+│   │   ├── Dockerfile.api                 # Multi-stage/multi-target: base → dev (air hot-reload) →
+│   │   │                                  # builder → prod (static binary, non-root, distroless-style alpine)
+│   │   ├── Dockerfile.web                 # Multi-stage/multi-target: base → dev (nuxt dev server, HMR) →
+│   │   │                                  # builder (nuxt generate) → prod (nginx serving the static export)
+│   │   ├── Dockerfile.backup              # Postgres backup sidecar — cron + pg_dump, independent of api/web
+│   │   └── nginx.conf                     # SPA fallback + immutable asset caching for the web prod image
+│   ├── docker-compose.yml                 # Base compose — postgres, migrate (one-shot), api, web, caddy,
+│   │                                      # pg_backup — dev targets, hot-reload bind mounts, ports published
+│   ├── docker-compose.prod.yml            # Layered on top for the Contabo VPS: prod build targets, no
+│   │                                      # source bind mounts, no exposed DB port, restart:always, log caps
+│   └── Caddyfile                          # Reverse proxy + TLS (auto via Let's Encrypt in prod); proxies
+│                                          # /v1/* and /debug/* to api, everything else to web ({$WEB_PORT})
+│
+├── scripts/                              # Scripts for analysis, installation, backups, deployment
+│   ├── deploy.sh                          # Pulls latest images, runs `docker compose ... run migrate`,
+│   │                                      # restarts the prod stack — invoked by .github/workflows/deploy.yml
+│   ├── backup/
+│   │   ├── nightly-pg-dump.sh             # Runs inside build/package/Dockerfile.backup on a cron schedule:
+│   │   │                                  # custom-format pg_dump, optional GPG encryption, optional offsite
+│   │   │                                  # push (curl -T to any endpoint), retention pruning
+│   │   ├── wal-archive.sh                 # Postgres archive_command target (invoked BY postgres itself) —
+│   │   │                                  # continuous WAL archiving for point-in-time recovery between
+│   │   │                                  # nightly dumps (spec §7)
+│   │   └── crontab                        # Nightly 01:00 UTC schedule baked into Dockerfile.backup
+│   ├── reconcile-check.sh                 # Ad-hoc runner for internal/money/reconcile.go, for manual audits
+│   └── seed-from-csv.sh                   # Wraps cmd/willcoll-seed for importing a real paper ledger CSV
+│
+├── vendor/                               # `go mod vendor` output — committed only if the team decides to
+│                                          # vendor dependencies for reproducible/offline VPS builds; optional,
+│                                          # git-ignored by default (go.sum is the source of truth otherwise)
+│
+├── .github/
+│   └── workflows/
+│       ├── test.yml                       # On every PR/push: go vet, go test ./... -race (internal/money
+│       │                                  # concurrency tests included), npm run lint + build in web/app/,
+│       │                                  # pytest in ml-sidecar/ (incl. single-property-isolation test,
+│       │                                  # spec §13.3.1)
+│       └── deploy.yml                     # On merge to main: build + push Docker images (incl.
+│                                          # ml-sidecar/Dockerfile), SSH into the Contabo VPS, run
+│                                          # scripts/deploy.sh (migrate, restart Caddy + api + ml-sidecar
+│                                          # via build/docker-compose.yml)
+│
+├── README.md
+├── project-structure.txt                 # this file
+├── design-tokens.txt                     # Base design system (colors, type, spacing, components) shared by
+│                                          # every Organization, PLUS the small set of tokens each Organization
+│                                          # may override for white-label branding (spec §1b)
+├── Makefile                               # up, down, logs, migrate, sqlc, seed, test, up-prod, deploy,
+│                                          # backup-now, restore — thin wrapper over the compose files
+├── .env.example                          # Template for the .env every compose file reads (Postgres, SMTP/
+│                                          # Mailtrap, SMS, PASETO key, domain, backup config, IntaSend
+│                                          # publishable/secret/webhook keys, LOGO_STORAGE_PATH for
+│                                          # internal/branding's uploaded logos, SIDECAR_SHARED_SECRET
+│                                          # shared with ml-sidecar/.env.example, spec §13.3) — copy to .env
+├── .air.toml                              # Go hot-reload config used by build/package/Dockerfile.api's dev target
+├── .dockerignore                          # Keeps build contexts small; excludes node_modules, .env, docs/
+├── go.mod / go.sum
+└── LICENSE                               # TBD

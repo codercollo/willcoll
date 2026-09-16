@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: ml-sidecar
+Version: 0.1.0
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: joblib
+Requires-Dist: scikit-learn
+Requires-Dist: pydantic
+Requires-Dist: alembic
+Requires-Dist: psycopg2-binary
+Requires-Dist: pytest

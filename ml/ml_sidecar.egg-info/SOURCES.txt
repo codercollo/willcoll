@@ -1,0 +1,6 @@
+pyproject.toml
+ml_sidecar.egg-info/PKG-INFO
+ml_sidecar.egg-info/SOURCES.txt
+ml_sidecar.egg-info/dependency_links.txt
+ml_sidecar.egg-info/requires.txt
+ml_sidecar.egg-info/top_level.txt

@@ -1,0 +1,334 @@
+WILLCOLL DESIGN TOKENS
+Base design system for web/app (Manager/Agent back-office dashboard, Landlord
+read-only dashboard) — one shared system, then a small Organization-brandable
+overlay on top (section 7). Consumed 1:1 by web/app/assets/tokens.css.
+Version 1.0
+
+NOTE ON PROVENANCE: Willcoll's tenancy model and hosting setup deliberately
+reuse patterns proven on an earlier project, RipplePOS (see willcoll-spec.md
+§1a, §6, §7). This design-tokens file does NOT reuse RipplePOS's visual
+identity — RipplePOS is a wine-trade till/POS product with its own bordeaux/
+brass/parchment palette and dark till surface; none of that belongs in a
+rent-management SaaS dashboard, and none of it appears below. Every token
+name in this file is the one actually referenced in willcoll-spec.md §9
+(UI/UX layout) — if you find a token used in the spec that isn't defined
+here, that's a bug in one of the two files; fix the mismatch, don't pick one
+silently.
+
+------------------------------------------------------------
+DESIGN CONCEPT
+------------------------------------------------------------
+
+Direction: a clean operations dashboard for someone managing real money and
+real tenants, not a flashy consumer app. The paper artifacts this system
+replaces — receipt books, rent-roll sheets, meter ledgers — are plain, dense,
+and trustworthy-looking. The UI should read the same way: legible tables,
+calm color used sparingly for status, nothing decorative competing with the
+numbers a Manager is trying to reconcile.
+
+Hard rules for this system:
+  - No gradients anywhere. Every fill is a single flat value.
+  - No emoji, anywhere, in UI copy, notifications, or empty states.
+  - No em dashes in UI copy. Use a period, colon, or comma instead.
+  - Status color (success/warning/error) is reserved for status. Never used
+    decoratively on a button, heading, or illustration.
+  - Elevation is a small, real drop shadow (--shadow-card below), not a
+    hairline-only trick — this is a dashboard people work in for hours, and
+    a soft shadow helps separate stacked cards on a busy screen faster than
+    a border alone. Keep it subtle: one shadow depth for cards, no deep
+    shadows, no colored shadows.
+  - Corners are rounded on cards and controls (see --layout-card-radius,
+    --radius-*), never on the sidebar rail or full-bleed page chrome.
+
+------------------------------------------------------------
+1. COLOR
+------------------------------------------------------------
+
+Three base brand colors — this is the literal "Willcoll Orange / Charcoal
+Black / Cool Slate Gray" identity referenced in README.md — plus a fixed
+neutral scale and three status colors. Every other color in the system is a
+tint/shade of one of these, generated at fixed steps, never picked ad hoc.
+
+  willcoll-orange   #E8702A   The DEFAULT Organization accent (accent_key
+                              'orange', spec §1b.3). Primary action color:
+                              main buttons, active nav item, focus ring,
+                              default brand mark tint.
+
+  charcoal-black    #1F2320   Near-black, cool undertone (not warm/brown).
+                              Primary dark surface: sidebar rail, header on
+                              dark mode (if ever added), high-contrast text.
+
+  slate-gray        #6B7280   Cool mid-gray. Secondary text, muted labels,
+                              inactive icons, placeholder text.
+
+Derived scale (generated, not hand picked) — each base color has five
+steps: -20, -10, base, +10, +20, moving toward charcoal-black (darken) or
+white (lighten). Example for willcoll-orange:
+    orange-20   #A84E17   (pressed/active button state)
+    orange-10   #CC5F1F
+    orange      #E8702A   (base)
+    orange+10   #ED8C55   (hover, disabled label)
+    orange+20   #F5B591   (subtle tint fill, selected row background)
+
+Neutrals (for text, surfaces, and hairlines):
+  ink             #1F2320   Body text. Same value as charcoal-black, used
+                            under a different semantic name for clarity in
+                            code (`color-text-primary` vs `color-bg-inverse`).
+  ink-muted       #6B7280   Secondary text, captions, placeholders (= slate-gray).
+  border-subtle   #E2E5E9   Dividers and hairlines on white surfaces.
+  surface-canvas  #F5F6F8   Page background behind the card grid.
+  surface-white   #FFFFFF   Card, panel, table, and sidebar-item background.
+
+Status colors (reserved for status, never decoration):
+  status-success   #1E8E5A   Collected, active lease, confirmed payment,
+                              KYC verified.
+  status-warning   #C9821A   Partial collection, arrears within grace
+                              period, KYC pending.
+  status-error     #C6362E   Overdue/arrears past grace period, void
+                              payment, KYC rejected, sync/reconcile drift.
+
+Semantic mapping (reference these names in code, not raw hex):
+  --color-bg-canvas             surface-canvas
+  --sidebar-bg                  surface-white
+  --color-border-subtle         border-subtle
+  --sidebar-item-active-bar     willcoll-orange (3px left bar on active nav item)
+  --sidebar-item-active-bg      orange+20 tint at 10% opacity over surface-white
+  --color-action-primary        willcoll-orange       -- OVERRIDABLE, see section 7
+  --color-action-primary-hover  orange-10
+  --color-action-primary-pressed orange-20
+  --color-text-primary          ink
+  --color-text-muted            ink-muted
+  --color-text-inverse          surface-white
+  --color-bg-inverse            charcoal-black
+  --color-status-success        status-success
+  --color-status-success-bg     status-success tint at 12% opacity
+  --color-status-warning        status-warning
+  --color-status-warning-bg     status-warning tint at 12% opacity
+  --color-status-error          status-error
+  --color-status-error-bg       status-error tint at 12% opacity
+
+Usage discipline:
+  - willcoll-orange (or an Organization's chosen accent, section 7) is the
+    only color allowed on a primary button or an active-state indicator.
+  - Status colors never fill a background at full opacity in body copy
+    areas; use the *-bg tint version behind a StatusBadge, full-strength
+    only for the badge's text/dot/icon.
+  - charcoal-black appears only in the sidebar rail and any inverse-surface
+    component; never as a page background.
+
+------------------------------------------------------------
+2. TYPOGRAPHY
+------------------------------------------------------------
+
+Two families, clearly distinct roles. No third family, no monospace face
+introduced just for "data" labels; tabular figures come from the UI
+family's own numeral settings.
+
+  Display family: Fraunces (variable)
+    Role: dashboard section headings, the total on a payment confirmation
+    or receipt-preview screen.
+    Why: enough personality to feel like a considered product, not a
+    generic admin template, without competing with the data tables that
+    make up most of the screen.
+
+  UI family: General Sans
+    Role: everything else. Navigation, buttons, form fields, table data,
+    body copy.
+    Numerals: tabular (lining) figures on, everywhere a KES amount or a
+    meter reading appears, so columns of numbers align.
+
+Type scale (rem, 1rem = 16px base):
+  display-2xl   3.052   Fraunces 600   Payment confirmation / receipt total
+  display-xl    2.441   Fraunces 600   Rare hero moment (first-run empty state)
+  display-lg    1.953   Fraunces 500   Section heading (dashboard)
+  display-md    1.563   Fraunces 500   Card / panel title
+  ui-lg         1.25    General Sans 500   Modal title, drawer title
+  ui-base       1.0     General Sans 400   Body copy, table cells, inputs
+  ui-sm         0.875   General Sans 400   Captions, helper text, timestamps
+  ui-xs         0.75    General Sans 500   Status chip text, table header
+                                           (sentence case, not all caps)
+
+Line height:
+  Display: 1.1 to 1.15 (tight, headline-like)
+  UI body: 1.5
+  UI dense (tables, ledger timeline): 1.35
+
+Letter spacing:
+  Default 0 everywhere. Do not track out small labels; sentence case reads
+  faster at a glance than tracked caps, which matters when a Manager is
+  scanning a long arrears list.
+
+Line length:
+  Body copy wraps at 70 to 78 characters. Table and ledger content is not
+  prose and is not constrained by this rule.
+
+------------------------------------------------------------
+3. SPACING AND LAYOUT
+------------------------------------------------------------
+
+Base unit: 4px. Scale is 4, 8, 12, 16, 24, 32, 48, 64, 96.
+
+  space-1   4px    Icon to label gap
+  space-2   8px    Inline control padding (chip, tag)
+  space-3   12px   Compact list row padding
+  space-4   16px   Standard control padding, form field padding
+  --spacing-lg  24px   Section gap inside a panel; the card-grid gap referenced
+                       in spec §9.2 (`gap: var(--spacing-lg)`)
+  space-8   32px   Panel to panel gap
+  space-12  48px   Major section gap (dashboard)
+  space-16  64px   Page margin
+
+Layout (referenced directly in willcoll-spec.md §9.1):
+  --layout-sidebar-width    260px   Full sidebar rail width
+  --layout-sidebar-collapsed 72px  Collapsed sidebar width
+  --layout-header-height    68px   Top header bar height
+  --layout-card-radius      10px   Property card / panel corner radius
+
+Grid:
+  Dashboard canvas: 12 column grid, 24px gutter, max content width 1280px,
+  left nav rail fixed at --layout-sidebar-width (--layout-sidebar-collapsed
+  when collapsed).
+  Property card grid (spec §9.2): CSS Grid,
+  `grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))`,
+  `gap: var(--spacing-lg)`.
+
+Radius:
+  radius-sm     4px    Input fields, chips, small buttons, StatusBadge
+  radius-md     6px    Primary buttons, modals, drawers
+  --layout-card-radius  10px   Property cards, dashboard panels
+  radius-none   0px    Sidebar rail, header bar, table containers
+
+Borders and elevation:
+  border-hairline   1px solid var(--color-border-subtle)
+  --shadow-card     0 1px 2px rgba(31,35,32,0.04), 0 2px 8px rgba(31,35,32,0.06)
+                    The one elevation shadow in the system (spec §9.1: cards
+                    sit "on --shadow-card"). Do not introduce a second,
+                    heavier shadow depth; if a component needs to feel more
+                    elevated, use a modal/drawer overlay instead.
+
+------------------------------------------------------------
+4. MOTION
+------------------------------------------------------------
+
+Principle: one deliberate motion moment per flow, not motion on every
+interaction. Hover and focus states change color or border only, with no
+movement, so the dashboard stays calm on a busy reconciliation day.
+
+Durations:
+  motion-instant   80ms    Color/border change on hover, press
+  motion-quick     160ms   Drawer/modal open-close, dropdown reveal
+  motion-settle    280ms   The one deliberate moment per flow (below)
+  motion-slow      420ms   Full page transitions (rare)
+
+Easing:
+  ease-standard    cubic-bezier(0.4, 0, 0.2, 1)   Default for all UI motion
+  ease-settle      cubic-bezier(0.16, 1, 0.3, 1)  For the deliberate
+                                                    "landing" moments below
+
+Named moments (the only places motion is intentionally noticeable):
+  payment-recorded:
+    In PaymentDrawer, on a successful POST /v1/payments, the new
+    LedgerTimeline entry fades in and the unit balance figure counts down
+    to its new value over motion-settle with ease-settle. Runs once, on a
+    confirmed payment only.
+
+  arrears-alert-raised:
+    The AppHeader's arrears bell badge scales from 90% to 100% with a
+    color-status-error fade-in over motion-quick when a new arrears alert
+    arrives via the background poll. No bounce.
+
+  agent-activated (Agents & Permissions screen):
+    Once an invited Agent completes activation, their row's status chip
+    swaps from "Invited" to "Active" with a color-status-success fade over
+    motion-settle. This is the screen's one animated beat.
+
+  sync-restored:
+    A small connectivity indicator transitions from status-error to
+    status-success over motion-instant when a dropped API connection
+    recovers. No motion beyond the color change.
+
+Reduced motion:
+  When the user or OS requests reduced motion, all of the above collapse to
+  an instant state change: no fades, no count-downs, no scale. Nothing in
+  this system depends on motion to convey information; motion only adds
+  polish on top of a state already communicated by color and copy.
+
+------------------------------------------------------------
+5. ICONOGRAPHY
+------------------------------------------------------------
+
+Style: single weight line icons, 1.5px stroke, square terminals, no filled
+icons except for the small connectivity/status dot. No emoji is used
+anywhere in the product, including notifications or empty states.
+
+Icon set is functional only: property, unit, tenant, lease, meter, invoice,
+payment, reverse/void, ledger, agent, permission/grant, landlord, report,
+audit, SMS, email, KYC/payout, sync, warning, confirmed. Do not add
+decorative icons next to headings that do not need one.
+
+------------------------------------------------------------
+6. ELEVATION AND SURFACE TREATMENT
+------------------------------------------------------------
+
+  surface-flat     surface-canvas background, no border. Default page background.
+  surface-panel    surface-white background, hairline border, --layout-card-radius.
+                    Used for grouped content (a report panel, a form section).
+  surface-card     surface-white background, --shadow-card, --layout-card-radius.
+                    Used for the property switcher grid (spec §9.2) and any
+                    other card-shaped content.
+  surface-inverse  charcoal-black background, white text.
+                    Used only for the sidebar rail.
+
+------------------------------------------------------------
+7. ORGANIZATION BRANDING OVERLAY (white-label, spec §1b)
+------------------------------------------------------------
+
+Everything above is the LOCKED base design system: identical for every
+Organization on the platform, baked into web/app/assets/tokens.css at build
+time, never touched by a runtime request. Exactly three CSS custom
+properties are the exception, set at RUNTIME per Organization by
+plugins/branding.client.ts after it calls GET /v1/public/branding (spec
+§1b.2) — they are declared here with their DEFAULT (Willcoll Agencies)
+values, and every other token in this file stays fixed regardless of which
+Organization is viewing the page:
+
+  --brand-name        "Willcoll"     Shown in the sidebar header, browser
+                                     tab title, and as {{.BrandName}} in
+                                     every SMS/email template. Plain text
+                                     only, no markup, length-capped by the
+                                     API (spec §1b.1) so it can never break
+                                     the header layout.
+  --brand-logo-url     (Willcoll's own mark)   Shown at a fixed max
+                                     height in the sidebar header and email
+                                     header. If an Organization has not
+                                     uploaded one, this falls back to a
+                                     generic neutral "letting business"
+                                     placeholder mark, NEVER to another
+                                     Organization's logo.
+  --color-action-primary   willcoll-orange (default)   Resolved from the
+                                     Organization's accent_key against the
+                                     fixed five-color palette below. This is
+                                     the ONLY color token in the entire
+                                     system that varies by Organization; its
+                                     hover/pressed derived shades (section 1)
+                                     are computed the same -10/-20 way for
+                                     whichever accent is chosen, so contrast
+                                     and interaction states stay correct
+                                     automatically.
+
+Approved accent_key palette (spec §1b.3) — closed set, five keys, each
+already checked for WCAG AA contrast against surface-white, surface-canvas,
+and charcoal-black:
+
+  orange    #E8702A   (default — Willcoll Agencies)
+  teal      #1B8A7A
+  indigo    #4A55B8
+  crimson   #C13B4B
+  forest    #2F7D4B
+
+Adding a sixth accent is a change to THIS file (a new row here, run through
+the same contrast check), not a form field an Organization can type a hex
+code into. No other token in sections 1 through 6 is ever overridden per
+Organization — this keeps every customer's instance visually consistent,
+accessible, and equally easy to support, while still making the product
+unmistakably theirs at a glance.

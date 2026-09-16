@@ -1,0 +1,21 @@
+# Environment / secrets — the real .env is never committed
+.env
+.env.*
+!.env.example
+
+# Go build artifacts
+vendor/
+*.exe
+*.test
+*.out
+
+# Frontend (Nuxt)
+web/node_modules/
+web/.nuxt/
+web/app/dist/
+web/app/.output/
+
+# Logs and OS cruft
+*.log
+.DS_Store
+Thumbs.db
