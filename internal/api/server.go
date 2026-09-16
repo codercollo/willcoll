@@ -38,6 +38,9 @@ type Server struct {
 	reports       *reports.Service
 	subscriptions *subscriptions.Service
 	logger        *slog.Logger
+
+	authIPLimiter       *rateLimiter
+	paymentsUserLimiter *rateLimiter
 }
 
 // NewServer wires the router, DB pool, and services into a single Server.
@@ -54,6 +57,9 @@ func NewServer(pool *pgxpool.Pool, authService *auth.Service, tenancyService *te
 		reports:       reports.NewService(pool),
 		subscriptions: subscriptionsService,
 		logger:        slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+
+		authIPLimiter:       newRateLimiter(10, 2),
+		paymentsUserLimiter: newRateLimiter(3, 0.5),
 	}
 
 	s.registerRoutes()

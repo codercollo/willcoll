@@ -11,9 +11,9 @@ import (
 func (s *Server) registerRoutes() {
 	s.router.Handle(http.MethodGet, "/healthz", s.healthz)
 
-	s.router.Handle(http.MethodPost, "/v1/auth/register-manager", s.registerManager)
-	s.router.Handle(http.MethodPost, "/v1/auth/login", s.login)
-	s.router.Handle(http.MethodPost, "/v1/auth/refresh", s.refresh)
+	s.router.Handler(http.MethodPost, "/v1/auth/register-manager", s.rateLimitByIP(wrapHandle(s.registerManager)))
+	s.router.Handler(http.MethodPost, "/v1/auth/login", s.rateLimitByIP(wrapHandle(s.login)))
+	s.router.Handler(http.MethodPost, "/v1/auth/refresh", s.rateLimitByIP(wrapHandle(s.refresh)))
 
 	s.router.Handle(http.MethodPut, "/v1/users/activate", s.activateUser)
 	s.router.Handle(http.MethodPut, "/v1/users/password", s.setPassword)
@@ -40,7 +40,7 @@ func (s *Server) registerRoutes() {
 	s.router.Handler(http.MethodGet, "/v1/units/:id/statement", s.authenticate(s.tenantScope(s.requirePermission(permissionViewFinancialReports, "manager", "landlord", "agent")(wrapHandle(s.unitStatement)))))
 	s.router.Handler(http.MethodPost, "/v1/leases/:id/terminate", s.authenticate(s.tenantScope(s.requirePermission(permissionEditLeases, "manager", "agent")(wrapHandle(s.terminateLease)))))
 
-	s.router.Handler(http.MethodPost, "/v1/payments", s.authenticate(s.tenantScope(s.requireRole("manager", "agent")(wrapHandle(s.createPayment)))))
+	s.router.Handler(http.MethodPost, "/v1/payments", s.authenticate(s.rateLimitByUser(s.tenantScope(s.requireRole("manager", "agent")(wrapHandle(s.createPayment))))))
 	s.router.Handler(http.MethodPost, "/v1/payments/:id/reverse", s.authenticate(s.tenantScope(s.requirePermission(permissionVoidPayments, "manager", "agent")(wrapHandle(s.reversePayment)))))
 	s.router.Handler(http.MethodPost, "/v1/remittances", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.createRemittance)))))
 	s.router.Handler(http.MethodPost, "/v1/meters/:id/readings", s.authenticate(s.tenantScope(s.requirePermission(permissionManageMeterReadings, "manager", "agent")(wrapHandle(s.createMeterReading)))))
