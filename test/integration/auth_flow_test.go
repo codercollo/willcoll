@@ -147,7 +147,7 @@ func decodeBody(t *testing.T, resp *http.Response, dst any) {
 
 func TestManagerAgentActivationAndPasswordResetFlow(t *testing.T) {
 	tenancySvc := tenancy.NewService(testPool)
-	authSvc := auth.NewService([]byte("01234567890123456789012345678901"))
+	authSvc := auth.NewService([]byte("01234567890123456789012345678901"), testPool)
 	mailSvc := &recordingMailer{}
 
 	srv := api.NewServer(testPool, authSvc, tenancySvc, mailSvc, branding.NewService(testPool), money.NewService(testPool), nil, nil)

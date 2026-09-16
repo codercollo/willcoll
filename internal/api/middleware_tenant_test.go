@@ -51,7 +51,7 @@ func TestTenantScopeReliesOnRLSToBlockCrossOrganizationReads(t *testing.T) {
 	ctx := context.Background()
 
 	tenancyService := tenancy.NewService(testPool)
-	authService := auth.NewService([]byte("01234567890123456789012345678901"))
+	authService := auth.NewService([]byte("01234567890123456789012345678901"), testPool)
 
 	orgA, userA, err := tenancyService.CreateOrganizationWithFirstManagerTx(ctx, tenancy.CreateOrganizationInput{
 		Name:         "org-a-" + uuid.NewString(),
