@@ -4,6 +4,7 @@ export interface SessionClaims {
   user_id: string
   role: UserRole
   organization_id: string
+  is_super_manager: boolean
 }
 
 // One property's PBAC bitset (spec §2.2) — shape matches POST /v1/agent-grants.
@@ -65,6 +66,7 @@ export function usePermissions() {
     claims,
     role,
     isManager: computed(() => role.value === 'manager'),
+    isSuperManager: computed(() => role.value === 'manager' && claims.value?.is_super_manager === true),
     isAgent: computed(() => role.value === 'agent'),
     isLandlord: computed(() => role.value === 'landlord'),
     hasRole,

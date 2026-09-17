@@ -5,6 +5,7 @@ interface AuthResponse {
   user_id: string
   role: SessionClaims['role']
   organization_id: string
+  is_super_manager: boolean
 }
 
 const STORAGE_KEY = 'auth-token'
@@ -19,7 +20,12 @@ export function useAuth() {
 
   function persist(auth: AuthResponse) {
     token.value = auth.token
-    const claims: SessionClaims = { user_id: auth.user_id, role: auth.role, organization_id: auth.organization_id }
+    const claims: SessionClaims = {
+      user_id: auth.user_id,
+      role: auth.role,
+      organization_id: auth.organization_id,
+      is_super_manager: auth.is_super_manager,
+    }
     setClaims(claims)
     if (import.meta.client) {
       localStorage.setItem(STORAGE_KEY, auth.token)

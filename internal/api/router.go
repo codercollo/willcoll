@@ -18,6 +18,7 @@ func (s *Server) registerRoutes() {
 	s.router.Handle(http.MethodPut, "/v1/users/activate", s.activateUser)
 	s.router.Handle(http.MethodPut, "/v1/users/password", s.setPassword)
 
+	s.router.Handler(http.MethodGet, "/v1/agents", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.listAgents)))))
 	s.router.Handler(http.MethodPost, "/v1/agents", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.inviteAgent)))))
 	s.router.Handler(http.MethodPost, "/v1/agents/:id/reset-password", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.resetAgentPassword)))))
 
@@ -34,12 +35,12 @@ func (s *Server) registerRoutes() {
 	// spec §5.5/§6.1; the literal /v1/payments/initiate path from the route
 	// table isn't achievable under this router.
 	s.router.Handler(http.MethodPost, "/v1/tenant-payments/initiate", s.rateLimitInitiatePayment(wrapHandle(s.initiatePayment)))
-	s.router.Handler(http.MethodPost, "/v1/managers/payout-account", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.submitPayoutAccount)))))
-	s.router.Handler(http.MethodGet, "/v1/managers/payout-account", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.getPayoutAccount)))))
 	s.router.Handler(http.MethodGet, "/v1/organization", s.authenticate(s.tenantScope(wrapHandle(s.getOrganization))))
 	s.router.Handler(http.MethodPatch, "/v1/organization", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.patchOrganization)))))
 	s.router.Handler(http.MethodPatch, "/v1/organization/branding", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.patchOrganizationBranding)))))
 	s.router.Handler(http.MethodPost, "/v1/organization/managers", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.inviteManager)))))
+	s.router.Handler(http.MethodGet, "/v1/organization/sms-templates", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.listSMSTemplates)))))
+	s.router.Handler(http.MethodPatch, "/v1/organization/sms-templates/:key", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.updateSMSTemplate)))))
 
 	s.router.Handler(http.MethodGet, "/v1/properties", s.authenticate(s.tenantScope(wrapHandle(s.listProperties))))
 	s.router.Handler(http.MethodPost, "/v1/properties", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.createProperty)))))
@@ -50,6 +51,7 @@ func (s *Server) registerRoutes() {
 	s.router.Handler(http.MethodGet, "/v1/properties/:id/meters", s.authenticate(s.tenantScope(s.requirePermission(permissionManageMeterReadings, "manager", "agent")(wrapHandle(s.listPropertyMeters)))))
 	s.router.Handler(http.MethodGet, "/v1/properties/:id/landlords", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.listPropertyLandlords)))))
 
+	s.router.Handler(http.MethodGet, "/v1/agent-grants", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.listAgentGrants)))))
 	s.router.Handler(http.MethodPost, "/v1/agent-grants", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.setAgentGrant)))))
 
 	s.router.Handler(http.MethodPost, "/v1/units/:id/leases", s.authenticate(s.tenantScope(s.requirePermission(permissionEditLeases, "manager", "agent")(wrapHandle(s.createLease)))))
@@ -73,6 +75,7 @@ func (s *Server) registerRoutes() {
 	s.router.Handler(http.MethodPost, "/v1/properties/:id/score", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.requestScore)))))
 	s.router.Handler(http.MethodGet, "/v1/properties/:id/score", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.getLatestScore)))))
 	s.router.Handler(http.MethodGet, "/v1/properties/:id/score/history", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.getScoreHistory)))))
+	s.router.Handler(http.MethodGet, "/v1/organization/addons/verified-property-score", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.getScoreAddon)))))
 	s.router.Handler(http.MethodPost, "/v1/organization/addons/verified-property-score/activate", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.activateScoreAddon)))))
 	s.router.Handler(http.MethodPost, "/v1/organization/addons/verified-property-score/cancel", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.cancelScoreAddon)))))
 }

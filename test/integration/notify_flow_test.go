@@ -58,7 +58,7 @@ func TestBrandedSMSTemplatesDifferOnlyByBrand(t *testing.T) {
 	orgB := seedBrandOrg(t, "Beta Brand", "beta")
 
 	fake := &fakeSMSGateway{}
-	svc := notify.NewService(fake, branding.NewService(testPool))
+	svc := notify.NewService(fake, branding.NewService(testPool), testPool)
 	svc.Start()
 	defer svc.Stop()
 

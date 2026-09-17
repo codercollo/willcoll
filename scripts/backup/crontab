@@ -1,0 +1,4 @@
+# Nightly 01:00 UTC (spec §7) — dump first, then prune, both logged to
+# stdout/stderr so `docker compose logs pg_backup` shows them.
+0 1 * * * /scripts/nightly-pg-dump.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+5 1 * * * /scripts/prune-old-backups.sh >> /proc/1/fd/1 2>> /proc/1/fd/2

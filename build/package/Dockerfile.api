@@ -1,0 +1,30 @@
+# Multi-stage/multi-target (spec §7): base -> dev (air hot-reload) ->
+# builder -> prod (static binary, non-root, minimal alpine runtime).
+# Build a target with: docker build -f build/package/Dockerfile.api --target dev .
+
+FROM golang:1.25-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache git
+COPY go.mod go.sum ./
+RUN go mod download
+
+FROM base AS dev
+# Pinned: air@latest can outrun this Dockerfile's Go version (its go.mod
+# requirement bumps ahead of what golang:1.25-alpine ships).
+RUN go install github.com/air-verse/air@v1.61.7
+COPY . .
+EXPOSE 4000
+CMD ["air", "-c", ".air.toml"]
+
+FROM base AS builder
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/willcoll ./cmd/willcoll
+
+FROM alpine:3.20 AS prod
+RUN adduser -D -u 10001 willcoll
+COPY --from=builder /out/willcoll /usr/local/bin/willcoll
+COPY --from=builder /app/configs /app/configs
+WORKDIR /app
+USER willcoll
+EXPOSE 4000
+ENTRYPOINT ["/usr/local/bin/willcoll"]

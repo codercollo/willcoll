@@ -32,6 +32,32 @@ func (s *Service) IsAddonActive(ctx context.Context, organizationID uuid.UUID) (
 	return status == "active", nil
 }
 
+// AddonStatus is the Organization's current verified_property_score add-on
+// state, for the Settings/activation toggle (spec Phase 9.1).
+type AddonStatus struct {
+	Status        string
+	MonthlyFeeKES float64
+}
+
+// GetAddonStatus returns the Organization's verified_property_score row, or
+// a zero-value "inactive" status if it has never been activated.
+func (s *Service) GetAddonStatus(ctx context.Context, organizationID uuid.UUID) (AddonStatus, error) {
+	var out AddonStatus
+	err := s.pool.QueryRow(ctx, `
+		SELECT status::text, monthly_fee_kes
+		FROM organization_addons
+		WHERE organization_id = $1 AND addon_key = 'verified_property_score'`,
+		organizationID,
+	).Scan(&out.Status, &out.MonthlyFeeKES)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AddonStatus{Status: "inactive"}, nil
+	}
+	if err != nil {
+		return AddonStatus{}, fmt.Errorf("get addon status: %w", err)
+	}
+	return out, nil
+}
+
 // ActivateAddon creates or reactivates the Organization's verified_property_score
 // add-on at monthlyFeeKES (spec §12.3 — a flat, negotiated per-Organization fee).
 func (s *Service) ActivateAddon(ctx context.Context, organizationID uuid.UUID, monthlyFeeKES float64) error {

@@ -1,0 +1,12 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/willcoll ./cmd/willcoll"
+bin = "./tmp/willcoll"
+include_ext = ["go"]
+exclude_dir = ["tmp", "web", "ml", ".git"]
+delay = 300
+
+[log]
+time = true
