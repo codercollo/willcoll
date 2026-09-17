@@ -141,6 +141,21 @@ func (s *Server) rateLimitByUser(next http.Handler) http.Handler {
 	})
 }
 
+// rateLimitInitiatePayment throttles the unauthenticated POST
+// /v1/payments/initiate per client IP (spec §5.5, §6.2) — a burst of 5 then
+// one per second, its own dedicated limit separate from rateLimitByIP's
+// login/refresh allowance since this endpoint triggers a real IntaSend
+// checkout call per request.
+func (s *Server) rateLimitInitiatePayment(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.paymentsInitiateLimiter.allow(clientIP(r)) {
+			writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded, please try again shortly")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // clientIP returns the caller's address without its port, falling back to the
 // raw RemoteAddr if it isn't in host:port form.
 func clientIP(r *http.Request) string {

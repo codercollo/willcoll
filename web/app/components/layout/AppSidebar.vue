@@ -1,42 +1,34 @@
 <script setup lang="ts">
 const branding = useBranding()
-const permissions = usePermissions()
+const route = useRoute()
+const base = computed(() => `/${route.params.slug}`)
 
-const items = computed(() => {
-  if (permissions.isLandlord) {
-    return [
-      { label: 'Reports', to: '/reports/portfolio' },
-    ]
-  }
-
-  return [
-    { label: 'Portfolio', to: '/properties' },
-    { label: 'Properties', to: '/properties' },
-    { label: 'Ledger', to: '/ledger' },
-    { label: 'Reports', to: '/reports/portfolio' },
-    { label: 'Agents & Permissions', to: '/agents' },
-    { label: 'Settings', to: '/settings' },
-  ]
-})
+// Every nav item declares the RBAC action that gates it (spec §2.1) — a
+// Landlord never sees "Record Payment"/property-edit style items because
+// their role bundle never includes those actions, not because they're
+// disabled-and-confusing.
+const items = computed(() => [
+  { label: 'Properties', to: `${base.value}/properties`, action: 'view_portfolio' },
+  { label: 'Ledger', to: `${base.value}/ledger`, action: 'view_ledger' },
+  { label: 'Reports', to: `${base.value}/reports/portfolio`, action: 'view_financial_reports' },
+  { label: 'Agents & Permissions', to: `${base.value}/agents`, action: 'invite_agent' },
+  { label: 'Settings', to: `${base.value}/settings`, action: 'configure_sms_templates' },
+])
 </script>
 
 <template>
   <aside class="sidebar">
     <div class="sidebar-brand">
-      <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.brand_name" class="sidebar-logo">
-      <span class="sidebar-name">{{ branding.brand_name }}</span>
+      <img v-if="branding?.logo_url" :src="branding?.logo_url" :alt="branding?.brand_name" class="sidebar-logo">
+      <span class="sidebar-name">{{ branding?.brand_name }}</span>
     </div>
 
     <nav class="sidebar-nav">
-      <NuxtLink
-        v-for="item in items"
-        :key="item.label"
-        :to="item.to"
-        class="sidebar-item"
-        active-class="sidebar-item--active"
-      >
-        {{ item.label }}
-      </NuxtLink>
+      <RoleGate v-for="item in items" :key="item.label" :action="item.action">
+        <NuxtLink :to="item.to" class="sidebar-item" active-class="sidebar-item--active">
+          {{ item.label }}
+        </NuxtLink>
+      </RoleGate>
     </nav>
   </aside>
 </template>
@@ -49,6 +41,7 @@ const items = computed(() => {
   border-right: var(--border-hairline, 1px solid #E2E5E9);
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
 }
 
 .sidebar-brand {
@@ -92,5 +85,20 @@ const items = computed(() => {
   width: 3px;
   border-radius: 3px;
   background: var(--sidebar-item-active-bar, #E8702A);
+}
+
+/* Narrow viewports: sidebar collapses to an icon-free, top-docked strip
+   instead of eating the whole screen (layout stays usable on a phone). */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    height: auto;
+    border-right: 0;
+    border-bottom: var(--border-hairline, 1px solid #E2E5E9);
+  }
+  .sidebar-nav {
+    grid-auto-flow: column;
+    overflow-x: auto;
+  }
 }
 </style>

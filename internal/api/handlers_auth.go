@@ -11,7 +11,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
-type inviteAgentRequest struct {
+type inviteUserRequest struct {
 	FullName string `json:"full_name"`
 	Phone    string `json:"phone"`
 	Email    string `json:"email"`
@@ -28,8 +28,25 @@ type setPasswordRequest struct {
 }
 
 // inviteAgent handles POST /v1/agents.
-func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var input inviteAgentRequest
+func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	s.inviteUser(w, r, ps, "agent")
+}
+
+// inviteManager handles POST /v1/organization/managers — a Manager inviting a
+// SECOND Manager into their own Organization. Same activation-link mechanism
+// as an Agent invite (spec §3.1a, §6.1), just role='manager'; unlike the
+// Organization's first Manager (registerManager), an invited Manager is not
+// trusted until they activate.
+func (s *Server) inviteManager(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	s.inviteUser(w, r, ps, "manager")
+}
+
+// inviteUser creates an invited (activated=false, status='invited') user of
+// role in the caller's own organization_id and emails them an activation
+// link (scope='activation', ch.15.2 pattern) — shared by the Agent and
+// second-Manager invite flows, which differ only in the role granted.
+func (s *Server) inviteUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params, role string) {
+	var input inviteUserRequest
 	if !readJSON(w, r, &input) {
 		return
 	}
@@ -53,19 +70,19 @@ func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, _ httproute
 		return
 	}
 
-	var agentID uuid.UUID
+	var invitedID uuid.UUID
 	err := tx.QueryRow(r.Context(), `
 		INSERT INTO users (id, organization_id, full_name, phone, email, password_hash, role, is_super_manager, activated, status, invited_by)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, NULL, 'agent', false, false, 'invited', $5)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, NULL, $5, false, false, 'invited', $6)
 		RETURNING id`,
-		claims.OrganizationID, input.FullName, input.Phone, input.Email, claims.UserID,
-	).Scan(&agentID)
+		claims.OrganizationID, input.FullName, input.Phone, input.Email, role, claims.UserID,
+	).Scan(&invitedID)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeJSONError(w, http.StatusConflict, "an account with that email or phone already exists")
 			return
 		}
-		s.logger.Error("invite agent", "error", err)
+		s.logger.Error("invite user", "error", err, "role", role)
 		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
 		return
 	}
@@ -80,7 +97,7 @@ func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, _ httproute
 	if _, err := tx.Exec(r.Context(), `
 		INSERT INTO tokens (hash, user_id, organization_id, expiry, scope)
 		VALUES ($1, $2, $3, $4, 'activation')`,
-		activationToken.Hash, agentID, claims.OrganizationID, activationToken.Expiry,
+		activationToken.Hash, invitedID, claims.OrganizationID, activationToken.Expiry,
 	); err != nil {
 		s.logger.Error("store activation token", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
@@ -114,6 +131,7 @@ func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, _ httproute
 	if err := s.mailer.Send(r.Context(), input.Email, "activation-password.tmpl", map[string]string{
 		"Token":         activationToken.Plaintext,
 		"BrandName":     brandVars.BrandName,
+		"LogoURL":       brandVars.LogoURL,
 		"EmailFromName": fromName,
 	}); err != nil {
 		s.logger.Error("send activation email", "error", err)
@@ -121,7 +139,7 @@ func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, _ httproute
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"id": agentID}, "data")
+	writeJSON(w, http.StatusCreated, map[string]any{"id": invitedID}, "data")
 }
 
 // activateUser handles PUT /v1/users/activate.
@@ -281,6 +299,7 @@ func (s *Server) resetAgentPassword(w http.ResponseWriter, r *http.Request, ps h
 	if err := s.mailer.Send(r.Context(), email, "reset-password.tmpl", map[string]string{
 		"Token":         resetToken.Plaintext,
 		"BrandName":     brandVars.BrandName,
+		"LogoURL":       brandVars.LogoURL,
 		"EmailFromName": fromName,
 	}); err != nil {
 		s.logger.Error("send password reset email", "error", err)

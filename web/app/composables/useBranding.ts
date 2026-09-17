@@ -6,14 +6,13 @@ export interface Branding {
   sms_sender_id: string | null
 }
 
-export const MOCK_BRANDING: Branding = {
-  brand_name: 'Willcoll',
-  slug: 'willcoll',
-  logo_url: null,
-  accent_key: 'orange',
-  sms_sender_id: null,
+// Real state only — null means "not loaded yet", never a fake placeholder
+// brand. branding.client.ts is the one place that populates this from the
+// real GET /v1/public/branding response.
+export function useBranding() {
+  return useState<Branding | null>('branding', () => null)
 }
 
-export function useBranding() {
-  return useState<Branding>('branding', () => ({ ...MOCK_BRANDING }))
+export function useBrandingStatus() {
+  return useState<'loading' | 'ready' | 'error'>('branding-status', () => 'loading')
 }

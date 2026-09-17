@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
+	"time"
 
+	"github.com/codercollo/willcoll-sys/pkg/kesmoney"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -37,6 +40,14 @@ type PaymentTxInput struct {
 	Narrative      string
 	IdempotencyKey string
 	RecordedBy     uuid.UUID
+
+	// The following three are set only for a Manager-recorded manual
+	// payment (Manual Payment Recording brief, phase 2); left empty for
+	// every other caller (IntaSend webhook, tenant-import seeding), which
+	// leaves the corresponding ledger_transfers columns NULL.
+	ManualPaymentMethod string // "cash" | "mpesa" | "bank" | "card"
+	ReferenceNumber     string
+	ReceiptPhotoURL     string
 }
 
 // LateFeeTxInput carries a late-fee charge to a tenant.
@@ -81,6 +92,7 @@ type DepositRefundTxInput struct {
 type ReverseTxInput struct {
 	OrganizationID uuid.UUID
 	TransferID     uuid.UUID
+	Reason         string
 	IdempotencyKey string
 	RecordedBy     uuid.UUID
 }
@@ -92,32 +104,37 @@ type entryLeg struct {
 }
 
 type transferSpec struct {
-	organizationID     uuid.UUID
-	transferType       string
-	invoiceID          *uuid.UUID
-	method             string
-	reference          string
-	narrative          string
-	idempotencyKey     string
-	recordedBy         uuid.UUID
-	reversedTransferID *uuid.UUID
-	legs               []entryLeg
-	updateInvoice      bool
-	invoiceAmount      int64
+	organizationID      uuid.UUID
+	transferType        string
+	invoiceID           *uuid.UUID
+	method              string
+	reference           string
+	narrative           string
+	idempotencyKey      string
+	recordedBy          uuid.UUID
+	reversedTransferID  *uuid.UUID
+	legs                []entryLeg
+	updateInvoice       bool
+	invoiceAmount       int64
+	manualPaymentMethod string
+	referenceNumber     string
+	receiptPhotoURL     string
 }
 
 func kesString(cents int64) string {
-	sign := ""
-	if cents < 0 {
-		sign = "-"
-		cents = -cents
-	}
-	return fmt.Sprintf("%s%d.%02d", sign, cents/100, cents%100)
+	return kesmoney.FromCents(cents).String()
 }
 
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // accountFor returns the ledger account id for owner_type/owner_id, creating
@@ -189,8 +206,57 @@ func (s *Service) transferByKey(ctx context.Context, tx pgx.Tx, key string) (Tra
 	return t, true, nil
 }
 
+// maxSerializationRetries bounds the retry-on-conflict loop every Execute*Tx
+// method runs under. REPEATABLE READ's snapshot semantics mean a concurrent
+// SELECT ... FOR NO KEY UPDATE that has to wait on lockAccounts can come back
+// with a 40001 "could not serialize access due to concurrent update" once the
+// blocking transaction commits, rather than just applying to the new value
+// the way READ COMMITTED would (simplebank pattern, spec §4.3). Verified
+// against a real Postgres instance under 20-way concurrent contention on a
+// single account: a small fixed retry budget with no backoff isn't enough —
+// every retry re-collides with every other goroutine at once, so the budget
+// is generous and each retry backs off with jitter to desynchronize them.
+const maxSerializationRetries = 50
+
+// retryBackoff returns a jittered delay for the given (0-indexed) retry
+// attempt, growing roughly linearly and capped, so a batch of colliding
+// transactions spreads out instead of all retrying in lockstep.
+func retryBackoff(attempt int) time.Duration {
+	base := time.Duration(attempt+1) * 4 * time.Millisecond
+	if base > 100*time.Millisecond {
+		base = 100 * time.Millisecond
+	}
+	return base + time.Duration(rand.Intn(8))*time.Millisecond
+}
+
+func isSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
 func (s *Service) executeTransfer(ctx context.Context, spec transferSpec) (Transfer, error) {
-	tx, err := s.pool.Begin(ctx)
+	var (
+		result Transfer
+		err    error
+	)
+	for attempt := 0; attempt < maxSerializationRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return Transfer{}, ctx.Err()
+			case <-time.After(retryBackoff(attempt - 1)):
+			}
+		}
+		result, err = s.executeTransferOnce(ctx, spec)
+		if !isSerializationFailure(err) {
+			return result, err
+		}
+	}
+	return result, err
+}
+
+func (s *Service) executeTransferOnce(ctx context.Context, spec transferSpec) (Transfer, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return Transfer{}, fmt.Errorf("begin transfer: %w", err)
 	}
@@ -219,12 +285,15 @@ func (s *Service) executeTransfer(ctx context.Context, spec transferSpec) (Trans
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO ledger_transfers (
 			id, organization_id, transfer_type, invoice_id, method, reference,
-			narrative, idempotency_key, reversed_transfer_id, recorded_by
+			narrative, idempotency_key, reversed_transfer_id, recorded_by,
+			manual_payment_method, reference_number, receipt_photo_url
 		)
-		VALUES ($1, $2, $3::transfer_kind, $4, $5::payment_method, $6, $7, $8, $9, $10)`,
+		VALUES ($1, $2, $3::transfer_kind, $4, $5::payment_method, $6, $7, $8, $9, $10,
+		        $11::manual_payment_method, $12, $13)`,
 		transferID, spec.organizationID, spec.transferType, spec.invoiceID,
 		spec.method, spec.reference, spec.narrative, spec.idempotencyKey,
 		spec.reversedTransferID, spec.recordedBy,
+		nullIfEmpty(spec.manualPaymentMethod), nullIfEmpty(spec.referenceNumber), nullIfEmpty(spec.receiptPhotoURL),
 	); err != nil {
 		if isUniqueViolation(err) {
 			if existing, found, lookupErr := s.transferByKey(ctx, tx, spec.idempotencyKey); lookupErr == nil && found {
@@ -315,16 +384,19 @@ func (s *Service) ExecuteDepositTx(ctx context.Context, input DepositTxInput) (T
 // and updates the matching rent invoice's read-model fields.
 func (s *Service) ExecuteRentPaymentTx(ctx context.Context, input PaymentTxInput) (Transfer, error) {
 	return s.executeTransfer(ctx, transferSpec{
-		organizationID: input.OrganizationID,
-		transferType:   "rent_payment",
-		invoiceID:      &input.InvoiceID,
-		method:         input.Method,
-		reference:      input.Reference,
-		narrative:      input.Narrative,
-		idempotencyKey: input.IdempotencyKey,
-		recordedBy:     input.RecordedBy,
-		updateInvoice:  true,
-		invoiceAmount:  input.Amount,
+		organizationID:      input.OrganizationID,
+		transferType:        "rent_payment",
+		invoiceID:           &input.InvoiceID,
+		method:              input.Method,
+		reference:           input.Reference,
+		narrative:           input.Narrative,
+		idempotencyKey:      input.IdempotencyKey,
+		recordedBy:          input.RecordedBy,
+		updateInvoice:       true,
+		invoiceAmount:       input.Amount,
+		manualPaymentMethod: input.ManualPaymentMethod,
+		referenceNumber:     input.ReferenceNumber,
+		receiptPhotoURL:     input.ReceiptPhotoURL,
 		legs: []entryLeg{
 			{ownerType: "tenant", ownerID: input.TenantID, amount: -input.Amount},
 			{ownerType: "property_till", ownerID: input.PropertyID, amount: input.Amount},
@@ -335,16 +407,19 @@ func (s *Service) ExecuteRentPaymentTx(ctx context.Context, input PaymentTxInput
 // ExecuteWaterGarbageTx posts a water/garbage payment against the matching invoice.
 func (s *Service) ExecuteWaterGarbageTx(ctx context.Context, input PaymentTxInput) (Transfer, error) {
 	return s.executeTransfer(ctx, transferSpec{
-		organizationID: input.OrganizationID,
-		transferType:   "water_payment",
-		invoiceID:      &input.InvoiceID,
-		method:         input.Method,
-		reference:      input.Reference,
-		narrative:      input.Narrative,
-		idempotencyKey: input.IdempotencyKey,
-		recordedBy:     input.RecordedBy,
-		updateInvoice:  true,
-		invoiceAmount:  input.Amount,
+		organizationID:      input.OrganizationID,
+		transferType:        "water_payment",
+		invoiceID:           &input.InvoiceID,
+		method:              input.Method,
+		reference:           input.Reference,
+		narrative:           input.Narrative,
+		idempotencyKey:      input.IdempotencyKey,
+		recordedBy:          input.RecordedBy,
+		updateInvoice:       true,
+		invoiceAmount:       input.Amount,
+		manualPaymentMethod: input.ManualPaymentMethod,
+		referenceNumber:     input.ReferenceNumber,
+		receiptPhotoURL:     input.ReceiptPhotoURL,
 		legs: []entryLeg{
 			{ownerType: "tenant", ownerID: input.TenantID, amount: -input.Amount},
 			{ownerType: "property_till", ownerID: input.PropertyID, amount: input.Amount},
@@ -406,7 +481,28 @@ func (s *Service) ExecuteDepositRefundTx(ctx context.Context, input DepositRefun
 // ReverseTransferTx posts the mirror-image entries of a prior transfer, tagged
 // as a reversal and linked via reversed_transfer_id.
 func (s *Service) ReverseTransferTx(ctx context.Context, input ReverseTxInput) (Transfer, error) {
-	tx, err := s.pool.Begin(ctx)
+	var (
+		result Transfer
+		err    error
+	)
+	for attempt := 0; attempt < maxSerializationRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return Transfer{}, ctx.Err()
+			case <-time.After(retryBackoff(attempt - 1)):
+			}
+		}
+		result, err = s.reverseTransferOnce(ctx, input)
+		if !isSerializationFailure(err) {
+			return result, err
+		}
+	}
+	return result, err
+}
+
+func (s *Service) reverseTransferOnce(ctx context.Context, input ReverseTxInput) (Transfer, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return Transfer{}, fmt.Errorf("begin reversal: %w", err)
 	}
@@ -483,7 +579,7 @@ func (s *Service) ReverseTransferTx(ctx context.Context, input ReverseTxInput) (
 		)
 		VALUES ($1, $2, 'reversal'::transfer_kind, $3, $4::payment_method, $5, $6, $7, $8, $9)`,
 		reversalID, input.OrganizationID, original.InvoiceID, original.Method,
-		original.Reference, original.Narrative, input.IdempotencyKey, original.ID, input.RecordedBy,
+		original.Reference, input.Reason, input.IdempotencyKey, original.ID, input.RecordedBy,
 	); err != nil {
 		if isUniqueViolation(err) {
 			if existing, found, lookupErr := s.transferByKey(ctx, tx, input.IdempotencyKey); lookupErr == nil && found {

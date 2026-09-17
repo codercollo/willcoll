@@ -91,6 +91,8 @@ func TestLandlordPortfolioDoesNotLeakOtherLandlordProperty(t *testing.T) {
 		money.NewService(testPool),
 		nil,
 		nil,
+		nil,
+		nil,
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

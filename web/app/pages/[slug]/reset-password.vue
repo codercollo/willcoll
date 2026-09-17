@@ -6,7 +6,7 @@ const auth = useAuth()
 const route = useRoute()
 
 const token = typeof route.query.token === 'string' ? route.query.token : ''
-const password = ref('')
+const newPassword = ref('')
 const error = ref('')
 const loading = ref(false)
 
@@ -14,10 +14,10 @@ async function submit() {
   error.value = ''
   loading.value = true
   try {
-    await auth.activate(token, password.value)
-    await navigateTo('/login')
-  } catch {
-    error.value = 'This activation link is invalid or expired. Ask your Manager to resend it.'
+    await auth.resetPassword(token, newPassword.value)
+    await navigateTo(`/${route.params.slug}/login`)
+  } catch (e: any) {
+    error.value = e?.data?.error ?? 'Unable to update the password. Try again shortly.'
   } finally {
     loading.value = false
   }
@@ -27,20 +27,21 @@ async function submit() {
 <template>
   <main class="auth-shell">
     <section class="auth-card">
-      <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.brand_name" class="auth-logo">
+      <img v-if="branding?.logo_url" :src="branding?.logo_url" :alt="branding?.brand_name" class="auth-logo">
       <div v-else class="auth-logo-placeholder" aria-hidden="true" />
 
-      <h1 class="auth-title">{{ branding.brand_name }}</h1>
-      <p class="auth-subtitle">Set your password to activate your account.</p>
+      <h1 class="auth-title">{{ branding?.brand_name }}</h1>
+      <p class="auth-subtitle">Choose a new password.</p>
 
-      <form class="auth-form" @submit.prevent="submit">
+      <p v-if="!token" class="form-error">This link is missing its reset token. Ask your Manager to send a new one.</p>
+      <form v-else class="auth-form" @submit.prevent="submit">
         <label class="field">
-          <span>Password</span>
-          <input v-model="password" type="password" autocomplete="new-password" required>
+          <span>New password</span>
+          <input v-model="newPassword" type="password" autocomplete="new-password" required>
         </label>
         <p v-if="error" class="form-error">{{ error }}</p>
-        <button type="submit" class="primary-button" :disabled="loading || !token">
-          {{ loading ? 'Activating...' : 'Activate account' }}
+        <button type="submit" class="primary-button" :disabled="loading">
+          {{ loading ? 'Updating...' : 'Update password' }}
         </button>
       </form>
     </section>

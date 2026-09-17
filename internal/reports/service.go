@@ -190,6 +190,81 @@ func (s *Service) ListPortfolio(ctx context.Context, tx pgx.Tx, filters Portfoli
 	return ListResult[PortfolioRow]{Data: out, Metadata: calculateMetadata(int(total), filters.Page)}, nil
 }
 
+// CollectionsBreakdownFilters scopes ListCollectionsBreakdown.
+type CollectionsBreakdownFilters struct {
+	PropertyID *uuid.UUID
+	Month      time.Time
+	Role       string
+	UserID     uuid.UUID
+}
+
+// CollectionsBreakdownRow is one (invoice_type, payment_method) bucket —
+// purpose and method are both first-class, filterable dimensions (Manual
+// Payment Recording brief, phase 6.1), sourced from the ledger itself
+// (ledger_entries/ledger_transfers), not the invoices read-model.
+type CollectionsBreakdownRow struct {
+	InvoiceType   string          `json:"invoice_type"`
+	PaymentMethod string          `json:"payment_method"`
+	Collected     decimal.Decimal `json:"collected"`
+}
+
+// ListCollectionsBreakdown sums tenant-side ledger debits for the given
+// month, grouped by the invoice's invoice_type (purpose) and the posting
+// transfer's method (manual_payment_method when set, else the legacy method
+// column — covering manually-recorded and gateway/other payments alike).
+func (s *Service) ListCollectionsBreakdown(ctx context.Context, tx pgx.Tx, filters CollectionsBreakdownFilters) ([]CollectionsBreakdownRow, error) {
+	propertyID := uuid.UUID{}
+	if filters.PropertyID != nil {
+		propertyID = *filters.PropertyID
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT i.invoice_type::text,
+		       COALESCE(lt.manual_payment_method::text, lt.method::text) AS payment_method,
+		       SUM(-le.amount)::numeric AS collected
+		FROM ledger_entries le
+		JOIN ledger_transfers lt ON lt.id = le.transfer_id
+		JOIN ledger_accounts a ON a.id = le.account_id AND a.owner_type = 'tenant'
+		JOIN invoices i ON i.id = lt.invoice_id
+		JOIN leases l ON l.id = i.lease_id
+		JOIN units u ON u.id = l.unit_id
+		WHERE lt.transfer_type IN ('rent_payment', 'water_payment')
+		  AND le.amount < 0
+		  AND i.period_month = $1::date
+		  AND (NOT $3::boolean OR u.property_id = $2::uuid)
+		  AND (
+		      $4::text <> 'landlord'
+		      OR EXISTS (
+		          SELECT 1 FROM property_ownership po
+		          WHERE po.property_id = u.property_id AND po.landlord_id = $5::uuid
+		      )
+		  )
+		GROUP BY i.invoice_type, payment_method
+		ORDER BY i.invoice_type, payment_method`,
+		filters.Month, propertyID, filters.PropertyID != nil, filters.Role, filters.UserID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list collections breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]CollectionsBreakdownRow, 0)
+	for rows.Next() {
+		var row CollectionsBreakdownRow
+		var collected pgtype.Numeric
+		if err := rows.Scan(&row.InvoiceType, &row.PaymentMethod, &collected); err != nil {
+			return nil, fmt.Errorf("scan collections breakdown row: %w", err)
+		}
+		row.Collected = numericToDecimal(collected)
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collections breakdown: %w", err)
+	}
+
+	return out, nil
+}
+
 func (s *Service) ListUnitStatement(ctx context.Context, tx pgx.Tx, filters UnitStatementFilters) (ListResult[UnitStatementRow], error) {
 	params := db.ListUnitStatementParams{
 		UnitID:  uuidToPgtype(&filters.UnitID),
