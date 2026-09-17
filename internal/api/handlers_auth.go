@@ -32,6 +32,57 @@ func (s *Server) inviteAgent(w http.ResponseWriter, r *http.Request, ps httprout
 	s.inviteUser(w, r, ps, "agent")
 }
 
+type agentResponse struct {
+	ID       uuid.UUID `json:"id"`
+	FullName string    `json:"full_name"`
+	Phone    string    `json:"phone"`
+	Email    string    `json:"email"`
+	Status   string    `json:"status"`
+}
+
+// listAgents handles GET /v1/agents — every role='agent' user in the
+// caller's organization, for the Agents index and PBAC grant matrix (spec §6.1).
+func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	claims, _ := claimsFromContext(r.Context())
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	rows, err := tx.Query(r.Context(), `
+		SELECT id, full_name, phone, email, status
+		FROM users
+		WHERE organization_id = $1 AND role = 'agent'
+		ORDER BY full_name`,
+		claims.OrganizationID,
+	)
+	if err != nil {
+		s.logger.Error("list agents", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+	defer rows.Close()
+
+	agents := make([]agentResponse, 0)
+	for rows.Next() {
+		var a agentResponse
+		if err := rows.Scan(&a.ID, &a.FullName, &a.Phone, &a.Email, &a.Status); err != nil {
+			s.logger.Error("scan agent", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+			return
+		}
+		agents = append(agents, a)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Error("iterate agents", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agents, "data")
+}
+
 // inviteManager handles POST /v1/organization/managers — a Manager inviting a
 // SECOND Manager into their own Organization. Same activation-link mechanism
 // as an Agent invite (spec §3.1a, §6.1), just role='manager'; unlike the

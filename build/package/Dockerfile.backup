@@ -1,0 +1,11 @@
+# Postgres backup sidecar — cron + pg_dump, independent of api/web (spec §7).
+FROM postgres:14.5-alpine
+
+RUN apk add --no-cache dcron gnupg curl
+
+COPY scripts/backup/nightly-pg-dump.sh /scripts/nightly-pg-dump.sh
+COPY scripts/backup/prune-old-backups.sh /scripts/prune-old-backups.sh
+COPY scripts/backup/crontab /etc/crontabs/root
+RUN chmod +x /scripts/*.sh
+
+CMD ["crond", "-f", "-l", "2"]

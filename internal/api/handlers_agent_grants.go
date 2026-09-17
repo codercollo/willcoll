@@ -35,6 +35,63 @@ type agentGrantResponse struct {
 	GrantedAt               time.Time `json:"granted_at"`
 }
 
+// listAgentGrants handles GET /v1/agent-grants?agent_id=... — the current
+// (non-revoked) grant per property for one Agent, so the PBAC matrix editor
+// can render existing checkbox state instead of always starting blank.
+func (s *Server) listAgentGrants(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	agentID, err := uuid.Parse(r.URL.Query().Get("agent_id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+
+	claims, _ := claimsFromContext(r.Context())
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	rows, err := tx.Query(r.Context(), `
+		SELECT g.id, g.agent_id, g.property_id, g.can_record_payments, g.can_edit_leases,
+		       g.can_edit_unit_pricing, g.can_void_payments, g.can_view_financial_reports,
+		       g.can_manage_meter_readings, g.granted_by, g.granted_at
+		FROM agent_property_grants g
+		JOIN users u ON u.id = g.agent_id
+		WHERE g.agent_id = $1 AND g.revoked_at IS NULL AND u.organization_id = $2
+		ORDER BY g.granted_at`,
+		agentID, claims.OrganizationID,
+	)
+	if err != nil {
+		s.logger.Error("list agent grants", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+	defer rows.Close()
+
+	grants := make([]agentGrantResponse, 0)
+	for rows.Next() {
+		var g agentGrantResponse
+		if err := rows.Scan(
+			&g.ID, &g.AgentID, &g.PropertyID, &g.CanRecordPayments, &g.CanEditLeases,
+			&g.CanEditUnitPricing, &g.CanVoidPayments, &g.CanViewFinancialReports,
+			&g.CanManageMeterReadings, &g.GrantedBy, &g.GrantedAt,
+		); err != nil {
+			s.logger.Error("scan agent grant", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+			return
+		}
+		grants = append(grants, g)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Error("iterate agent grants", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, grants, "data")
+}
+
 // setAgentGrant handles POST /v1/agent-grants.
 func (s *Server) setAgentGrant(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	var input setAgentGrantRequest

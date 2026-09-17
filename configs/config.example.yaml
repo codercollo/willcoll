@@ -7,8 +7,10 @@
 # variables win over every yaml file.
 
 database:
-  # Single PostgreSQL DSN. Override via DATABASE_DSN.
-  dsn: "postgres://willcoll:willcoll@localhost:5432/willcoll?sslmode=disable"
+  # Single PostgreSQL DSN. Override via DATABASE_DSN. Port 5433, not 5432 —
+  # build/docker-compose.yml publishes dev Postgres there to avoid colliding
+  # with a native Postgres install that may already own 5432 (README.md).
+  dsn: "postgres://willcoll:willcoll@localhost:5433/willcoll?sslmode=disable"
   # pgxpool tuning (LGF §5.3); durations are Go duration strings ("30m", "1h").
   max_conns: 10              # pool size
   max_conn_idle_time: "30m"  # "max idle": connection idle timeout

@@ -1,0 +1,118 @@
+# Base dev compose (spec §7, project-structure.txt). Exposed ports,
+# bind-mounted source, hot reload — build/docker-compose.prod.yml overlays
+# this to strip all three for the Contabo VPS. Postgres uses a named
+# pg_data_dev volume, physically separate from prod's pg_data_prod (2.2) —
+# seed data structurally cannot reach production.
+#
+# Two supported ways to run the API/web during dev — pick one, not both:
+#   1. `make up` (this file's postgres only) + `go run ./cmd/willcoll` /
+#      `pnpm dev` on the host (lighter, what Phase 1 verified).
+#   2. `docker compose -f build/docker-compose.yml up` for the full stack
+#      (api/web/ml-sidecar containerized with hot reload) — don't also run
+#      the host processes at the same time, both would fight over the same
+#      ports.
+name: willcoll
+
+services:
+  postgres:
+    image: postgres:14.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-willcoll}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-willcoll}
+      POSTGRES_DB: ${POSTGRES_DB:-willcoll}
+    ports:
+      # Host port defaults to 5433, not Postgres' usual 5432 — a native
+      # Postgres install on the host may already own 5432 (README.md).
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pg_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-willcoll} -d ${POSTGRES_DB:-willcoll}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: `docker compose -f build/docker-compose.yml run --rm migrate`.
+  # Not part of `up` — it exits 0 once migrations are applied.
+  migrate:
+    image: willcoll-api:builder
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile.api
+      target: builder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER:-willcoll}:${POSTGRES_PASSWORD:-willcoll}@postgres:5432/${POSTGRES_DB:-willcoll}?sslmode=disable
+    entrypoint: ["go", "run", "./cmd/migrate"]
+    profiles: ["tools"]
+
+  # One-shot: `docker compose -f build/docker-compose.yml run --rm seed`.
+  # Same image/DSN as migrate — `make seed` always seeds the container's
+  # postgres, never a possibly-wrong host DB.
+  seed:
+    image: willcoll-api:builder
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile.api
+      target: builder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER:-willcoll}:${POSTGRES_PASSWORD:-willcoll}@postgres:5432/${POSTGRES_DB:-willcoll}?sslmode=disable
+    entrypoint: ["go", "run", "./cmd/willcoll-seed"]
+    profiles: ["tools"]
+
+  api:
+    image: willcoll-api:dev
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile.api
+      target: dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER:-willcoll}:${POSTGRES_PASSWORD:-willcoll}@postgres:5432/${POSTGRES_DB:-willcoll}?sslmode=disable
+      SIDECAR_BASE_URL: http://ml-sidecar:8000
+    env_file: ../.env
+    ports:
+      - "4000:4000"
+    volumes:
+      - ..:/app
+
+  web:
+    image: willcoll-web:dev
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile.web
+      target: dev
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - ../web:/repo/web
+
+  # Server-to-server only (spec §13.3) — no `ports:` here even in dev; reach
+  # it from the api container at http://ml-sidecar:8000, never from the host.
+  ml-sidecar:
+    image: willcoll-ml-sidecar:dev
+    build:
+      context: ../ml
+      dockerfile: Dockerfile
+      target: dev
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER:-willcoll}:${POSTGRES_PASSWORD:-willcoll}@postgres:5432/${POSTGRES_DB:-willcoll}?sslmode=disable
+      SIDECAR_SHARED_SECRET: ${SIDECAR_SHARED_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../ml:/app
+
+volumes:
+  pg_data_dev:

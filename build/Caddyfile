@@ -1,20 +1,20 @@
 {$WILLCOLL_DOMAIN:localhost} {
-	# API traffic goes to the Go binary; everything else is the Nuxt static
-	# export. nuxt.config.ts (ssr:false, nitro preset "static") already
-	# generates 200.html as its SPA-fallback shell specifically so a
-	# multi-tenant path like /{slug}/login resolves client-side even though
-	# no build-time crawler can ever enumerate every Organization's slug —
-	# try_files here is what actually serves that fallback instead of 404ing
-	# on direct navigation/refresh under an unknown route.
+	# API traffic goes to the api container; everything else goes to the web
+	# container, which is nginx serving the Nuxt static export with its own
+	# SPA-fallback try_files (build/package/nginx.conf — nuxt.config.ts's
+	# static preset emits 200.html specifically so a multi-tenant path like
+	# /{slug}/login resolves client-side even though no build-time crawler
+	# can ever enumerate every Organization's slug). Service names, not
+	# localhost — Caddy, api, and web are separate containers in prod (2.2).
 	handle /v1/* {
-		reverse_proxy localhost:4000
+		reverse_proxy api:4000
 	}
 	handle /healthz {
-		reverse_proxy localhost:4000
+		reverse_proxy api:4000
+	}
+	handle {
+		reverse_proxy web:80
 	}
 
-	root * /srv/web
 	encode gzip
-	try_files {path} /200.html
-	file_server
 }

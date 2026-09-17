@@ -32,6 +32,7 @@ type authResponse struct {
 	UserID         uuid.UUID `json:"user_id"`
 	Role           string    `json:"role"`
 	OrganizationID uuid.UUID `json:"organization_id"`
+	IsSuperManager bool      `json:"is_super_manager"`
 }
 
 // registerManager handles POST /v1/auth/register-manager.
@@ -87,7 +88,7 @@ func (s *Server) registerManager(w http.ResponseWriter, r *http.Request, _ httpr
 		s.logger.Error("send manager welcome email", "error", err)
 	}
 
-	writeJSON(w, http.StatusCreated, authResponse{Token: token, UserID: user.ID, Role: user.Role, OrganizationID: org.ID}, "data")
+	writeJSON(w, http.StatusCreated, authResponse{Token: token, UserID: user.ID, Role: user.Role, OrganizationID: org.ID, IsSuperManager: user.IsSuperManager}, "data")
 }
 
 // login handles POST /v1/auth/login.
@@ -101,14 +102,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, _ httprouter.Para
 		userID         uuid.UUID
 		organizationID uuid.UUID
 		role           string
+		isSuperManager bool
 		passwordHash   *string
 	)
 	err := s.pool.QueryRow(r.Context(), `
-		SELECT id, organization_id, role::text, password_hash
+		SELECT id, organization_id, role::text, is_super_manager, password_hash
 		FROM users
 		WHERE email = $1`,
 		input.Email,
-	).Scan(&userID, &organizationID, &role, &passwordHash)
+	).Scan(&userID, &organizationID, &role, &isSuperManager, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid email or password")
 		return
@@ -131,7 +133,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, _ httprouter.Para
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{Token: token, UserID: userID, Role: role, OrganizationID: organizationID}, "data")
+	writeJSON(w, http.StatusOK, authResponse{Token: token, UserID: userID, Role: role, OrganizationID: organizationID, IsSuperManager: isSuperManager}, "data")
 }
 
 // refresh handles POST /v1/auth/refresh.
@@ -155,5 +157,17 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request, _ httprouter.Pa
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{Token: newToken, UserID: claims.UserID, Role: claims.Role, OrganizationID: claims.OrganizationID}, "data")
+	var isSuperManager bool
+	if err := s.pool.QueryRow(r.Context(), `
+		SELECT is_super_manager
+		FROM users
+		WHERE id = $1`,
+		claims.UserID,
+	).Scan(&isSuperManager); err != nil {
+		s.logger.Error("lookup super manager on refresh", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, authResponse{Token: newToken, UserID: claims.UserID, Role: claims.Role, OrganizationID: claims.OrganizationID, IsSuperManager: isSuperManager}, "data")
 }
