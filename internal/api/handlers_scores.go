@@ -217,6 +217,23 @@ func (s *Server) getScoreHistory(w http.ResponseWriter, r *http.Request, ps http
 	writeJSON(w, http.StatusOK, out, "data")
 }
 
+// getScoreAddon handles GET
+// /v1/organization/addons/verified-property-score.
+func (s *Server) getScoreAddon(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	claims, _ := claimsFromContext(r.Context())
+	status, err := s.scoring.GetAddonStatus(r.Context(), claims.OrganizationID)
+	if err != nil {
+		s.logger.Error("get score addon", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":          status.Status,
+		"monthly_fee_kes": status.MonthlyFeeKES,
+	}, "data")
+}
+
 type activateScoreAddonRequest struct {
 	MonthlyFeeKES float64 `json:"monthly_fee_kes"`
 }

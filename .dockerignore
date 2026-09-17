@@ -5,6 +5,11 @@ web/node_modules
 web/.nuxt
 web/app/dist
 web/app/.output
+web/.output
 docs
 .git
 *.log
+ml/.venv
+ml/__pycache__
+ml/.pytest_cache
+ml/*.egg-info

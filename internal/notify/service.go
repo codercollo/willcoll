@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codercollo/willcoll-sys/internal/branding"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SMSGateway is the consumer-defined seam for sending an SMS. pkg/smsclient
@@ -16,15 +17,20 @@ type SMSGateway interface {
 type Service struct {
 	gateway  SMSGateway
 	branding *branding.Service
+	pool     *pgxpool.Pool
 	dispatch *Dispatcher
 }
 
 // NewService constructs a notify Service. A branding service is required so
 // templates can resolve {{.BrandName}} without hardcoding a platform brand.
-func NewService(smsGateway SMSGateway, brandingService *branding.Service) *Service {
+// pool backs the per-Organization template overrides (Phase 8.2) — SendTemplate
+// falls back to the shipped-with-the-binary template when an Organization has
+// never saved one.
+func NewService(smsGateway SMSGateway, brandingService *branding.Service, pool *pgxpool.Pool) *Service {
 	return &Service{
 		gateway:  smsGateway,
 		branding: brandingService,
+		pool:     pool,
 		dispatch: NewDispatcher(smsGateway),
 	}
 }

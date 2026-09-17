@@ -80,7 +80,7 @@ func run() error {
 	defer mailerDispatcher.Stop()
 
 	smsGateway := smsclient.NewClient(cfg.SMS.GatewayURL, cfg.SMS.APIKey, cfg.SMS.APISecret, cfg.SMS.SenderID)
-	notifyService := notify.NewService(smsGateway, brandingService)
+	notifyService := notify.NewService(smsGateway, brandingService, pool)
 	notifyService.Start()
 	defer notifyService.Stop()
 

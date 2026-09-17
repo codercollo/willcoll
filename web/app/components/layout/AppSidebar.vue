@@ -13,6 +13,7 @@ const items = computed(() => [
   { label: 'Reports', to: `${base.value}/reports/portfolio`, action: 'view_financial_reports' },
   { label: 'Agents & Permissions', to: `${base.value}/agents`, action: 'invite_agent' },
   { label: 'Settings', to: `${base.value}/settings`, action: 'configure_sms_templates' },
+  { label: 'Audit Log', to: `${base.value}/audit-log`, action: 'system_administration' },
 ])
 </script>
 

@@ -96,6 +96,8 @@ paths:
       responses: { "200": { $ref: "#/components/responses/Envelope" } }
 
   /v1/agents:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
     post:
       requestBody:
         content:
@@ -135,13 +137,6 @@ paths:
                 redirect_url: { type: string }
       responses: { "201": { $ref: "#/components/responses/Envelope" } }
 
-  /v1/managers/payout-account:
-    post:
-      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
-      responses: { "201": { $ref: "#/components/responses/Envelope" } }
-    get:
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
-
   /v1/organization:
     get:
       responses: { "200": { $ref: "#/components/responses/Envelope" } }
@@ -162,12 +157,33 @@ paths:
               required: [full_name, phone, email]
               properties: { full_name: { type: string }, phone: { type: string }, email: { type: string } }
       responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/sms-templates:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/sms-templates/{key}:
+    patch:
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties: { body: { type: string } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
   /v1/organization/subscription:
     get:
       responses: { "200": { $ref: "#/components/responses/Envelope" } }
   /v1/organization/subscription/charge:
     post:
       responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/addons/verified-property-score:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
   /v1/organization/addons/verified-property-score/activate:
     post:
       requestBody:
@@ -234,6 +250,13 @@ paths:
       responses: { "200": { $ref: "#/components/responses/Envelope" } }
 
   /v1/agent-grants:
+    get:
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
     post:
       requestBody:
         content:

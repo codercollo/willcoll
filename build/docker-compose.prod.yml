@@ -1,0 +1,99 @@
+# Layered on top of docker-compose.yml for the Contabo VPS (spec §7):
+#   docker compose -f build/docker-compose.yml -f build/docker-compose.prod.yml up -d
+# Prod build targets, no source bind mounts, no exposed DB/API/sidecar ports
+# (Caddy is the only public ingress), restart: always, separate pg_data_prod
+# volume (2.2) — a distinct named volume, so `make reset-dev`'s `down -v`
+# against the dev file can never touch this one; driver_opts below pins it to
+# its own host path so it's also physically a different disk/mount than dev's
+# volume, not just a different name on the same one.
+services:
+  postgres:
+    restart: always
+    ports: !override []
+    volumes: !override
+      - pg_data_prod:/var/lib/postgresql/data
+
+  # scripts/deploy.sh builds these ON the VPS itself (git pull -> build ->
+  # migrate -> restart, Phase 7.2) — no registry, no push/pull step.
+  migrate:
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+
+  api:
+    image: willcoll-api:prod
+    build:
+      target: prod
+    restart: always
+    ports: !override []
+    volumes: !override []
+    environment:
+      DATABASE_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      SIDECAR_BASE_URL: http://ml-sidecar:8000
+
+  web:
+    image: willcoll-web:prod
+    build:
+      target: prod
+    restart: always
+    ports: !override []
+    volumes: !override []
+
+  # Server-to-server only (spec §13.3, confirmed 2.3): still no `ports:` at
+  # all — same as dev, just the prod image target and no bind mount.
+  ml-sidecar:
+    image: willcoll-ml-sidecar:prod
+    build:
+      target: prod
+    restart: always
+    volumes: !override []
+
+  # Nightly pg_dump -> gzip -> /backups, pruned to BACKUP_RETENTION_DAYS
+  # (spec Phase 5) — cron-driven inside the container, not a host cron job,
+  # so it lives and dies with the rest of the prod stack.
+  pg_backup:
+    image: willcoll-backup:prod
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile.backup
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      BACKUP_GPG_PASSPHRASE: ${BACKUP_GPG_PASSPHRASE}
+      BACKUP_OFFSITE_URL: ${BACKUP_OFFSITE_URL}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - pg_backups:/backups
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      WILLCOLL_DOMAIN: ${WILLCOLL_DOMAIN}
+
+volumes:
+  pg_data_prod:
+    driver_opts:
+      type: none
+      o: bind
+      # Point this at a dedicated disk/mount on the Contabo VPS (spec §7) —
+      # NOT the same path dev's pg_data_dev volume would ever resolve to.
+      device: ${PG_DATA_PROD_PATH:-/var/lib/willcoll/pg_data_prod}
+  caddy_data:
+  caddy_config:
+  pg_backups:
