@@ -76,7 +76,7 @@ func TestLandlordPortfolioDoesNotLeakOtherLandlordProperty(t *testing.T) {
 		t.Fatalf("insert ownership: %v", err)
 	}
 
-	authSvc := auth.NewService([]byte("01234567890123456789012345678901"))
+	authSvc := auth.NewService([]byte("01234567890123456789012345678901"), testPool)
 	tokenA, err := authSvc.IssueToken(landlordA, "landlord", orgID)
 	if err != nil {
 		t.Fatalf("issue landlord A token: %v", err)
@@ -89,6 +89,8 @@ func TestLandlordPortfolioDoesNotLeakOtherLandlordProperty(t *testing.T) {
 		&recordingMailer{},
 		branding.NewService(testPool),
 		money.NewService(testPool),
+		nil,
+		nil,
 		nil,
 		nil,
 	)

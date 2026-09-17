@@ -56,9 +56,10 @@ func TestCreateOrganizationWithFirstManagerTxRollsBackOrganizationOnUserInsertFa
 	defer tx.Rollback(ctx)
 
 	seedOrgID := uuid.New()
+	seedSlug := "seed-" + uuid.NewString()
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO organizations (id, name, brand_name) VALUES ($1, $2, $2)`,
-		seedOrgID, "seed-"+uuid.NewString(),
+		`INSERT INTO organizations (id, name, slug, brand_name) VALUES ($1, $2, $3, $2)`,
+		seedOrgID, seedSlug, seedSlug,
 	); err != nil {
 		t.Fatalf("insert seed org: %v", err)
 	}

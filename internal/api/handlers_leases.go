@@ -9,6 +9,7 @@ import (
 
 	"github.com/codercollo/willcoll-sys/internal/domain"
 	"github.com/codercollo/willcoll-sys/internal/money"
+	"github.com/codercollo/willcoll-sys/pkg/idempotency"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/julienschmidt/httprouter"
@@ -27,6 +28,15 @@ type createLeaseRequest struct {
 
 type terminateLeaseRequest struct {
 	Reason string `json:"reason"`
+
+	// RefundAmount is the Manager's deposit refund/forfeit decision (spec
+	// §3.2): KES cents refunded to the tenant now; deposit_paid minus this
+	// stays in deposit_holding, forfeited. Zero/omitted = full forfeiture,
+	// no refund transfer posted.
+	RefundAmount    int64  `json:"refund_amount"`
+	RefundMethod    string `json:"refund_method"`
+	RefundReference string `json:"refund_reference"`
+	IdempotencyKey  string `json:"idempotency_key"`
 }
 
 type leaseResponse struct {
@@ -235,21 +245,29 @@ func (s *Server) terminateLease(w http.ResponseWriter, r *http.Request, ps httpr
 	if !readJSON(w, r, &input) {
 		return
 	}
+	if input.RefundAmount > 0 {
+		if err := idempotency.Validate(input.IdempotencyKey); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
+	claims, _ := claimsFromContext(r.Context())
 	tx, ok := requestTxFromContext(r.Context())
 	if !ok {
 		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
 		return
 	}
 
-	var unitID uuid.UUID
+	var unitID, tenantID, propertyID uuid.UUID
 	var status string
 	err = tx.QueryRow(r.Context(), `
-		SELECT unit_id, status::text
-		FROM leases
-		WHERE id = $1`,
+		SELECT l.unit_id, l.tenant_id, u.property_id, l.status::text
+		FROM leases l
+		JOIN units u ON u.id = l.unit_id
+		WHERE l.id = $1`,
 		leaseID,
-	).Scan(&unitID, &status)
+	).Scan(&unitID, &tenantID, &propertyID, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSONError(w, http.StatusNotFound, "lease not found")
 		return
@@ -296,6 +314,25 @@ func (s *Server) terminateLease(w http.ResponseWriter, r *http.Request, ps httpr
 		s.logger.Error("vacate unit", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
 		return
+	}
+
+	if input.RefundAmount > 0 {
+		if _, err := s.money.ExecuteDepositRefundTx(r.Context(), money.DepositRefundTxInput{
+			OrganizationID: claims.OrganizationID,
+			TenantID:       tenantID,
+			UnitID:         unitID,
+			PropertyID:     propertyID,
+			Amount:         input.RefundAmount,
+			Method:         input.RefundMethod,
+			Reference:      input.RefundReference,
+			Narrative:      "Deposit refund on move-out",
+			IdempotencyKey: input.IdempotencyKey,
+			RecordedBy:     claims.UserID,
+		}); err != nil {
+			s.logger.Error("refund deposit", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, l, "data")

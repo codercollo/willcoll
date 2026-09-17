@@ -271,6 +271,50 @@ func (ns NullLeaseStatus) Value() (driver.Value, error) {
 	return string(ns.LeaseStatus), nil
 }
 
+type ManualPaymentMethod string
+
+const (
+	ManualPaymentMethodCash  ManualPaymentMethod = "cash"
+	ManualPaymentMethodMpesa ManualPaymentMethod = "mpesa"
+	ManualPaymentMethodBank  ManualPaymentMethod = "bank"
+	ManualPaymentMethodCard  ManualPaymentMethod = "card"
+)
+
+func (e *ManualPaymentMethod) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ManualPaymentMethod(s)
+	case string:
+		*e = ManualPaymentMethod(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ManualPaymentMethod: %T", src)
+	}
+	return nil
+}
+
+type NullManualPaymentMethod struct {
+	ManualPaymentMethod ManualPaymentMethod
+	Valid               bool // Valid is true if ManualPaymentMethod is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullManualPaymentMethod) Scan(value interface{}) error {
+	if value == nil {
+		ns.ManualPaymentMethod, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ManualPaymentMethod.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullManualPaymentMethod) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ManualPaymentMethod), nil
+}
+
 type MeterKind string
 
 const (
@@ -792,17 +836,20 @@ type LedgerEntry struct {
 }
 
 type LedgerTransfer struct {
-	ID                 pgtype.UUID
-	OrganizationID     pgtype.UUID
-	TransferType       TransferKind
-	InvoiceID          pgtype.UUID
-	Method             PaymentMethod
-	Reference          pgtype.Text
-	Narrative          pgtype.Text
-	IdempotencyKey     string
-	ReversedTransferID pgtype.UUID
-	RecordedBy         pgtype.UUID
-	CreatedAt          pgtype.Timestamptz
+	ID                  pgtype.UUID
+	OrganizationID      pgtype.UUID
+	TransferType        TransferKind
+	InvoiceID           pgtype.UUID
+	Method              PaymentMethod
+	Reference           pgtype.Text
+	Narrative           pgtype.Text
+	IdempotencyKey      string
+	ReversedTransferID  pgtype.UUID
+	RecordedBy          pgtype.UUID
+	CreatedAt           pgtype.Timestamptz
+	ManualPaymentMethod NullManualPaymentMethod
+	ReferenceNumber     pgtype.Text
+	ReceiptPhotoUrl     pgtype.Text
 }
 
 type ManagerPayoutAccount struct {

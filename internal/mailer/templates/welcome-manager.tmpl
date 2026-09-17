@@ -1,0 +1,5 @@
+{{define "subject"}}Welcome to {{.BrandName}}{{end}}
+
+{{define "plainBody"}}Your {{.BrandName}} account is ready. Log in with the email and password you just set.{{end}}
+
+{{define "htmlBody"}}{{if .LogoURL}}<p><img src="{{.LogoURL}}" alt="{{.BrandName}}" height="40"></p>{{end}}<p>Your {{.BrandName}} account is ready.</p><p>Log in with the email and password you just set.</p>{{end}}

@@ -106,6 +106,48 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, _ httpr
 	writeJSON(w, http.StatusOK, result, "")
 }
 
+// listCollectionsBreakdown handles GET /v1/reports/collections/breakdown —
+// purpose (invoice_type) and payment method broken out as filterable
+// dimensions (Manual Payment Recording brief, phase 6.1).
+func (s *Server) listCollectionsBreakdown(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	claims, _ := claimsFromContext(r.Context())
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	q := r.URL.Query()
+	propertyID, ok := optionalUUIDQuery(w, q, "property_id")
+	if !ok {
+		return
+	}
+	month := strings.TrimSpace(q.Get("month"))
+	if month == "" {
+		writeJSONError(w, http.StatusBadRequest, "month is required (YYYY-MM)")
+		return
+	}
+	period, err := time.Parse("2006-01", month)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "month must be YYYY-MM")
+		return
+	}
+
+	result, err := s.reports.ListCollectionsBreakdown(r.Context(), tx, reports.CollectionsBreakdownFilters{
+		PropertyID: propertyID,
+		Month:      period,
+		Role:       claims.Role,
+		UserID:     claims.UserID,
+	})
+	if err != nil {
+		s.logger.Error("collections breakdown report", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result, "data")
+}
+
 // portfolio handles GET /v1/reports/portfolio.
 func (s *Server) portfolio(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	claims, _ := claimsFromContext(r.Context())

@@ -188,6 +188,63 @@ func (s *Server) createProperty(w http.ResponseWriter, r *http.Request, _ httpro
 	writeJSON(w, http.StatusCreated, p, "data")
 }
 
+type propertyLandlordResponse struct {
+	LandlordID uuid.UUID `json:"landlord_id"`
+	FullName   string    `json:"full_name"`
+	Phone      string    `json:"phone"`
+}
+
+// listPropertyLandlords handles GET /v1/properties/:id/landlords — the
+// Landlord(s) attached via property_ownership (spec §2.3), so a remittance
+// screen can pick a real target instead of asking the Manager to paste a
+// user id it has no other way to find.
+func (s *Server) listPropertyLandlords(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	propertyID, err := uuid.Parse(ps.ByName("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid property id")
+		return
+	}
+
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	rows, err := tx.Query(r.Context(), `
+		SELECT u.id, u.full_name, u.phone
+		FROM property_ownership po
+		JOIN users u ON u.id = po.landlord_id
+		WHERE po.property_id = $1
+		ORDER BY u.full_name`,
+		propertyID,
+	)
+	if err != nil {
+		s.logger.Error("list property landlords", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+	defer rows.Close()
+
+	out := make([]propertyLandlordResponse, 0)
+	for rows.Next() {
+		var l propertyLandlordResponse
+		if err := rows.Scan(&l.LandlordID, &l.FullName, &l.Phone); err != nil {
+			s.logger.Error("scan property landlord", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+			return
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Error("iterate property landlords", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, out, "data")
+}
+
 // listUnits handles GET /v1/properties/:id/units.
 func (s *Server) listUnits(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	propertyID, err := uuid.Parse(ps.ByName("id"))

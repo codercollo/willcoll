@@ -57,10 +57,10 @@ func createUnitForPBAC(t *testing.T, ts *httptest.Server, token string, property
 
 func TestAgentGrantIsScopedPerProperty(t *testing.T) {
 	tenancySvc := tenancy.NewService(testPool)
-	authSvc := auth.NewService([]byte("01234567890123456789012345678901"))
+	authSvc := auth.NewService([]byte("01234567890123456789012345678901"), testPool)
 	mailSvc := &recordingMailer{}
 
-	srv := api.NewServer(testPool, authSvc, tenancySvc, mailSvc, branding.NewService(testPool), money.NewService(testPool), nil, nil)
+	srv := api.NewServer(testPool, authSvc, tenancySvc, mailSvc, branding.NewService(testPool), money.NewService(testPool), nil, nil, nil, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

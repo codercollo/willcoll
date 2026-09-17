@@ -51,7 +51,7 @@ func TestTenantScopeReliesOnRLSToBlockCrossOrganizationReads(t *testing.T) {
 	ctx := context.Background()
 
 	tenancyService := tenancy.NewService(testPool)
-	authService := auth.NewService([]byte("01234567890123456789012345678901"))
+	authService := auth.NewService([]byte("01234567890123456789012345678901"), testPool)
 
 	orgA, userA, err := tenancyService.CreateOrganizationWithFirstManagerTx(ctx, tenancy.CreateOrganizationInput{
 		Name:         "org-a-" + uuid.NewString(),
@@ -80,7 +80,7 @@ func TestTenantScopeReliesOnRLSToBlockCrossOrganizationReads(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	srv := NewServer(testPool, authService, tenancyService, nil, nil, nil, nil, nil)
+	srv := NewServer(testPool, authService, tenancyService, nil, nil, nil, nil, nil, nil, nil)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tx, ok := requestTxFromContext(r.Context())

@@ -16,7 +16,7 @@ INSERT INTO ledger_transfers (
     organization_id, transfer_type, invoice_id, method, reference,
     narrative, idempotency_key, reversed_transfer_id, recorded_by
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at
+RETURNING id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at, manual_payment_method, reference_number, receipt_photo_url
 `
 
 type CreateLedgerTransferParams struct {
@@ -56,12 +56,15 @@ func (q *Queries) CreateLedgerTransfer(ctx context.Context, arg CreateLedgerTran
 		&i.ReversedTransferID,
 		&i.RecordedBy,
 		&i.CreatedAt,
+		&i.ManualPaymentMethod,
+		&i.ReferenceNumber,
+		&i.ReceiptPhotoUrl,
 	)
 	return i, err
 }
 
 const getLedgerTransfer = `-- name: GetLedgerTransfer :one
-SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at FROM ledger_transfers WHERE id = $1
+SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at, manual_payment_method, reference_number, receipt_photo_url FROM ledger_transfers WHERE id = $1
 `
 
 func (q *Queries) GetLedgerTransfer(ctx context.Context, id pgtype.UUID) (LedgerTransfer, error) {
@@ -79,12 +82,15 @@ func (q *Queries) GetLedgerTransfer(ctx context.Context, id pgtype.UUID) (Ledger
 		&i.ReversedTransferID,
 		&i.RecordedBy,
 		&i.CreatedAt,
+		&i.ManualPaymentMethod,
+		&i.ReferenceNumber,
+		&i.ReceiptPhotoUrl,
 	)
 	return i, err
 }
 
 const getLedgerTransferByIdempotencyKey = `-- name: GetLedgerTransferByIdempotencyKey :one
-SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at FROM ledger_transfers WHERE idempotency_key = $1
+SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at, manual_payment_method, reference_number, receipt_photo_url FROM ledger_transfers WHERE idempotency_key = $1
 `
 
 func (q *Queries) GetLedgerTransferByIdempotencyKey(ctx context.Context, idempotencyKey string) (LedgerTransfer, error) {
@@ -102,12 +108,15 @@ func (q *Queries) GetLedgerTransferByIdempotencyKey(ctx context.Context, idempot
 		&i.ReversedTransferID,
 		&i.RecordedBy,
 		&i.CreatedAt,
+		&i.ManualPaymentMethod,
+		&i.ReferenceNumber,
+		&i.ReceiptPhotoUrl,
 	)
 	return i, err
 }
 
 const listLedgerTransfers = `-- name: ListLedgerTransfers :many
-SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at FROM ledger_transfers ORDER BY created_at DESC
+SELECT id, organization_id, transfer_type, invoice_id, method, reference, narrative, idempotency_key, reversed_transfer_id, recorded_by, created_at, manual_payment_method, reference_number, receipt_photo_url FROM ledger_transfers ORDER BY created_at DESC
 `
 
 func (q *Queries) ListLedgerTransfers(ctx context.Context) ([]LedgerTransfer, error) {
@@ -131,6 +140,9 @@ func (q *Queries) ListLedgerTransfers(ctx context.Context) ([]LedgerTransfer, er
 			&i.ReversedTransferID,
 			&i.RecordedBy,
 			&i.CreatedAt,
+			&i.ManualPaymentMethod,
+			&i.ReferenceNumber,
+			&i.ReceiptPhotoUrl,
 		); err != nil {
 			return nil, err
 		}
