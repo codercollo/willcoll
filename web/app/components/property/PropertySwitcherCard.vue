@@ -3,35 +3,27 @@ const props = defineProps<{
   id: string
   name: string
   location: string
-  logo_url?: string | null
-  rent_collected?: number
-  rent_expected?: number
+  logoUrl?: string | null
+  collectedThisMonth?: number | null
 }>()
 
 const branding = useBranding()
+const route = useRoute()
 
-const logo = computed(() => props.logo_url ?? branding.value.logo_url ?? null)
-
-const collected = computed(() => props.rent_collected ?? 0)
-const expected = computed(() => props.rent_expected ?? 0)
-const pct = computed(() => (expected.value > 0 ? Math.round((collected.value / expected.value) * 100) : 0))
+const logo = computed(() => props.logoUrl ?? branding.value?.logo_url ?? null)
 </script>
 
 <template>
-  <NuxtLink :to="`/properties/${id}/units`" class="property-card">
+  <NuxtLink :to="`/${route.params.slug}/properties/${id}/units`" class="property-card">
     <img v-if="logo" :src="logo" :alt="name" class="property-card__logo">
     <div v-else class="property-card__logo-placeholder" aria-hidden="true" />
 
     <div class="property-card__body">
       <h2 class="property-card__name">{{ name }}</h2>
       <p class="property-card__location">{{ location }}</p>
-
-      <div class="property-card__meter">
-        <div class="property-card__meter-track">
-          <div class="property-card__meter-fill" :style="{ width: `${pct}%` }" />
-        </div>
-        <span class="property-card__meter-label">{{ pct }}% collected</span>
-      </div>
+      <p v-if="collectedThisMonth != null" class="property-card__collected">
+        KES {{ collectedThisMonth.toLocaleString() }} collected this month
+      </p>
     </div>
   </NuxtLink>
 </template>
@@ -72,20 +64,9 @@ const pct = computed(() => (expected.value > 0 ? Math.round((collected.value / e
   color: var(--color-text-muted, #6B7280);
 }
 
-.property-card__meter-track {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--color-border-subtle, #E2E5E9);
-  overflow: hidden;
-}
-
-.property-card__meter-fill {
-  height: 100%;
-  background: var(--color-status-success, #1E8E5A);
-}
-
-.property-card__meter-label {
-  font-size: var(--text-ui-xs, 0.75rem);
-  color: var(--color-text-muted, #6B7280);
+.property-card__collected {
+  margin: 0;
+  font-size: var(--text-ui-sm, 0.875rem);
+  color: var(--color-status-success, #1E8E5A);
 }
 </style>

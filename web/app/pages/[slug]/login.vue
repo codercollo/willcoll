@@ -3,6 +3,7 @@ definePageMeta({ layout: false })
 
 const branding = useBranding()
 const auth = useAuth()
+const route = useRoute()
 
 const email = ref('')
 const password = ref('')
@@ -14,7 +15,7 @@ async function submit() {
   loading.value = true
   try {
     await auth.login(email.value, password.value)
-    await navigateTo('/')
+    await navigateTo(`/${route.params.slug}/properties`)
   } catch (e: any) {
     error.value = e?.data?.error ?? 'Unable to sign in. Check your credentials and try again.'
   } finally {
@@ -27,14 +28,14 @@ async function submit() {
   <main class="login-shell">
     <section class="login-card">
       <img
-        v-if="branding.logo_url"
-        :src="branding.logo_url"
-        :alt="branding.brand_name"
+        v-if="branding?.logo_url"
+        :src="branding?.logo_url"
+        :alt="branding?.brand_name"
         class="login-logo"
       >
       <div v-else class="login-logo-placeholder" aria-hidden="true" />
 
-      <h1 class="login-title">{{ branding.brand_name }}</h1>
+      <h1 class="login-title">{{ branding?.brand_name }}</h1>
       <p class="login-subtitle">Sign in to your property dashboard.</p>
 
       <form class="login-form" @submit.prevent="submit">

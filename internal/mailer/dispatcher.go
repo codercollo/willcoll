@@ -61,6 +61,18 @@ func (d *Dispatcher) Stop() {
 	})
 }
 
+// Send enqueues the message and returns immediately, satisfying Mailer so a
+// Dispatcher can stand in for a synchronous Service wherever a Mailer is
+// expected. Delivery errors are not observable here — they're logged by the
+// worker (dispatch) — because the whole point of the dispatcher is that the
+// caller doesn't block on SMTP.
+func (d *Dispatcher) Send(ctx context.Context, recipient, templateFile string, data any) error {
+	d.Enqueue(ctx, recipient, templateFile, data)
+	return nil
+}
+
+var _ Mailer = (*Dispatcher)(nil)
+
 func (d *Dispatcher) worker() {
 	defer d.wg.Done()
 	for job := range d.jobs {

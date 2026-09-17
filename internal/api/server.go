@@ -16,7 +16,9 @@ import (
 	"github.com/codercollo/willcoll-sys/internal/mailer"
 	"github.com/codercollo/willcoll-sys/internal/money"
 	"github.com/codercollo/willcoll-sys/internal/notify"
+	"github.com/codercollo/willcoll-sys/internal/payments"
 	"github.com/codercollo/willcoll-sys/internal/reports"
+	"github.com/codercollo/willcoll-sys/internal/scoring"
 	"github.com/codercollo/willcoll-sys/internal/subscriptions"
 	"github.com/codercollo/willcoll-sys/internal/tenancy"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,14 +39,17 @@ type Server struct {
 	notify        *notify.Service
 	reports       *reports.Service
 	subscriptions *subscriptions.Service
+	payments      *payments.Service
+	scoring       *scoring.Service
 	logger        *slog.Logger
 
-	authIPLimiter       *rateLimiter
-	paymentsUserLimiter *rateLimiter
+	authIPLimiter           *rateLimiter
+	paymentsUserLimiter     *rateLimiter
+	paymentsInitiateLimiter *rateLimiter
 }
 
 // NewServer wires the router, DB pool, and services into a single Server.
-func NewServer(pool *pgxpool.Pool, authService *auth.Service, tenancyService *tenancy.Service, mailerService mailer.Mailer, brandingService *branding.Service, moneyService *money.Service, notifyService *notify.Service, subscriptionsService *subscriptions.Service) *Server {
+func NewServer(pool *pgxpool.Pool, authService *auth.Service, tenancyService *tenancy.Service, mailerService mailer.Mailer, brandingService *branding.Service, moneyService *money.Service, notifyService *notify.Service, subscriptionsService *subscriptions.Service, paymentsService *payments.Service, scoringService *scoring.Service) *Server {
 	s := &Server{
 		router:        httprouter.New(),
 		pool:          pool,
@@ -56,10 +61,13 @@ func NewServer(pool *pgxpool.Pool, authService *auth.Service, tenancyService *te
 		notify:        notifyService,
 		reports:       reports.NewService(pool),
 		subscriptions: subscriptionsService,
+		payments:      paymentsService,
+		scoring:       scoringService,
 		logger:        slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 
-		authIPLimiter:       newRateLimiter(10, 2),
-		paymentsUserLimiter: newRateLimiter(3, 0.5),
+		authIPLimiter:           newRateLimiter(10, 2),
+		paymentsUserLimiter:     newRateLimiter(3, 0.5),
+		paymentsInitiateLimiter: newRateLimiter(5, 1),
 	}
 
 	s.registerRoutes()

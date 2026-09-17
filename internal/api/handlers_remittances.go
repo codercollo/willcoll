@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll-sys/internal/money"
+	"github.com/codercollo/willcoll-sys/pkg/idempotency"
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 )
@@ -23,6 +24,11 @@ type createRemittanceRequest struct {
 func (s *Server) createRemittance(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	var input createRemittanceRequest
 	if !readJSON(w, r, &input) {
+		return
+	}
+
+	if err := idempotency.Validate(input.IdempotencyKey); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

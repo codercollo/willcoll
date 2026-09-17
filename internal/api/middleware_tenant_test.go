@@ -80,7 +80,7 @@ func TestTenantScopeReliesOnRLSToBlockCrossOrganizationReads(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	srv := NewServer(testPool, authService, tenancyService, nil, nil, nil, nil, nil)
+	srv := NewServer(testPool, authService, tenancyService, nil, nil, nil, nil, nil, nil, nil)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tx, ok := requestTxFromContext(r.Context())

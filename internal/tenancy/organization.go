@@ -16,6 +16,7 @@ import (
 type Organization struct {
 	ID               uuid.UUID
 	Name             string
+	Slug             string
 	BrandName        string
 	SubscriptionTier string
 	BillingStatus    string
@@ -101,12 +102,22 @@ func (s *Service) CreateOrganizationWithFirstManagerTx(ctx context.Context, inpu
 		org.BillingStatus = "active"
 	}
 
+	// organizations.slug is NOT NULL + UNIQUE (migration 000002); derive one
+	// from the name here, at the transaction boundary, so every path that
+	// creates an Organization — not just a specific handler — gets a valid
+	// slug, with collisions (same/similar name reused) resolved by retrying
+	// a short suffix before the insert ever runs.
+	org.Slug, err = generateUniqueSlug(ctx, tx, org.Name)
+	if err != nil {
+		return Organization{}, User{}, fmt.Errorf("generate organization slug: %w", err)
+	}
+
 	err = tx.QueryRow(ctx, `
-		INSERT INTO organizations (id, name, brand_name, subscription_tier, billing_status)
-		VALUES ($1, $2, $3, $4::subscription_tier, $5::org_billing_status)
-		RETURNING id, name, brand_name, subscription_tier::text, billing_status::text, created_at, updated_at`,
-		org.ID, org.Name, org.BrandName, org.SubscriptionTier, org.BillingStatus,
-	).Scan(&org.ID, &org.Name, &org.BrandName, &org.SubscriptionTier, &org.BillingStatus, &org.CreatedAt, &org.UpdatedAt)
+		INSERT INTO organizations (id, name, slug, brand_name, subscription_tier, billing_status)
+		VALUES ($1, $2, $3, $4, $5::subscription_tier, $6::org_billing_status)
+		RETURNING id, name, slug, brand_name, subscription_tier::text, billing_status::text, created_at, updated_at`,
+		org.ID, org.Name, org.Slug, org.BrandName, org.SubscriptionTier, org.BillingStatus,
+	).Scan(&org.ID, &org.Name, &org.Slug, &org.BrandName, &org.SubscriptionTier, &org.BillingStatus, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
 		return Organization{}, User{}, fmt.Errorf("insert organization: %w", err)
 	}

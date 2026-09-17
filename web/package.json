@@ -3,6 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "generate:api": "openapi-typescript ../api/openapi.yaml -o app/types/api.d.ts",
+    "predev": "npm run generate:api",
+    "prebuild": "npm run generate:api",
     "build": "nuxt build",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
@@ -22,6 +25,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.4.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.3.3"
   }
 }

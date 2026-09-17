@@ -13,6 +13,144 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type createMeterRequest struct {
+	MeterType   string `json:"meter_type"`
+	MeterNumber string `json:"meter_number"`
+}
+
+type meterResponse struct {
+	ID          uuid.UUID `json:"id"`
+	UnitID      uuid.UUID `json:"unit_id"`
+	UnitLabel   string    `json:"unit_label"`
+	MeterType   string    `json:"meter_type"`
+	MeterNumber *string   `json:"meter_number"`
+
+	// LatestReading is nil when the meter has never had a reading recorded —
+	// the frontend's monotonicity hint (spec §"Phase 4.2") has nothing to
+	// compare against yet in that case, same as the server-side check.
+	LatestReading *struct {
+		ReadingMonth   time.Time       `json:"reading_month"`
+		CurrentReading decimal.Decimal `json:"current_reading"`
+	} `json:"latest_reading"`
+}
+
+// createMeter handles POST /v1/units/:id/meters — Manager only. Provisions
+// the physical meter a unit's readings will be recorded against; nothing
+// else in this codebase creates a meters row.
+func (s *Server) createMeter(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	unitID, err := uuid.Parse(ps.ByName("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid unit id")
+		return
+	}
+
+	var input createMeterRequest
+	if !readJSON(w, r, &input) {
+		return
+	}
+	if strings.TrimSpace(input.MeterType) == "" {
+		writeJSONError(w, http.StatusBadRequest, "meter_type is required")
+		return
+	}
+
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	var resp meterResponse
+	var meterNumber *string
+	err = tx.QueryRow(r.Context(), `
+		INSERT INTO meters (unit_id, meter_type, meter_number)
+		VALUES ($1, $2::meter_kind, $3)
+		RETURNING id, unit_id, meter_type::text, meter_number`,
+		unitID, input.MeterType, nullIfEmptyString(input.MeterNumber),
+	).Scan(&resp.ID, &resp.UnitID, &resp.MeterType, &meterNumber)
+	if err != nil {
+		s.logger.Error("create meter", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+	resp.MeterNumber = meterNumber
+
+	writeJSON(w, http.StatusCreated, resp, "data")
+}
+
+func nullIfEmptyString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// listPropertyMeters handles GET /v1/properties/:id/meters — every meter
+// across the property's units, with its latest reading if it has one, so
+// the frontend can build the reading-entry grid and a real monotonicity
+// hint without guessing (spec Phase 4.1-4.2).
+func (s *Server) listPropertyMeters(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	propertyID, err := uuid.Parse(ps.ByName("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid property id")
+		return
+	}
+
+	tx, ok := requestTxFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	rows, err := tx.Query(r.Context(), `
+		SELECT m.id, m.unit_id, u.unit_label, m.meter_type::text, m.meter_number,
+		       lr.reading_month, lr.current_reading
+		FROM meters m
+		JOIN units u ON u.id = m.unit_id
+		LEFT JOIN LATERAL (
+			SELECT reading_month, current_reading
+			FROM meter_readings
+			WHERE meter_id = m.id
+			ORDER BY reading_month DESC
+			LIMIT 1
+		) lr ON true
+		WHERE u.property_id = $1
+		ORDER BY u.unit_label`,
+		propertyID,
+	)
+	if err != nil {
+		s.logger.Error("list property meters", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+	defer rows.Close()
+
+	out := make([]meterResponse, 0)
+	for rows.Next() {
+		var m meterResponse
+		var readingMonth *time.Time
+		var currentReading *decimal.Decimal
+		if err := rows.Scan(&m.ID, &m.UnitID, &m.UnitLabel, &m.MeterType, &m.MeterNumber, &readingMonth, &currentReading); err != nil {
+			s.logger.Error("scan property meter", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+			return
+		}
+		if readingMonth != nil && currentReading != nil {
+			m.LatestReading = &struct {
+				ReadingMonth   time.Time       `json:"reading_month"`
+				CurrentReading decimal.Decimal `json:"current_reading"`
+			}{ReadingMonth: *readingMonth, CurrentReading: *currentReading}
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Error("iterate property meters", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "the server encountered a problem and could not process your request")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, out, "data")
+}
+
 type createMeterReadingRequest struct {
 	ReadingMonth   string          `json:"reading_month"`
 	CurrentReading decimal.Decimal `json:"current_reading"`

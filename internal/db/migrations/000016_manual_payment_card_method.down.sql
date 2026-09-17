@@ -1,0 +1,5 @@
+-- Postgres has no DROP VALUE for enums. Removing 'card_manual' would require
+-- rebuilding the payment_method type (rename, recreate, rewrite every
+-- dependent column, drop the old type) and is not worth the risk for a
+-- rollback path; this down migration is intentionally a no-op. The value
+-- simply stays defined and unused if this migration is ever rolled back.

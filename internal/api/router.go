@@ -23,9 +23,23 @@ func (s *Server) registerRoutes() {
 
 	s.router.Handle(http.MethodGet, "/v1/public/branding", s.publicBranding)
 	s.router.Handle(http.MethodPost, "/v1/webhooks/intasend", s.subscriptions.IntasendWebhook)
+	s.router.Handle(http.MethodPost, "/v1/webhooks/payments/intasend", s.payments.IntasendWebhook)
+
+	// Not /v1/payments/initiate: httprouter can't have a static "initiate"
+	// segment as a sibling of /v1/payments/:id's wildcard at the same tree
+	// position (v1.3.0 has no support for that, and panics registering routes
+	// if it's attempted) — verified by actually instantiating api.NewServer
+	// in an integration test, unlike a build/vet check which never calls
+	// registerRoutes(). This is the tenant self-pay initiation endpoint from
+	// spec §5.5/§6.1; the literal /v1/payments/initiate path from the route
+	// table isn't achievable under this router.
+	s.router.Handler(http.MethodPost, "/v1/tenant-payments/initiate", s.rateLimitInitiatePayment(wrapHandle(s.initiatePayment)))
+	s.router.Handler(http.MethodPost, "/v1/managers/payout-account", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.submitPayoutAccount)))))
+	s.router.Handler(http.MethodGet, "/v1/managers/payout-account", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.getPayoutAccount)))))
 	s.router.Handler(http.MethodGet, "/v1/organization", s.authenticate(s.tenantScope(wrapHandle(s.getOrganization))))
 	s.router.Handler(http.MethodPatch, "/v1/organization", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.patchOrganization)))))
 	s.router.Handler(http.MethodPatch, "/v1/organization/branding", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.patchOrganizationBranding)))))
+	s.router.Handler(http.MethodPost, "/v1/organization/managers", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.inviteManager)))))
 
 	s.router.Handler(http.MethodGet, "/v1/properties", s.authenticate(s.tenantScope(wrapHandle(s.listProperties))))
 	s.router.Handler(http.MethodPost, "/v1/properties", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.createProperty)))))
@@ -33,10 +47,13 @@ func (s *Server) registerRoutes() {
 	s.router.Handler(http.MethodPost, "/v1/properties/:id/units", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.createUnit)))))
 	s.router.Handler(http.MethodPost, "/v1/properties/:id/units/import", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.importUnitsCSV)))))
 	s.router.Handler(http.MethodPost, "/v1/properties/:id/tenants/import", s.authenticate(s.tenantScope(s.requirePermission(permissionEditLeases, "manager", "agent")(wrapHandle(s.importTenantsCSV)))))
+	s.router.Handler(http.MethodGet, "/v1/properties/:id/meters", s.authenticate(s.tenantScope(s.requirePermission(permissionManageMeterReadings, "manager", "agent")(wrapHandle(s.listPropertyMeters)))))
+	s.router.Handler(http.MethodGet, "/v1/properties/:id/landlords", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.listPropertyLandlords)))))
 
 	s.router.Handler(http.MethodPost, "/v1/agent-grants", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.setAgentGrant)))))
 
 	s.router.Handler(http.MethodPost, "/v1/units/:id/leases", s.authenticate(s.tenantScope(s.requirePermission(permissionEditLeases, "manager", "agent")(wrapHandle(s.createLease)))))
+	s.router.Handler(http.MethodPost, "/v1/units/:id/meters", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.createMeter)))))
 	s.router.Handler(http.MethodGet, "/v1/units/:id/statement", s.authenticate(s.tenantScope(s.requirePermission(permissionViewFinancialReports, "manager", "landlord", "agent")(wrapHandle(s.unitStatement)))))
 	s.router.Handler(http.MethodPost, "/v1/leases/:id/terminate", s.authenticate(s.tenantScope(s.requirePermission(permissionEditLeases, "manager", "agent")(wrapHandle(s.terminateLease)))))
 
@@ -49,8 +66,15 @@ func (s *Server) registerRoutes() {
 
 	s.router.Handler(http.MethodGet, "/v1/reports/arrears", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.listArrears)))))
 	s.router.Handler(http.MethodGet, "/v1/reports/collections", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.listCollections)))))
+	s.router.Handler(http.MethodGet, "/v1/reports/collections/breakdown", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.listCollectionsBreakdown)))))
 	s.router.Handler(http.MethodGet, "/v1/reports/portfolio", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.portfolio)))))
 	s.router.Handler(http.MethodGet, "/v1/audit-log", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.listAuditLog)))))
+
+	s.router.Handler(http.MethodPost, "/v1/properties/:id/score", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.requestScore)))))
+	s.router.Handler(http.MethodGet, "/v1/properties/:id/score", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.getLatestScore)))))
+	s.router.Handler(http.MethodGet, "/v1/properties/:id/score/history", s.authenticate(s.tenantScope(s.requireRole("manager", "landlord")(wrapHandle(s.getScoreHistory)))))
+	s.router.Handler(http.MethodPost, "/v1/organization/addons/verified-property-score/activate", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.activateScoreAddon)))))
+	s.router.Handler(http.MethodPost, "/v1/organization/addons/verified-property-score/cancel", s.authenticate(s.tenantScope(s.requireRole("manager")(wrapHandle(s.cancelScoreAddon)))))
 }
 
 // wrapHandle adapts an httprouter.Handle into a standard http.Handler so it can

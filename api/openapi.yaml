@@ -1,0 +1,353 @@
+openapi: 3.0.3
+info:
+  title: Willcoll API
+  version: "1.0"
+servers:
+  - url: /
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data: {}
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    Envelope:
+      description: ok
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Envelope" }
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { "200": { description: ok } }
+
+  /v1/auth/register-manager:
+    post:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, full_name, phone, email, password]
+              properties:
+                name: { type: string }
+                full_name: { type: string }
+                phone: { type: string }
+                email: { type: string }
+                password: { type: string }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/auth/login:
+    post:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/auth/refresh:
+    post:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/users/activate:
+    put:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties: { token: { type: string }, password: { type: string } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/users/password:
+    put:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties: { token: { type: string }, new_password: { type: string } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/agents:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name, phone, email]
+              properties: { full_name: { type: string }, phone: { type: string }, email: { type: string } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/agents/{id}/reset-password:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/public/branding:
+    get:
+      security: []
+      parameters:
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/tenant-payments/initiate:
+    post:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_id, method]
+              properties:
+                invoice_id: { type: string, format: uuid }
+                method: { type: string, enum: [M-PESA, CARD-PAYMENT] }
+                redirect_url: { type: string }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/managers/payout-account:
+    post:
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/organization:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+    patch:
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, slug: { type: string } } } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/branding:
+    patch:
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/managers:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name, phone, email]
+              properties: { full_name: { type: string }, phone: { type: string }, email: { type: string } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/subscription:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/subscription/charge:
+    post:
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/addons/verified-property-score/activate:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [monthly_fee_kes], properties: { monthly_fee_kes: { type: number } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/organization/addons/verified-property-score/cancel:
+    post:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/properties:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+    post:
+      requestBody: { content: { application/json: { schema: { type: object, required: [name, location], properties: { name: { type: string }, location: { type: string } } } } } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/units:
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/units/import:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { multipart/form-data: { schema: { type: object, properties: { file: { type: string, format: binary } } } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/meters:
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/landlords:
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/tenants/import:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { multipart/form-data: { schema: { type: object, properties: { file: { type: string, format: binary } } } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/score:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operating_expenses, annual_debt_service]
+              properties:
+                operating_expenses: { type: number }
+                annual_debt_service: { type: number }
+                other_income: { type: number }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/properties/{id}/score/history:
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/agent-grants:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, property_id]
+              properties:
+                agent_id: { type: string, format: uuid }
+                property_id: { type: string, format: uuid }
+                can_record_payments: { type: boolean }
+                can_edit_leases: { type: boolean }
+                can_edit_unit_pricing: { type: boolean }
+                can_void_payments: { type: boolean }
+                can_view_financial_reports: { type: boolean }
+                can_manage_meter_readings: { type: boolean }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/units/{id}/leases:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/units/{id}/meters:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_type]
+              properties: { meter_type: { type: string, enum: [water] }, meter_number: { type: string } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/units/{id}/statement:
+    get:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/leases/{id}/terminate:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/meters/{id}/readings:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reading_month, current_reading]
+              properties:
+                reading_month: { type: string }
+                current_reading: { type: number }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/payments:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [unit_id, amount, payment_method, reference_number]
+              properties:
+                unit_id: { type: string, format: uuid }
+                amount: { type: integer, description: "KES cents" }
+                payment_method: { type: string, enum: [cash, mpesa, bank, card] }
+                reference_number: { type: string }
+                photo_url: { type: string }
+                notes: { type: string }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/payments/{id}/reverse:
+    post:
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, idempotency_key]
+              properties: { reason: { type: string }, idempotency_key: { type: string } }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /v1/remittances:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [property_id, landlord_id, amount, method, idempotency_key]
+              properties:
+                property_id: { type: string, format: uuid }
+                landlord_id: { type: string, format: uuid }
+                amount: { type: integer, description: "KES cents" }
+                method: { type: string }
+                reference: { type: string }
+                narrative: { type: string }
+                idempotency_key: { type: string }
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+
+  /v1/reports/arrears:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/reports/collections:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/reports/collections/breakdown:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/reports/portfolio:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /v1/audit-log:
+    get:
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }

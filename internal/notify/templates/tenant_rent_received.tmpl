@@ -1,1 +1,1 @@
-{{.BrandName}}: Rent received, KES {{.Amount}} for {{.Period}}. Thank you.
+{{.BrandName}}: Payment received, KES {{.Amount}}{{if .Period}} for {{.Period}}{{end}}.{{if .Breakdown}} Applied to: {{.Breakdown}}.{{end}}{{if .Reference}} Ref: {{.Reference}}.{{end}} Thank you.{{if .Reference}} Reply NO if this is wrong.{{end}}
