@@ -1,0 +1,878 @@
+================================================================================
+WILLCOLL — SYSTEM DESIGN
+Multi-tenant property/rent reconciliation SaaS for Kenyan management firms
+================================================================================
+Version: 1.0
+Stack: Go (Gin) + PostgreSQL + Nuxt 4 / Vue 3 + PayHero Kenya + Caddy + Contabo VPS
+Conventions: "Let's Go Further" (Greenlight) API architecture, "Simple Bank"
+             (Golang backend curriculum) ledger/db hardening principles.
+
+
+--------------------------------------------------------------------------------
+0. WHAT WILLCOLL REPLACES
+--------------------------------------------------------------------------------
+Source material studied: THE RUNDA'S ARCADE monthly "ALL IN ONE PAYMENTS
+SCHEDULE" reports (Word), the hand-ruled water/garbage meter-reading ledger
+book, the printed "WATER AND GARBAGE COLLECTION BILL" invoice slip, and the
+"KIWI PLACE" carbon receipt book.
+
+These four documents ARE the product spec. Willcoll digitizes:
+  1. The meter-reading ledger book        -> Water tab (spreadsheet input)
+  2. The printed water/garbage bill slip  -> generated PDF invoice
+  3. The KIWI PLACE receipt book          -> generated PDF receipt
+  4. The monthly payments-schedule report -> Reports tab (generated PDF)
+
+Everything downstream of "how does a payment get classified" (the whole
+reconciliation conversation) exists to fill these four documents in
+automatically instead of by hand.
+
+
+--------------------------------------------------------------------------------
+1. ACTORS
+--------------------------------------------------------------------------------
+1.1 Super Admin (you)
+    - Owns the Willcoll platform itself. One row, outside the multi-tenant
+      boundary (does not belong to any manager's tenant_id).
+    - Manages manager (firm) subscriptions/billing, views platform-wide
+      health, triggers/inspects backups, can suspend a tenant.
+    - Never touches a manager's ledger data directly (no write access to
+      tenant-scoped tables in normal operation — see RLS section 3.7).
+
+1.2 Manager (management firm) — THE TENANT of the multi-tenant system
+    - Signs up, activates via emailed token, subscribes (billed through
+      PayHero), then owns Landlords -> Properties -> Units -> Leases and
+      every ledger under them.
+    - One login per firm (a "username"), matching the real-world workflow
+      described (single office account, not per-staff accounts in v1).
+
+1.3 Landlord
+    - A data record owned by a Manager, NOT a login-holding actor in v1
+      (nothing in the spec asks for landlord self-service). A Property
+      belongs to exactly one Landlord; a Landlord can own several
+      Properties. Reports and receipts are generated FOR the landlord,
+      not BY them.
+    - Extensibility note: because Landlord is already a first-class row
+      with its own id, a read-only landlord portal is a additive feature
+      later (a landlord_id-scoped session) — no schema migration needed.
+
+1.4 Tenant (renter)
+    - Does not get a signup/login. Real Kenyan tenants will not create
+      accounts to pay rent. Instead: a public "Pay" page scoped to one
+      Unit, reached via a link the caretaker/manager shares (WhatsApp,
+      SMS, printed notice): /pay/{property_slug}/{unit_code}.
+    - Gated by a phone-number OTP (Africa's Talking SMS) before balances
+      are shown, so a stranger with the link can't browse another
+      tenant's arrears — not a full account, just a one-time challenge
+      per session.
+    - Declares Payment Intent (rent / water / garbage split + amount),
+      which becomes a `payment_intent` row and drives a PayHero STK push.
+      This is "Track A" — see section 5.
+
+
+--------------------------------------------------------------------------------
+2. DOMAIN MODEL (ENTITY OVERVIEW)
+--------------------------------------------------------------------------------
+Manager (tenant boundary)
+  └── Landlord
+        └── Property  (garbage_enabled, garbage_fee, water_rate_per_unit,
+                        management_fee_percent, payhero_channel_id)
+              └── Unit  (unit_code e.g. "3C", "G1", "SHOP NO.1")
+                    └── Lease  (tenant_name, phone, rent_amount, deposit,
+                                start_date, end_date)  — 0..N historical,
+                                exactly 0 or 1 active per Unit
+                          └── LeasePayer (0..N — handles the "OR" co-payers
+                                seen in the real report, e.g. a spouse or
+                                shop partner also allowed to pay)
+
+Per Unit, five independent LedgerAccounts (never a shared "balance" row):
+      RENT | WATER | GARBAGE | RENT_DEPOSIT | WATER_DEPOSIT
+
+Charges land on a LedgerAccount from FOUR billing events, three recurring
+and one one-off:
+  - Rent:     RentSchedule (expected amount per unit) -> monthly Charge
+  - Water:    WaterReading (current vs previous meter, rate) -> Charge
+  - Garbage:  Property-level fixed fee, toggled on/off -> Charge (if enabled)
+  - Deposits: Lease creation (RENT_DEPOSIT + WATER_DEPOSIT) -> ONE-OFF
+              Charge per deposit type, posted automatically the moment the
+              lease is saved (section 3.3.1) — not a monthly run, and not
+              a manager-triggered "generate" step the way rent/water/
+              garbage are.
+
+UI placement note (resolves a real gap in the original tab list): RENT_DEPOSIT
+and WATER_DEPOSIT do NOT get their own top-level tabs anywhere. They are
+arrears-capable ledgers exactly like Rent and Water (they use the identical
+ledger_entries/balance mechanics — nothing in the engine treats a deposit
+specially), but because there is no monthly billing *run* for a deposit,
+there is no matching spreadsheet-generation page for one either. Instead:
+  - Property page: only Units | Rent | Water | Garbage | Reports (5 tabs,
+    unchanged) — a Deposit tab would have nothing to "generate."
+  - Unit page: only 3 tabs (unchanged) — Rent ledger | Water ledger |
+    Garbage ledger. The Rent ledger tab renders BOTH the RENT and
+    RENT_DEPOSIT ledger accounts for that unit (two balance rows, one
+    entry feed each, clearly labelled "Rent" and "Rent Deposit"); the
+    Water ledger tab does the same for WATER and WATER_DEPOSIT. This
+    keeps the nav exactly as specified while still giving deposits a
+    home a manager will actually find them in (next to the charge type
+    they're collateral for, not buried in a fourth tab nobody opens).
+
+Money lands on a LedgerAccount via:
+  Payment (PayHero webhook or manual) -> PaymentAllocation -> LedgerEntry
+
+
+--------------------------------------------------------------------------------
+3. DATABASE DESIGN (PostgreSQL)
+--------------------------------------------------------------------------------
+Every tenant-scoped table below carries a NOT NULL `tenant_id` (= the
+manager's id) and has Row-Level Security enabled (section 3.7). All
+monetary columns are `numeric(12,2)`. All tables carry `created_at
+timestamptz not null default now()`; ledger-adjacent tables are append-only
+and therefore have NO `updated_at`.
+
+3.1 Platform / auth
+--------------------------------------------------------------------------------
+admins
+  id uuid pk, name, email unique, password_hash, created_at
+
+managers                                   -- the SaaS tenant
+  id uuid pk
+  firm_name text
+  username text unique
+  email citext unique
+  phone text
+  password_hash bytea
+  status text check in ('pending','active','suspended')
+  activated_at timestamptz null
+  created_at
+
+tokens                                     -- Greenlight-style generic token
+  hash bytea pk
+  manager_id uuid fk -> managers
+  expiry timestamptz
+  scope text check in ('activation','password-reset')
+
+-- SCS session store (managers + admins share one cookie-session table,
+-- scoped by a "principal_type" discriminator inside the session payload):
+sessions                                   -- managed by alexedwards/scs/postgresstore
+  token text pk
+  data bytea
+  expiry timestamptz
+
+3.2 Tenant graph
+--------------------------------------------------------------------------------
+landlords
+  id uuid pk, tenant_id uuid fk->managers
+  name, phone, email
+  bank_name, bank_account_name, bank_account_number
+  created_at
+
+properties
+  id uuid pk, tenant_id uuid fk->managers, landlord_id uuid fk->landlords
+  name, location, slug text unique          -- used in the public /pay/ url
+  garbage_enabled boolean default false
+  garbage_fee numeric(12,2) default 0       -- e.g. 300.00
+  water_rate_per_unit numeric(12,2)         -- e.g. 150.00 (Ksh per m3)
+  management_fee_percent numeric(5,2)       -- e.g. 5.00  (matches docx "5/100")
+  payhero_channel_id text                   -- the linked bank paybill channel
+  created_at
+
+units
+  id uuid pk, tenant_id uuid fk->managers, property_id uuid fk->properties
+  unit_code text                            -- "3C","G1","SHOP NO.1"
+  meter_number text null
+  status text check in ('vacant','occupied')
+  unique (property_id, unit_code)
+  created_at
+
+leases
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  tenant_name text
+  primary_phone text
+  rent_amount numeric(12,2)                 -- expected monthly rent
+  rent_deposit_amount numeric(12,2) default 0
+  water_deposit_amount numeric(12,2) default 0
+  start_date date, end_date date null
+  status text check in ('active','terminated')
+  created_at
+  -- partial unique index: at most one 'active' lease per unit
+  create unique index one_active_lease_per_unit
+    on leases(unit_id) where status = 'active';
+
+3.2.1 Deposit charge lifecycle (answers "does rent deposit get updated by
+       tenant payments the same way rent does, and is that wired end to end")
+  - Trigger: the SAME database transaction that INSERTs a new `leases` row
+    (POST /v1/units/:id/leases, handler in cmd/api/leases.go) ALSO, if
+    rent_deposit_amount > 0 and/or water_deposit_amount > 0:
+        1. insert a transaction_header (type='LEASE_START', idempotency_key
+           = lease.id — a lease can only ever trigger this once)
+        2. insert a `charges` row per non-zero deposit
+           (source_type='lease_start', source_id=lease.id, period=start_date)
+        3. insert the matching DEBIT ledger_entry against that unit's
+           RENT_DEPOSIT / WATER_DEPOSIT ledger_account
+    If the lease is later terminated with the deposit still outstanding or
+    partially refunded, that is a manual adjustment (storno reversal,
+    section 3.8) posted by the manager — not automatic, since a deposit
+    refund is a business decision, not a formula.
+  - Payment side: YES — deposits are updated by tenant payments through
+    the exact same pipeline as rent. The Payment Intent line `type` field
+    (section 4.7) accepts all five ledger types, not three:
+        RENT | WATER | GARBAGE | RENT_DEPOSIT | WATER_DEPOSIT
+    so a tenant (or the manager, entering a cash payment manually) can
+    explicitly direct a payment at "Rent Deposit" the same way they'd
+    direct one at "Rent." The reconciliation fallback in section 5
+    already accounted for this — its subset-sum search was already
+    specified as running over "at most 5 ledger types," so an organic
+    paybill payment that happens to equal a unit's outstanding deposit
+    balance resolves correctly with no code path missing.
+  - Frontend readiness: the PayIntentForm component (section 6.4 / 7.7)
+    must render a "Rent Deposit" / "Water Deposit" line item WHENEVER
+    that unit's corresponding ledger balance is > 0, alongside Rent/
+    Water/Garbage — it is conditional on balance, exactly like the other
+    three, not a special case requiring separate form logic. The Unit
+    ledger page (Rent tab / Water tab, per the UI placement note above)
+    is where the manager sees the resulting entries and running balance.
+  - Net: backend and frontend are both already structurally ready for
+    this — the only piece that was missing before this revision was the
+    automatic charge-creation trigger at lease start, added above, and
+    the explicit tab placement for deposits, also added above. No new
+    tables were needed; ledger_accounts, charges, transaction_headers,
+    and ledger_entries already treat all five types uniformly by design.
+
+lease_payers                                -- the "OR NAME OR NAME" pattern
+  id uuid pk, tenant_id uuid fk->managers, lease_id uuid fk->leases
+  name text, phone text null
+
+3.3 Billing engines (produce Charges, never touch balances directly)
+--------------------------------------------------------------------------------
+ledger_accounts                             -- one anchor row per unit per type
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  type text check in ('RENT','WATER','GARBAGE','RENT_DEPOSIT','WATER_DEPOSIT')
+  unique (unit_id, type)
+  created_at
+  -- NOTE: this table holds NO balance/amount column. It exists only so
+  -- ledger_entries has a stable, typed foreign key to aggregate against.
+
+water_readings                              -- the digitized meter-book page
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  period date                               -- billing month, stored as 1st-of-month
+  previous_reading numeric(12,2)
+  current_reading numeric(12,2)
+  units_consumed numeric(12,2) generated always as
+      (current_reading - previous_reading) stored
+  rate_snapshot numeric(12,2)               -- property.water_rate_per_unit at time of run
+  amount numeric(12,2) generated always as
+      (units_consumed * rate_snapshot) stored
+  locked boolean default false              -- true once "Generate billing invoices" is clicked
+  recorded_by uuid fk->managers
+  created_at
+  unique (unit_id, period)
+
+garbage_runs                                -- one per property per month, if enabled
+  id uuid pk, tenant_id uuid fk->managers, property_id uuid fk->properties
+  period date
+  fee_snapshot numeric(12,2)
+  locked boolean default false
+  generated_at
+  unique (property_id, period)
+
+rent_runs                                   -- one per unit per month
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  period date
+  amount_snapshot numeric(12,2)             -- lease.rent_amount at time of run
+  locked boolean default false
+  generated_at
+  unique (unit_id, period)
+
+charges                                     -- WHAT IS OWED (append-only)
+  id uuid pk, tenant_id uuid fk->managers
+  ledger_account_id uuid fk->ledger_accounts
+  source_type text check in ('rent_run','water_reading','garbage_run','lease_start','manual')
+  source_id uuid null                       -- fk to whichever run/reading produced it
+  period date
+  amount numeric(12,2)                      -- positive = amount owed
+  description text
+  created_by uuid fk->managers
+  created_at
+  -- Charges are never UPDATEd or DELETEd. A wrong charge is corrected by
+  -- inserting a negative-amount charge with source_type='manual' and a
+  -- description referencing the original charge id (storno pattern).
+
+3.4 Money movement (the append-only ledger core)
+--------------------------------------------------------------------------------
+transaction_headers                         -- groups a set of entries atomically
+  id uuid pk, tenant_id uuid fk->managers
+  type text check in ('RENT_RUN','WATER_RUN','GARBAGE_RUN','LEASE_START',
+                       'PAYMENT_POSTING','MANUAL_ADJUSTMENT','REVERSAL')
+  idempotency_key text unique                -- e.g. payhero mpesa receipt, or run id
+  description text
+  created_by text                            -- manager_id or 'system'
+  created_at
+
+ledger_entries                              -- THE immutable ledger (never UPDATE/DELETE)
+  id uuid pk, tenant_id uuid fk->managers
+  transaction_header_id uuid fk->transaction_headers
+  ledger_account_id uuid fk->ledger_accounts
+  direction text check in ('DEBIT','CREDIT')  -- DEBIT = owed increases, CREDIT = owed decreases
+  amount numeric(12,2) check (amount > 0)     -- always positive; direction carries the sign
+  reference_type text check in ('charge','payment_allocation','reversal')
+  reference_id uuid
+  created_at
+  -- Zero-sum constraint is enforced at the APPLICATION layer inside the
+  -- same DB transaction that inserts a transaction_header: the sum of
+  -- CREDIT entries under one PAYMENT_POSTING header must exactly equal
+  -- the payment amount being posted (see 3.8). A trigger additionally
+  -- guards against orphan entries (a header with zero entries is dropped
+  -- by rolling back).
+
+-- Balance is NEVER a stored column. It is always:
+create view unit_ledger_balances as
+  select la.unit_id, la.type,
+         coalesce(sum(case when le.direction='DEBIT'  then  le.amount
+                            when le.direction='CREDIT' then -le.amount end), 0) as balance
+  from ledger_accounts la
+  left join ledger_entries le on le.ledger_account_id = la.id
+  group by la.unit_id, la.type;
+  -- Indexed via (ledger_account_id, created_at) on ledger_entries so this
+  -- aggregates cheaply even at thousands of entries per unit.
+
+3.5 Payments / reconciliation (PayHero side)
+--------------------------------------------------------------------------------
+payment_intents                             -- created the instant a tenant submits
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  lines jsonb                               -- [{"ledger_type":"WATER","amount":1100}, ...]
+  external_reference text unique            -- sent to PayHero as account_reference
+  phone text
+  status text check in ('pending','completed','expired')
+  created_at, expires_at
+
+payments                                    -- raw inbound money, one row per webhook
+  id uuid pk, tenant_id uuid fk->managers
+  source text check in ('payhero_stk','payhero_c2b','manual')
+  mpesa_receipt text unique                 -- PRIMARY idempotency key
+  payhero_reference text null
+  amount numeric(12,2)
+  msisdn text
+  payer_name text
+  account_reference text null               -- raw AccountReference from callback
+  matched_unit_id uuid null fk->units
+  matched_intent_id uuid null fk->payment_intents
+  status text check in ('unmatched','matched','allocated')
+  raw_payload jsonb                         -- full webhook body, for audit/replay
+  received_at timestamptz
+  created_at
+
+payment_allocations                         -- the actual split, ties payment -> charges
+  id uuid pk, tenant_id uuid fk->managers
+  payment_id uuid fk->payments
+  ledger_account_id uuid fk->ledger_accounts
+  ledger_entry_id uuid fk->ledger_entries
+  amount numeric(12,2)
+  created_at
+
+receipts
+  id uuid pk, tenant_id uuid fk->managers, unit_id uuid fk->units
+  receipt_no bigint                         -- sequential PER MANAGER, mirrors "No. 2795"
+  payment_ids uuid[]                        -- payments this receipt covers
+  period date
+  pdf_object_key text                       -- path in blob storage
+  generated_at
+  unique (tenant_id, receipt_no)
+
+reports                                     -- the "ALL IN ONE PAYMENTS SCHEDULE"
+  id uuid pk, tenant_id uuid fk->managers, property_id uuid fk->properties
+  period date
+  totals jsonb                              -- rent/water/rent_dep/water_dep/grand totals
+  pdf_object_key text
+  generated_by uuid fk->managers
+  generated_at
+  unique (property_id, period)
+
+3.6 Platform billing (Manager subscribes to Willcoll, also via PayHero)
+--------------------------------------------------------------------------------
+subscription_plans
+  id uuid pk, name, price numeric(12,2), billing_interval text, unit_cap int null
+
+subscriptions
+  id uuid pk, manager_id uuid fk->managers, plan_id uuid fk->subscription_plans
+  status text check in ('trialing','active','past_due','cancelled')
+  current_period_start date, current_period_end date
+  payhero_channel_id text                   -- Willcoll's OWN collection channel
+
+subscription_invoices
+  id uuid pk, manager_id uuid fk->managers, subscription_id uuid fk->subscriptions
+  amount numeric(12,2), period date
+  mpesa_receipt text unique
+  status text check in ('pending','paid','failed')
+  paid_at timestamptz null, created_at
+
+3.7 Multi-tenancy enforcement — Row-Level Security
+--------------------------------------------------------------------------------
+Strategy: tenant_id = the owning manager's id, on every table in 3.2-3.6.
+
+  alter table properties enable row level security;
+  create policy tenant_isolation on properties
+    using (tenant_id = current_setting('app.tenant_id')::uuid);
+  -- repeated for every tenant-scoped table.
+
+Runtime: a single Postgres role `willcoll_app` used by the API connects
+via a pooled *sql.DB. Every HTTP request that touches tenant data runs its
+queries inside one transaction, and the FIRST statement in that
+transaction is:
+      SET LOCAL app.tenant_id = '<manager_id from session>';
+(`SET LOCAL` is transaction-scoped, so it cannot leak between pooled
+connections or concurrent goroutines — this is the load-bearing detail.)
+
+The Super Admin path uses a second Postgres role `willcoll_admin` created
+with BYPASSRLS, used ONLY by the /v1/admin/* handlers, and only for
+read-mostly operations (subscription oversight, backup verification,
+platform health). Admin handlers never write into a manager's ledger
+tables.
+
+3.8 Concurrency & correctness (Simple Bank hardening)
+--------------------------------------------------------------------------------
+- Isolation level: SERIALIZABLE for every transaction that (a) reads an
+  open charge balance and (b) writes a payment_allocation/ledger_entry
+  against it. This is the "two webhooks for the same unit arrive at once"
+  race — SERIALIZABLE + retry-on-40001 (exponential backoff, max 3
+  retries) is the standard fix used throughout Simple Bank's transfer
+  logic, applied here to payment posting instead of account transfers.
+- Idempotency: `payments.mpesa_receipt unique` + `payment_intents.
+  external_reference unique`. The webhook handler does
+      INSERT INTO payments (...) VALUES (...)
+      ON CONFLICT (mpesa_receipt) DO NOTHING RETURNING id;
+  Zero rows returned => PayHero retried a delivery => ack 200, do nothing
+  else. This makes the whole webhook handler safe to receive duplicates.
+- Zero-sum: before COMMIT on a PAYMENT_POSTING transaction_header, the
+  application asserts
+      sum(payment_allocations.amount for this payment) == payments.amount
+  in Go, inside the same DB transaction; a mismatch rolls back rather than
+  posting a partial, silently-wrong split.
+- Correction / storno: nothing in `charges` or `ledger_entries` is ever
+  UPDATEd or DELETEd. A correction inserts a REVERSAL transaction_header
+  containing the exact mirrored entries (debit<->credit swapped) plus a
+  fresh corrected entry. The audit trail always shows both the mistake
+  and the fix — matching how the paper ledger you photographed already
+  behaves (nothing erased, corrections written in red alongside).
+- Atomicity: every multi-row mutation (a billing run, a payment posting,
+  a reversal) is one Go function wrapped in `db.BeginTx(ctx,
+  &sql.TxOptions{Isolation: sql.LevelSerializable})` — no partial runs.
+
+3.9 Water billing computation (the "Excel-like" tab)
+--------------------------------------------------------------------------------
+Mirrors the photographed ledger book exactly:
+  1. Manager opens Property > Water tab for period P. Grid shows one row
+     per occupied Unit: unit_code | tenant_name | previous_reading
+     (auto-filled from last period's `current_reading`) | current_reading
+     (editable input) | units_consumed (computed) | rate (from
+     property.water_rate_per_unit, editable per-run if the rate changed)
+     | amount (computed) | prior water balance (from
+     unit_ledger_balances view) | total due this run.
+  2. Rows save as draft `water_readings` (locked=false) — editable,
+     re-computable, nothing posted yet.
+  3. "Generate billing invoices" button: for each row, in one
+     SERIALIZABLE transaction per property-run:
+       - lock the water_readings row (locked=true)
+       - insert a `charges` row (source_type='water_reading')
+       - insert a transaction_header (type='WATER_RUN')
+       - insert one DEBIT ledger_entry against the unit's WATER
+         ledger_account
+       - render the per-unit PDF from the "WATER AND GARBAGE COLLECTION
+         BILL" template (section 6.3), including "Previous Balance B/F"
+         pulled straight from unit_ledger_balances BEFORE this run's
+         debit is applied — this is exactly the "+ 3,600 = ARR" style
+         arrears carry-forward seen in the handwritten book.
+  4. Garbage follows the identical two-step (draft -> generate) pattern,
+     but with no per-unit input: the fixed `properties.garbage_fee` is
+     the only variable, toggled via `garbage_enabled`.
+
+
+--------------------------------------------------------------------------------
+4. API DESIGN (Go, Gin, Greenlight/Simple-Bank conventions)
+--------------------------------------------------------------------------------
+4.1 Application shell (mirrors "Let's Go Further")
+--------------------------------------------------------------------------------
+  type config struct {
+      port int
+      env  string
+      db   struct{ dsn string; maxOpenConns, maxIdleConns int; maxIdleTime string }
+      payhero struct{ baseURL, apiKey, collectionsChannelID, billingChannelID string }
+      africastalking struct{ apiKey, username string }
+      smtp struct{ host string; port int; username, password, sender string }
+      cors struct{ trustedOrigins []string }
+  }
+  type application struct {
+      config config
+      logger *slog.Logger
+      models data.Models        // Greenlight-style aggregate: application.models.Properties.Insert(...)
+      queries *db.Queries       // sqlc-generated, wrapped per-request with the tenant tx
+      sessionManager *scs.SessionManager
+      mailer  mailer.Mailer
+      payhero payhero.Client
+      wg      sync.WaitGroup    // background() goroutines (emails, SMS, PDF render)
+  }
+Config is loaded with Viper (env file + env vars), then copied into the
+same `config` struct Greenlight uses, so every downstream handler keeps
+Greenlight's dependency-injection style (`app.config.x`) regardless of
+how the values were sourced.
+
+4.2 Request lifecycle / middleware chain (Gin)
+--------------------------------------------------------------------------------
+  recoverPanic -> logRequest -> metrics -> rateLimit -> tenantSession ->
+  enableCORS -> route handler
+
+  - recoverPanic: converts any panic into a Greenlight-style 500 envelope
+    instead of a raw Gin abort.
+  - rateLimit: token-bucket per-IP (golang.org/x/time/rate), applied
+    strictly to the PUBLIC tenant-pay endpoints and OTP requests; PayHero
+    webhook IPs are allow-listed and exempt.
+  - tenantSession: reads the SCS session, resolves manager_id or admin_id,
+    and — for manager routes — opens the request's DB transaction with
+    `SET LOCAL app.tenant_id = $1` (section 3.7) before the handler runs.
+  - metrics: expvar counters (requests_received_total, responses_sent_total,
+    processing_time_microseconds, per-status-code counts) exposed at
+    /debug/vars, gated to localhost/VPN only via Caddy.
+
+4.3 Response envelope & error handling (verbatim Greenlight pattern)
+--------------------------------------------------------------------------------
+  type envelope map[string]interface{}
+  writeJSON(w, status, envelope{"property": p}, headers)
+  readJSON(w, r, &input)   // rejects unknown fields, caps body size, gives
+                           // human-readable errors for each json.*Error type
+
+  errors.go centralizes:
+    logError, errorResponse, serverErrorResponse, notFoundResponse,
+    methodNotAllowedResponse, badRequestResponse, failedValidationResponse,
+    editConflictResponse, rateLimitExceededResponse,
+    invalidCredentialsResponse, authenticationRequiredResponse,
+    notPermittedResponse, inactiveAccountResponse
+
+  Every handler validates its input DTO through internal/validator
+  (Greenlight's hand-rolled Validator{Errors map[string]string}) layered
+  under go-playground/validator struct tags for the mechanical checks
+  (required, numeric, e164 phone, etc.) — Greenlight's Validator stays the
+  place business-rule checks live (e.g. "current_reading must be >=
+  previous_reading").
+
+4.4 Auth & user lifecycle (Greenlight lifecycle, SCS sessions not JWT)
+--------------------------------------------------------------------------------
+  POST   /v1/managers                    register firm (status='pending')
+  PUT    /v1/managers/activated          {token} -> status='active'
+  POST   /v1/tokens/activation           resend activation email
+  POST   /v1/sessions                    login -> SCS cookie session issued
+  DELETE /v1/sessions                    logout -> session destroyed
+  POST   /v1/tokens/password-reset       email reset link
+  PUT    /v1/managers/password           {token, new_password}
+
+  Passwords: bcrypt (cost 12). Tokens: Greenlight's generic `tokens` table
+  — random 26-byte value, SHA-256 hashed at rest, plaintext only ever
+  emailed once. Session transport: alexedwards/scs with a Postgres store,
+  cookie flagged Secure+HttpOnly+SameSite=Lax (the Nuxt app calls the API
+  with credentials:'include'; Caddy terminates TLS so Secure is always
+  true in staging/production).
+  PASETO/JWT are explicitly NOT used for the manager/admin dashboards —
+  SCS server-side sessions are simpler to revoke instantly (subscription
+  lapses -> DELETE the session row) and match the "manager dashboard,
+  not a public API" shape of v1. If a public/partner API is opened later,
+  issue PASETO tokens for that surface only, per Simple Bank's chapter on
+  JWT vs PASETO — additive, not a rewrite.
+
+4.5 RBAC
+--------------------------------------------------------------------------------
+  Two roles at the HTTP layer: `manager` and `admin` (tenant vs platform).
+  Every /v1/admin/* route requires an admin session; every other
+  authenticated route requires a manager session AND runs inside that
+  manager's RLS transaction — so RBAC and tenant isolation are enforced
+  by two independent layers (middleware role check + database policy),
+  matching the "belt and suspenders" pattern Simple Bank uses for
+  account-ownership checks.
+
+4.6 Core resource endpoints
+--------------------------------------------------------------------------------
+  Landlords
+    GET/POST   /v1/landlords
+    GET/PATCH  /v1/landlords/:id
+
+  Properties
+    GET/POST   /v1/properties
+    GET/PATCH  /v1/properties/:id
+    PATCH      /v1/properties/:id/garbage        {enabled, fee}
+
+  Units
+    GET/POST        /v1/properties/:id/units
+    POST             /v1/properties/:id/units/import     (multipart CSV, bulk)
+    GET/PATCH        /v1/units/:id
+    POST             /v1/units/:id/leases                (new tenant / renew)
+    PATCH            /v1/leases/:id                       (terminate / edit)
+
+  Rent
+    PUT   /v1/properties/:id/rent-schedule        bulk-set expected rent per unit
+    POST  /v1/properties/:id/rent/generate?period= creates the month's rent charges
+
+  Water
+    GET   /v1/properties/:id/water?period=        draft grid (readings + computed)
+    PUT   /v1/properties/:id/water?period=         bulk save readings (draft)
+    POST  /v1/properties/:id/water/generate?period= lock + post charges + render PDFs
+    GET   /v1/properties/:id/water/invoices/:period.pdf
+
+  Garbage
+    GET/POST /v1/properties/:id/garbage/generate?period=
+    GET      /v1/properties/:id/garbage/invoices/:period.pdf
+
+  Ledgers (read-only, append-only by construction)
+    GET /v1/units/:id/ledger/:type            type = rent|water|garbage|
+                                               rent_deposit|water_deposit
+                                               -> paginated entries + balance
+
+  Reports & receipts
+    GET  /v1/properties/:id/reports/:period            totals preview (JSON)
+    POST /v1/properties/:id/reports/:period/generate   renders the "ALL IN ONE
+                                                        PAYMENTS SCHEDULE" PDF
+    POST /v1/properties/:id/receipts/:period/generate  bulk receipt PDFs
+
+4.7 Tenant-facing public payment surface (no login — OTP-gated)
+--------------------------------------------------------------------------------
+  GET  /v1/pay/:propertySlug/:unitCode              unit + property display info
+  POST /v1/pay/:propertySlug/:unitCode/otp          send SMS OTP (Africa's Talking)
+  POST /v1/pay/:propertySlug/:unitCode/otp/verify   -> short-lived pay-session token
+  GET  /v1/pay/:propertySlug/:unitCode/balances     (requires pay-session token)
+  POST /v1/pay/:propertySlug/:unitCode/intent       {lines:[{type,amount}], phone}
+       -- type is one of RENT|WATER|GARBAGE|RENT_DEPOSIT|WATER_DEPOSIT;
+          the balances endpoint above only offers a deposit line when that
+          unit's deposit ledger balance is > 0 (section 3.2.1)
+       -> creates payment_intents row, calls PayHero STK push with
+          channel_id = property.payhero_channel_id,
+          account_reference = payment_intents.external_reference
+  GET  /v1/pay/intents/:id/status                   poll until webhook completes it
+
+4.8 PayHero webhooks (server-to-server, signature/IP verified, idempotent)
+--------------------------------------------------------------------------------
+  POST /v1/webhooks/payhero/collections
+       body: {mpesa_receipt, amount, msisdn, account_reference, ...}
+       1. INSERT ... ON CONFLICT(mpesa_receipt) DO NOTHING -> dedupe
+       2. match account_reference -> payment_intents.external_reference
+          (exact intent, deterministic split) — PRIMARY path (Track A)
+       3. else: match msisdn/payer_name against lease_payers -> subset-sum
+          the amount against that unit's open charges (see reconciliation
+          note, section 5) — FALLBACK path for anyone still paying the
+          bank paybill directly
+       4. else: status='unmatched', surfaced in the manager's reconciliation
+          queue (a normal list endpoint, not a per-message chase)
+       5. always respond 200 within PayHero's timeout; do the matching in
+          a background() goroutine tracked by application.wg, never block
+          the HTTP response on it.
+
+  POST /v1/webhooks/payhero/subscriptions
+       same idempotency pattern, posts into subscription_invoices,
+       flips subscriptions.status.
+
+4.9 Admin (Super Admin) endpoints
+--------------------------------------------------------------------------------
+  GET  /v1/admin/managers                    list + status + subscription state
+  GET  /v1/admin/managers/:id
+  POST /v1/admin/managers/:id/suspend
+  GET  /v1/admin/subscriptions
+  GET  /v1/admin/system/health               DB connectivity, WAL lag, disk headroom
+  GET  /v1/admin/backups                     last successful backup timestamp/size
+
+4.10 PDF generation
+--------------------------------------------------------------------------------
+internal/pdf (maroto): four template builders, one per physical document
+already in use:
+  BuildWaterGarbageInvoice(unit, reading, garbageCharge, priorBalance)
+  BuildReceipt(receiptNo, tenantName, lines, houseNo, total)     -- KIWI PLACE layout
+  BuildMonthlySchedule(property, period, rows, totals, notes)    -- THE RUNDAS layout
+  BuildSubscriptionInvoice(manager, period, amount)
+Rendered synchronously for a single unit (fast), queued through
+`application.background()` for a whole-property bulk run (48 units like
+the real property) so the HTTP request returns immediately and the
+manager polls a job-status endpoint.
+
+
+--------------------------------------------------------------------------------
+5. RECONCILIATION LOGIC (how a shilling figures out what it paid for)
+--------------------------------------------------------------------------------
+Two payment paths, both landing in the same `payments` table:
+
+  A) App-declared intent (STK push initiated by Willcoll):
+     account_reference on the webhook == an open payment_intents row.
+     The split is already known — no inference, apply `lines` verbatim
+     as PaymentAllocations. This is the target state (Track A).
+
+  B) Organic paybill payment (tenant bypasses the app, dials the paybill
+     the way they always have):
+     account_reference is the fixed bank account number and carries no
+     tenant signal. Matching falls back to:
+       1. msisdn -> lease_payers.phone
+       2. payer_name (fuzzy) -> lease_payers.name
+       3. Once a Unit is identified, SUBSET-SUM the paid amount against
+          that unit's currently open charge balances (at most 5 ledger
+          types => 2^5 = 32 combinations, trivial to enumerate):
+            - exactly one combination matches -> auto-apply, no review
+            - zero matches -> apply the standing default waterfall
+              (WATER -> GARBAGE -> RENT -> RENT_DEPOSIT -> WATER_DEPOSIT,
+              oldest period first) and flag `status='matched'` with an
+              `auto_applied_unconfirmed=true` marker
+            - more than one combination matches -> flag for manual review
+     Every flagged payment appears once in a manager review list — never
+     as a WhatsApp message to chase by hand.
+
+
+--------------------------------------------------------------------------------
+6. FRONTEND DESIGN (Nuxt 4 / Vue 3)
+--------------------------------------------------------------------------------
+6.1 Route map (manager)
+--------------------------------------------------------------------------------
+  /auth/signup, /auth/activate, /auth/login,
+  /auth/forgot-password, /auth/reset-password
+
+  /properties                              card grid (name, landlord, rent
+                                            collected vs expected, units
+                                            occupied/vacant)
+  /properties/[id]                         tabs: Units | Rent | Water |
+                                            Garbage | Reports
+    ?tab=units      unit cards (tenant name, unit no., date leased) +
+                    "Add unit" / "Bulk import (CSV)"
+    /properties/[id]/units/[unitId]        tabs: Rent ledger | Water ledger |
+                                            Garbage ledger (read-only,
+                                            append-only feeds)
+    ?tab=rent       spreadsheet: expected rent per unit (editable)
+    ?tab=water      spreadsheet: previous/current reading, rate, computed
+                    amount, prior balance, "Generate billing invoices"
+    ?tab=garbage    enable/disable toggle, fee input, "Generate invoices"
+    ?tab=reports    period picker, totals preview, "Generate schedule PDF",
+                    "Generate receipts PDF"
+
+  /account                                 firm profile, password
+  /billing                                 subscription plan, PayHero
+                                            payment method, renewal date,
+                                            invoice history
+
+6.2 Route map (tenant, public)
+--------------------------------------------------------------------------------
+  /pay/[propertySlug]/[unitCode]           OTP step -> balances -> intent
+                                            form (rent/water/garbage split,
+                                            amount) -> STK push -> live
+                                            status poll -> receipt
+
+6.3 Route map (super admin)
+--------------------------------------------------------------------------------
+  /admin/managers, /admin/managers/[id]
+  /admin/subscriptions
+  /admin/system (health, WAL/backup status)
+
+6.4 Structure
+--------------------------------------------------------------------------------
+  - Pinia stores: auth, properties, units, ledgers, payments, admin
+  - composables/useApi.ts: thin $fetch wrapper, `credentials:'include'`,
+    unwraps the Greenlight envelope, normalizes error shape for toasts
+  - middleware/auth.global.ts: role-based route guard (manager/admin),
+    redirects unauthenticated hits on protected routes to /auth/login
+  - components/SpreadsheetTable.vue: generic editable-grid component
+    (used by Rent, Water and Garbage tabs — one component, three column
+    configs) with per-row dirty-state and a single bulk PUT on save
+  - components/PropertyCard.vue, UnitCard.vue, LedgerTable.vue,
+    PayIntentForm.vue, OtpChallenge.vue
+  - Modules: @nuxt/icon, @nuxt/fonts, @pinia/nuxt, @nuxtjs/tailwindcss,
+    nuxt built-in router
+
+
+--------------------------------------------------------------------------------
+7. PAYHERO INTEGRATION SUMMARY
+--------------------------------------------------------------------------------
+Two independent PayHero relationships, two channel_ids, two webhook routes
+— never mixed:
+
+  a) Collections channel — the landlord's existing bank-issued paybill,
+     linked once in the PayHero dashboard. Used for STK pushes triggered
+     by the tenant "Pay" page (account_reference = payment_intent's
+     external_reference). Money settles straight to the landlord's bank
+     account; Willcoll never custodies tenant funds.
+
+  b) Billing channel — Willcoll's own collection channel, used to charge
+     managers their subscription fee (STK push or hosted payment link),
+     webhook posts into subscription_invoices.
+
+Both webhook routes share one idempotent-ingestion pattern (section 3.8);
+they differ only in which table the match resolves against.
+
+
+--------------------------------------------------------------------------------
+8. DEPLOYMENT & OPERATIONS
+--------------------------------------------------------------------------------
+8.1 Environments
+--------------------------------------------------------------------------------
+  Development: no containers. `make run/api` (air-driven reload of
+  cmd/api), local Postgres via native install, `pnpm dev` for the Nuxt
+  app, config from a local .env loaded by Viper. Mirrors Greenlight's
+  "just Go, just Postgres, a Makefile" development loop exactly.
+
+  Staging & Production (Contabo VPS): Docker used ONLY here. Multi-stage
+  Dockerfile (builder stage compiles a static Go binary; final stage is
+  distroless/alpine, non-root). docker-compose.yml runs: api, postgres
+  (or points at a managed/adjacent instance), and Caddy as the reverse
+  proxy + automatic HTTPS. Nuxt is built to static/server output and
+  served behind the same Caddy instance.
+
+8.2 CI/CD (.github/workflows)
+--------------------------------------------------------------------------------
+  test.yml            on every push/PR: spin up a Postgres service
+                       container, `golang-migrate up`, `sqlc generate
+                       --dry-run` (fails CI if queries drift from schema),
+                       `go vet`, `golangci-lint run`, `go test ./... -race`.
+  deploy-staging.yml   on push to `develop`: build multi-stage image, push
+                       to registry, SSH to the staging Compose stack,
+                       `docker compose pull && up -d`, run migrations.
+  deploy-production.yml on tagged release: identical, targeting the
+                       production Compose stack, plus a pre-deploy
+                       `pg_dump`-based logical snapshot as a rollback net.
+
+8.3 Backups (cheap on a small VPS, per the ledger being append-only)
+--------------------------------------------------------------------------------
+  - Continuous WAL streaming/archiving (wal-g or pgBackRest) to an
+    off-box S3-compatible bucket — NOT periodic full dumps sitting on the
+    same VPS disk. Because ledger_entries/charges are append-only, WAL
+    volume is small and highly compressible.
+  - A weekly base backup via the same tool, retained on a rolling window;
+    point-in-time recovery is always possible between base backups using
+    the streamed WAL.
+  - A cron job (not a long-running container) verifies the last WAL push
+    succeeded and pings /v1/admin/system/health's backup indicator —
+    this is the number the Super Admin dashboard reads, so a silent
+    backup failure surfaces immediately instead of at restore time.
+
+
+--------------------------------------------------------------------------------
+9. TESTING STRATEGY (Simple Bank conventions)
+--------------------------------------------------------------------------------
+  - sqlc generates typed Go from hand-written SQL in internal/db/query/*.sql
+    — no runtime reflection-based ORM in the hot path.
+  - gomock-generated mocks of the sqlc Querier interface drive fast unit
+    tests for every handler without touching Postgres.
+  - A separate integration suite (in /test) runs the real ledger-posting
+    and webhook-idempotency paths against a throwaway Postgres database
+    (via golang-migrate), including a concurrency test that fires two
+    identical webhook payloads simultaneously and asserts exactly one
+    payment row and one set of allocations results (proves 3.8).
+  - Table-driven tests throughout, matching both source curricula's style.
+
+
+--------------------------------------------------------------------------------
+10. HOW EACH ACTOR'S STATED NEED IS SATISFIED
+--------------------------------------------------------------------------------
+  Manager  — sees rent collected vs expected per property at a glance
+             (Properties card grid); digitizes the exact meter-reading
+             workflow already in use (Water tab); generates the exact
+             three physical documents already produced by hand (invoice
+             slip, KIWI PLACE receipt, monthly schedule); never has to
+             manually reconcile a WhatsApp message again for tenants who
+             adopt the app, and gets a short review queue instead of a
+             message-by-message chase for tenants who don't.
+  Tenant   — pays however is most convenient; gets an instant itemized
+             receipt when using the app; never needs to create an
+             account or remember a password.
+  Landlord — receives the same monthly schedule report and receipts they
+             already receive today, just generated instead of typed.
+  Super Admin — sees every manager's subscription state and platform
+             health in one place, without ever being able to read or
+             alter a manager's tenant-scoped ledger data (RLS + separate
+             DB role enforce this at the database, not just the UI).
+================================================================================
