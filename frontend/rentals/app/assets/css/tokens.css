@@ -1,0 +1,106 @@
+/* Generated from design-tokens.txt: the ONLY place raw values live. */
+@theme {
+  /* 1. primitives */
+  --color-navy-950: #0b1220;
+  --color-navy-900: #111c34;
+  --color-navy-800: #1b2a4a;
+  --color-navy-700: #27395e;
+  --color-navy-500: #4c5e85;
+  --color-navy-400: #7c8db5; /* muted text on navy: 5.6:1 (navy-500 is only 2.9:1) */
+  --color-navy-100: #e9ecf3;
+  --color-blue-600: #2f6fed;
+  --color-blue-700: #2557c2;
+  --color-blue-100: #e3ecff;
+  --color-blue-50: #f2f6ff;
+  --color-gray-900: #111827;
+  --color-gray-700: #374151;
+  --color-gray-500: #626977; /* was #6b7280: 4.3:1 on the gray-100 canvas; this is 4.9:1 */
+  --color-gray-300: #d7dce3;
+  --color-gray-100: #f1f3f6;
+  --color-gray-50: #f8f9fb;
+  --color-gold-500: #f5a623;
+
+  /* status (solid + tint) */
+  --color-paid: #1aa971;
+  --color-paid-tint: #e7f7f1;
+  --color-arrears: #e0433d;
+  --color-arrears-tint: #fdedec;
+  --color-partial: #e08a1e;
+  --color-partial-tint: #fdf2e3;
+  --color-vacant: #626977;
+  --color-vacant-tint: #f1f3f6;
+  --color-pending: #2f6fed;
+  --color-pending-tint: #e3ecff;
+  --color-unmatched: #8b5cf6;
+  --color-unmatched-tint: #f1ebfc;
+
+  /* status colours as TEXT (AA on white and on their own tint); the solid
+     colours above stay for dots, bars and borders */
+  --color-paid-text: #0f7a52;
+  --color-arrears-text: #c0322c;
+  --color-partial-text: #9a5b00;
+  --color-pending-text: #2557c2;
+  --color-unmatched-text: #6d28d9;
+
+  /* 2. semantic */
+  --color-surface-canvas: var(--color-gray-100);
+  --color-surface-card: #ffffff;
+  --color-surface-sidebar: var(--color-navy-950);
+  --color-surface-sidebar-hover: var(--color-navy-900);
+  --color-surface-sidebar-active: var(--color-navy-800);
+  --color-border-default: var(--color-gray-300);
+  --color-border-subtle: var(--color-gray-100);
+  --color-text-primary: var(--color-gray-900);
+  --color-text-secondary: var(--color-gray-500);
+  --color-text-inverse: #ffffff;
+  --color-text-inverse-muted: var(--color-navy-400);
+  --color-accent-primary: var(--color-blue-600);
+  --color-accent-primary-hover: var(--color-blue-700);
+  --color-accent-primary-tint: var(--color-blue-100);
+  --color-accent-text: var(--color-blue-700); /* links and small blue text: 6.9:1 on white, 5.2:1 on blue-100 */
+
+  /* 3. type */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --text-display: 28px;  --text-display--line-height: 36px;
+  --text-h1: 22px;       --text-h1--line-height: 30px;
+  --text-h2: 18px;       --text-h2--line-height: 26px;
+  --text-h3: 15px;       --text-h3--line-height: 22px;
+  --text-body: 14px;     --text-body--line-height: 20px;
+  --text-label: 13px;    --text-label--line-height: 18px;
+  --text-caption: 12px;  --text-caption--line-height: 16px;
+  --text-money-lg: 20px; --text-money-lg--line-height: 26px;
+  --text-money-sm: 14px; --text-money-sm--line-height: 20px;
+
+  /* 4. spacing: 4px base, so p-6 = 24px = space-6 */
+  --spacing: 4px;
+
+  /* 5. radius, elevation */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --shadow-popover: 0 4px 8px rgba(16, 24, 40, 0.08), 0 12px 24px rgba(16, 24, 40, 0.1);
+  --shadow-modal: 0 8px 16px rgba(16, 24, 40, 0.1), 0 24px 48px rgba(16, 24, 40, 0.16);
+
+  /* 6.3 breakpoints */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+
+  /* 8. motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root {
+  --border-width-hairline: 1px;
+  --border-width-focus: 2px;
+  --sidebar-width-expanded: 248px;
+  --sidebar-width-collapsed: 72px;
+  --topbar-height: 64px;
+  --content-max-width: 1280px;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+}

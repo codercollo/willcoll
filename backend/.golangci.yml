@@ -1,0 +1,49 @@
+# golangci-lint v2 (https://golangci-lint.run). `make audit` runs it after
+# go vet and staticcheck. Kept to linters that find real bugs in this codebase
+# (unchecked errors, leaked response bodies, mishandled wrapped errors,
+# unclosed rows); style is left to gofmt.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck      # an ignored error on a money path is a lost payment
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose     # payhero / sms clients: every response body is closed
+    - rowserrcheck  # sql.Rows.Err() is checked after iteration
+    - sqlclosecheck # rows and statements are closed
+    - errorlint     # errors.Is / errors.As, never == or a type switch on wrapped errors
+    - misspell
+  settings:
+    errcheck:
+      check-type-assertions: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+  exclusions:
+    generated: lax
+    paths:
+      - internal/db/sqlc
+      - internal/db/mock
+    rules:
+      # Tests may drop the error from cleanup calls (Close, best-effort DELETE).
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - internal/db/sqlc
+      - internal/db/mock

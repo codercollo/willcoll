@@ -1,0 +1,441 @@
+// Willcoll schema (system-design.txt §3), in DBML for dbdiagram.io.
+// Maintained by hand alongside migrations/: any migration that changes the
+// schema updates this file in the same change.
+//
+// Every table except admins, managers, tokens, sessions and
+// subscription_plans is tenant-scoped under RLS (migration 000017).
+// Append-only tables (no UPDATE/DELETE for willcoll_app, ADR 0002):
+// charges, transaction_headers, ledger_entries, payment_allocations.
+
+Project willcoll {
+  database_type: 'PostgreSQL'
+  Note: 'Multi-tenant rent reconciliation. tenant_id = owning manager id. Money is numeric(12,2).'
+}
+
+// ---------------------------------------------------------------- 3.1 Platform / auth
+
+Table admins {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name text [not null]
+  email text [not null, unique]
+  password_hash bytea [not null]
+  created_at timestamptz [not null, default: `now()`]
+  is_singleton boolean [not null, default: true, note: 'CHECK (is_singleton); unique: exactly one Super Admin (000023)']
+
+  indexes {
+    is_singleton [unique, name: 'admins_single_row_idx']
+  }
+}
+
+Table system_metadata {
+  key text [pk, note: "e.g. 'last_backup'"]
+  value jsonb [not null, note: 'last_backup: {completed_at, size_bytes, tool, label, verified_at}']
+  updated_at timestamptz [not null, default: `now()`]
+  Note: 'Platform facts from outside Postgres, written by scripts/db_backup_verify.sh as willcoll_admin (000022). No RLS; willcoll_app has no access.'
+}
+
+Table managers {
+  id uuid [pk, default: `gen_random_uuid()`, note: 'the SaaS tenant; tenant_id everywhere else']
+  firm_name text [not null]
+  username text [not null, unique]
+  email citext [not null, unique]
+  phone text [not null]
+  password_hash bytea [not null]
+  status text [not null, default: 'pending', note: "pending | active | suspended"]
+  activated_at timestamptz [null]
+  created_at timestamptz [not null, default: `now()`]
+  version integer [not null, default: 1]
+}
+
+Table tokens {
+  hash bytea [pk]
+  manager_id uuid [not null, ref: > managers.id]
+  expiry timestamptz [not null]
+  scope text [not null, note: "activation | password-reset"]
+
+  indexes {
+    manager_id
+  }
+}
+
+Table sessions {
+  token text [pk]
+  data bytea [not null]
+  expiry timestamptz [not null]
+  Note: 'alexedwards/scs postgresstore; shared by managers and admins'
+
+  indexes {
+    expiry
+  }
+}
+
+// ---------------------------------------------------------------- 3.2 Tenant graph
+
+Table landlords {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  name text [not null]
+  phone text [not null]
+  email text [null]
+  bank_name text [null]
+  bank_account_name text [null]
+  bank_account_number text [null]
+  created_at timestamptz [not null, default: `now()`]
+  version integer [not null, default: 1]
+
+  indexes {
+    tenant_id
+  }
+}
+
+Table properties {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  landlord_id uuid [not null, ref: > landlords.id, note: 'ON DELETE RESTRICT']
+  name text [not null]
+  location text [not null]
+  slug text [not null, unique, note: 'public /pay/{slug}/{unit_code} URL']
+  garbage_enabled boolean [not null, default: false]
+  garbage_fee "numeric(12,2)" [not null, default: 0]
+  water_rate_per_unit "numeric(12,2)" [not null, default: 0]
+  management_fee_percent "numeric(5,2)" [not null, default: 0]
+  payhero_channel_id text [null]
+  print_theme jsonb [null, note: "PDF header, accent, phone; null falls back to property and landlord"]
+  created_at timestamptz [not null, default: `now()`]
+  version integer [not null, default: 1]
+  deleted_at timestamptz [null, note: 'soft delete (000019); API role has no DELETE on properties']
+
+  indexes {
+    tenant_id
+    landlord_id
+  }
+}
+
+Table units {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  property_id uuid [not null, ref: > properties.id]
+  unit_code text [not null, note: '"3C", "G1", "SHOP NO.1"']
+  meter_number text [null]
+  status text [not null, default: 'vacant', note: "vacant | occupied"]
+  created_at timestamptz [not null, default: `now()`]
+  version integer [not null, default: 1]
+
+  indexes {
+    (property_id, unit_code) [unique]
+    tenant_id
+    property_id
+  }
+}
+
+Table leases {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  tenant_name text [not null]
+  primary_phone text [not null]
+  rent_amount "numeric(12,2)" [not null]
+  rent_deposit_amount "numeric(12,2)" [not null, default: 0]
+  water_deposit_amount "numeric(12,2)" [not null, default: 0]
+  start_date date [not null]
+  end_date date [null]
+  status text [not null, default: 'active', note: "active | terminated"]
+  created_at timestamptz [not null, default: `now()`]
+  version integer [not null, default: 1]
+
+  indexes {
+    unit_id [unique, name: 'one_active_lease_per_unit', note: "partial: WHERE status = 'active'"]
+    tenant_id
+    `to_tsvector('simple', tenant_name)` [type: gin, name: 'leases_tenant_name_fts_idx', note: 'Units tab tenant search (000021)']
+  }
+  Note: 'Creating a lease posts LEASE_START deposit charges in the same tx (app layer; ADR 0002).'
+}
+
+Table lease_payers {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  lease_id uuid [not null, ref: > leases.id]
+  name text [not null]
+  phone text [null]
+  Note: 'the "OR NAME OR NAME" co-payer pattern'
+
+  indexes {
+    tenant_id
+    lease_id
+    `to_tsvector('simple', name)` [type: gin, name: 'lease_payers_name_fts_idx', note: 'Units tab tenant search (000021)']
+  }
+}
+
+// ---------------------------------------------------------------- 3.3 Billing engines
+
+Table ledger_accounts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  type text [not null, note: "RENT | WATER | GARBAGE | RENT_DEPOSIT | WATER_DEPOSIT"]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'Anchor row only; holds no balance.'
+
+  indexes {
+    (unit_id, type) [unique]
+    tenant_id
+  }
+}
+
+Table water_readings {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  period date [not null, note: '1st of month']
+  previous_reading "numeric(12,2)" [not null]
+  current_reading "numeric(12,2)" [not null]
+  units_consumed "numeric(12,2)" [note: 'GENERATED: current_reading - previous_reading']
+  rate_snapshot "numeric(12,2)" [not null]
+  amount "numeric(12,2)" [note: 'GENERATED: units_consumed * rate_snapshot']
+  locked boolean [not null, default: false]
+  recorded_by uuid [not null, ref: > managers.id]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (unit_id, period) [unique]
+    tenant_id
+  }
+}
+
+Table garbage_runs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  property_id uuid [not null, ref: > properties.id]
+  period date [not null]
+  fee_snapshot "numeric(12,2)" [not null]
+  locked boolean [not null, default: false]
+  generated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (property_id, period) [unique]
+    tenant_id
+  }
+}
+
+Table rent_runs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  period date [not null]
+  amount_snapshot "numeric(12,2)" [not null]
+  locked boolean [not null, default: false]
+  generated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (unit_id, period) [unique]
+    tenant_id
+  }
+}
+
+Table charges {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  ledger_account_id uuid [not null, ref: > ledger_accounts.id]
+  source_type text [not null, note: "rent_run | water_reading | garbage_run | lease_start | manual"]
+  source_id uuid [null, note: 'the run/reading/lease that produced it']
+  period date [not null]
+  amount "numeric(12,2)" [not null, note: 'negative for storno corrections']
+  description text [not null, default: '']
+  created_by uuid [not null, ref: > managers.id]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'APPEND-ONLY'
+
+  indexes {
+    tenant_id
+    ledger_account_id
+  }
+}
+
+// ---------------------------------------------------------------- 3.4 Money movement
+
+Table transaction_headers {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  type text [not null, note: "RENT_RUN | WATER_RUN | GARBAGE_RUN | LEASE_START | PAYMENT_POSTING | MANUAL_ADJUSTMENT | REVERSAL"]
+  idempotency_key text [not null, unique]
+  description text [not null, default: '']
+  created_by text [not null, note: "manager id or 'system'"]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'APPEND-ONLY'
+
+  indexes {
+    tenant_id
+  }
+}
+
+Table ledger_entries {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  transaction_header_id uuid [not null, ref: > transaction_headers.id]
+  ledger_account_id uuid [not null, ref: > ledger_accounts.id]
+  direction text [not null, note: "DEBIT (owed up) | CREDIT (owed down)"]
+  amount "numeric(12,2)" [not null, note: 'CHECK (amount > 0)']
+  reference_type text [not null, note: "charge | payment_allocation | reversal"]
+  reference_id uuid [not null]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'APPEND-ONLY. Balances come from the unit_ledger_balances view (000012).'
+
+  indexes {
+    tenant_id
+    (ledger_account_id, created_at)
+  }
+}
+
+// ---------------------------------------------------------------- 3.5 Payments / reconciliation
+
+Table payment_intents {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  lines jsonb [not null, note: '[{"ledger_type":"WATER","amount":"1100.00"}, ...]']
+  external_reference text [not null, unique, note: 'PayHero account_reference']
+  phone text [not null]
+  status text [not null, default: 'pending', note: "pending | completed | expired | failed"]
+  created_at timestamptz [not null, default: `now()`]
+  expires_at timestamptz [not null]
+  checkout_request_id text [null, note: "PayHero checkout id of the STK push"]
+  failure_reason text [null, note: "why the push failed or was cancelled"]
+
+  indexes {
+    tenant_id
+  }
+}
+
+Table payments {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  source text [not null, note: "payhero_stk | payhero_c2b | manual"]
+  mpesa_receipt text [not null, unique, note: 'primary idempotency key']
+  payhero_reference text [null]
+  amount "numeric(12,2)" [not null]
+  msisdn text [not null]
+  payer_name text [null]
+  account_reference text [null]
+  matched_unit_id uuid [null, ref: > units.id]
+  matched_intent_id uuid [null, ref: > payment_intents.id]
+  status text [not null, default: 'unmatched', note: "unmatched | matched | allocated"]
+  raw_payload jsonb [not null]
+  received_at timestamptz [not null]
+  created_at timestamptz [not null, default: `now()`]
+  auto_applied_unconfirmed boolean [not null, default: false, note: "engine placed it on a guess (waterfall or fuzzy name); a manager should confirm"]
+  review_note text [null, note: "why it needs review"]
+
+  indexes {
+    tenant_id
+    matched_unit_id
+  }
+}
+
+Table pay_otps {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  phone text [not null, note: "normalised +254..., must be on the unit's active lease"]
+  code_hash text [not null, note: "HMAC of the code; the code itself is never stored"]
+  attempts int [not null, default: 0, note: "locks after 5 wrong guesses"]
+  expires_at timestamptz [not null]
+  consumed_at timestamptz [null]
+  created_at timestamptz [not null, default: `now()`]
+  Note: "one-time codes gating the public pay page"
+
+  indexes {
+    (tenant_id, unit_id, phone, created_at)
+  }
+}
+
+Table payment_allocations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  payment_id uuid [not null, ref: > payments.id]
+  ledger_account_id uuid [not null, ref: > ledger_accounts.id]
+  ledger_entry_id uuid [not null, ref: > ledger_entries.id]
+  amount "numeric(12,2)" [not null]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'APPEND-ONLY'
+
+  indexes {
+    tenant_id
+    payment_id
+  }
+}
+
+Table receipts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  unit_id uuid [not null, ref: > units.id]
+  receipt_no bigint [not null, note: 'sequential per manager, "No. 2795"']
+  payment_ids "uuid[]" [not null]
+  period date [not null]
+  generated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (tenant_id, receipt_no) [unique]
+    (unit_id, period) [unique]
+    tenant_id
+    unit_id
+  }
+}
+
+Table reports {
+  id uuid [pk, default: `gen_random_uuid()`]
+  tenant_id uuid [not null, ref: > managers.id]
+  property_id uuid [not null, ref: > properties.id]
+  period date [not null]
+  totals jsonb [not null]
+  notes jsonb [not null, default: `'[]'`, note: "manager-typed NOTE: 2 lines (JSON array of strings), printed verbatim"]
+  generated_by uuid [not null, ref: > managers.id]
+  generated_at timestamptz [not null, default: `now()`]
+  Note: 'the "ALL IN ONE PAYMENTS SCHEDULE"'
+
+  indexes {
+    (property_id, period) [unique]
+    tenant_id
+  }
+}
+
+// ---------------------------------------------------------------- 3.6 Platform billing
+
+Table subscription_plans {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name text [not null]
+  price "numeric(12,2)" [not null]
+  billing_interval text [not null]
+  unit_cap int [null]
+  Note: 'platform catalog; not tenant-scoped, no RLS'
+}
+
+Table subscriptions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  manager_id uuid [not null, ref: > managers.id, note: 'RLS keyed on manager_id']
+  plan_id uuid [not null, ref: > subscription_plans.id]
+  status text [not null, note: "trialing | active | past_due | cancelled"]
+  current_period_start date [not null]
+  current_period_end date [not null]
+  payhero_channel_id text [null, note: "Willcoll's own billing channel"]
+  version integer [not null, default: 1]
+
+  indexes {
+    manager_id
+  }
+}
+
+Table subscription_invoices {
+  id uuid [pk, default: `gen_random_uuid()`]
+  manager_id uuid [not null, ref: > managers.id]
+  subscription_id uuid [not null, ref: > subscriptions.id]
+  amount "numeric(12,2)" [not null]
+  period date [not null]
+  mpesa_receipt text [not null, unique]
+  status text [not null, default: 'pending', note: "pending | paid | failed"]
+  paid_at timestamptz [null]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    manager_id
+  }
+}

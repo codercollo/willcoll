@@ -1,0 +1,2 @@
+-- Data backfill: not reversible without losing which leases were turned on
+-- by hand afterward, so down is a no-op.

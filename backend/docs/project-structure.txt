@@ -1,0 +1,287 @@
+================================================================================
+WILLCOLL — PROJECT STRUCTURE
+Satisfies system-design.txt. Backend layout follows the standard Go project
+layout used by "Let's Go Further" (Greenlight) and the Simple Bank
+curriculum; frontend follows Nuxt 4 conventions.
+================================================================================
+
+willcoll/
+├── backend/
+│   ├── cmd/
+│   │   └── api/
+│   │       ├── main.go              # application struct, dependency wiring, wg
+│   │       ├── config.go            # Viper load -> config struct (mirrors Greenlight's config)
+│   │       ├── routes.go            # gin.Engine + full route table (sections 4.4-4.9)
+│   │       ├── middleware.go        # recoverPanic, rateLimit, tenantSession, metrics, cors
+│   │       ├── helpers.go           # envelope, writeJSON, readJSON, readIDParam, background()
+│   │       ├── errors.go            # centralized error responses (Greenlight pattern)
+│   │       ├── context.go           # contextSetManager/Admin, contextGetManager/Admin
+│   │       ├── healthcheck.go
+│   │       ├── managers.go          # signup/activate handlers
+│   │       ├── sessions.go          # login/logout (SCS)
+│   │       ├── tokens.go            # activation + password-reset token issuance
+│   │       ├── landlords.go
+│   │       ├── properties.go
+│   │       ├── units.go
+│   │       ├── leases.go
+│   │       ├── rent.go              # rent-schedule + rent/generate
+│   │       ├── water.go             # water grid read/save + water/generate
+│   │       ├── garbage.go
+│   │       ├── ledgers.go           # GET /units/:id/ledger/:type
+│   │       ├── reports.go           # schedule + receipts generation
+│   │       ├── pay.go               # public tenant OTP + intent endpoints
+│   │       ├── webhooks_payhero.go  # collections + subscriptions webhooks
+│   │       ├── billing.go           # manager subscription endpoints
+│   │       └── admin.go             # super-admin endpoints
+│   │
+│   ├── internal/
+│   │   ├── data/                    # Greenlight-style Models aggregate
+│   │   │   ├── models.go            # type Models struct { Managers, Properties, ... }
+│   │   │   ├── managers.go
+│   │   │   ├── landlords.go
+│   │   │   ├── properties.go
+│   │   │   ├── units.go
+│   │   │   ├── leases.go
+│   │   │   ├── ledger.go            # balance-view reads, entry inserts (wraps sqlc queries)
+│   │   │   ├── payments.go
+│   │   │   ├── tokens.go
+│   │   │   └── filters.go           # pagination/sort helpers (Greenlight ch. "Filtering, Sorting")
+│   │   │
+│   │   ├── db/                      # sqlc-generated layer (Simple Bank convention)
+│   │   │   ├── query/               # hand-written .sql, one file per aggregate
+│   │   │   │   ├── managers.sql
+│   │   │   │   ├── properties.sql
+│   │   │   │   ├── units.sql
+│   │   │   │   ├── leases.sql
+│   │   │   │   ├── ledger_entries.sql
+│   │   │   │   ├── charges.sql
+│   │   │   │   ├── payments.sql
+│   │   │   │   └── reports.sql
+│   │   │   ├── sqlc/                # generated: models.go, *.sql.go, querier.go
+│   │   │   ├── mock/                # gomock-generated mock of Querier
+│   │   │   └── store.go             # SQLStore: BeginTx + execTx helper (Simple Bank pattern),
+│   │   │                            # sets `SET LOCAL app.tenant_id` at tx start
+│   │   │
+│   │   ├── validator/               # Greenlight's hand-rolled Validator{Errors}
+│   │   │   └── validator.go
+│   │   │
+│   │   ├── reconciliation/          # section 5 logic, pure functions + tests
+│   │   │   ├── matcher.go           # phone/name matching
+│   │   │   ├── subsetsum.go         # combination resolver against open charges
+│   │   │   └── waterfall.go         # default priority fallback
+│   │   │
+│   │   ├── payhero/                 # PayHero API client + webhook verification
+│   │   │   ├── client.go            # STKPush(), collections vs billing channel
+│   │   │   ├── webhook.go           # signature/IP verification, payload structs
+│   │   │   └── types.go
+│   │   │
+│   │   ├── pdf/                     # maroto template builders (section 4.10)
+│   │   │   ├── water_invoice.go
+│   │   │   ├── garbage_invoice.go
+│   │   │   ├── receipt.go
+│   │   │   ├── monthly_schedule.go
+│   │   │   └── subscription_invoice.go
+│   │   │
+│   │   ├── mailer/                  # activation/reset emails (Greenlight pattern)
+│   │   │   ├── mailer.go
+│   │   │   └── templates/
+│   │   │       ├── manager_welcome.tmpl
+│   │   │       └── password_reset.tmpl
+│   │   │
+│   │   ├── sms/                     # Africa's Talking OTP + payment confirmations
+│   │   │   └── client.go
+│   │   │
+│   │   ├── vcs/                     # build-info version string (Greenlight ch. 21)
+│   │   │   └── vcs.go
+│   │   │
+│   │   └── jsonlog/                 # structured leveled logger (or wrap slog directly)
+│   │       └── jsonlog.go
+│   │
+│   ├── pkg/                         # code intended for reuse outside this binary
+│   │   └── moneyfmt/                # Kshs formatting/parsing helpers shared by
+│   │                                 # pdf templates and API responses
+│   │
+│   ├── migrations/                  # golang-migrate .sql pairs, numbered
+│   │   ├── 000001_create_admins_table.up.sql
+│   │   ├── 000001_create_admins_table.down.sql
+│   │   ├── 000002_create_managers_table.up.sql
+│   │   ├── 000002_create_managers_table.down.sql
+│   │   ├── 000003_create_tokens_table.up.sql / .down.sql
+│   │   ├── 000004_create_landlords_table.up.sql / .down.sql
+│   │   ├── 000005_create_properties_table.up.sql / .down.sql
+│   │   ├── 000006_create_units_table.up.sql / .down.sql
+│   │   ├── 000007_create_leases_and_payers.up.sql / .down.sql   # incl. LEASE_START
+│   │   │                                                        # deposit-charge trigger
+│   │   ├── 000008_create_ledger_accounts.up.sql / .down.sql
+│   │   ├── 000009_create_billing_engines.up.sql / .down.sql   # water_readings, garbage_runs, rent_runs
+│   │   ├── 000010_create_charges.up.sql / .down.sql
+│   │   ├── 000011_create_transaction_headers_and_entries.up.sql / .down.sql
+│   │   ├── 000012_create_unit_ledger_balances_view.up.sql / .down.sql
+│   │   ├── 000013_create_payment_intents_and_payments.up.sql / .down.sql
+│   │   ├── 000014_create_payment_allocations.up.sql / .down.sql
+│   │   ├── 000015_create_receipts_and_reports.up.sql / .down.sql
+│   │   ├── 000016_create_subscriptions.up.sql / .down.sql
+│   │   └── 000017_enable_row_level_security.up.sql / .down.sql
+│   │
+│   ├── test/                        # integration/external tests (not package-local)
+│   │   ├── ledger_concurrency_test.go   # dual-webhook race test (section 3.8/9)
+│   │   ├── reconciliation_test.go       # subset-sum + waterfall fixtures
+│   │   ├── billing_run_test.go          # rent/water/garbage generate flows
+│   │   └── testdata/
+│   │       ├── sample_water_readings.csv
+│   │       └── sample_units_import.csv
+│   │
+│   ├── configs/
+│   │   ├── config.example.env
+│   │   ├── config.staging.env        # not committed with real secrets
+│   │   └── config.production.env    # not committed with real secrets
+│   │
+│   ├── docs/
+│   │   ├── system-design.txt         # (this design doc, kept alongside code)
+│   │   ├── erd.dbml                  # DBML source for the schema in section 3
+│   │   └── adr/                      # architecture decision records
+│   │       ├── 0001-scs-sessions-over-jwt.md
+│   │       ├── 0002-append-only-ledger-storno.md
+│   │       └── 0003-rls-tenant-isolation.md
+│   │
+│   ├── api/
+│   │   └── openapi.yaml              # REST contract for section 4.6-4.9
+│   │
+│   ├── build/
+│   │   ├── Dockerfile                 # multi-stage: builder -> distroless
+│   │   ├── docker-compose.staging.yml
+│   │   └── docker-compose.production.yml
+│   │
+│   ├── scripts/
+│   │   ├── db_backup_verify.sh        # cron: checks WAL push, hits admin health
+│   │   ├── seed_dev.sh                # loads a small fixture tenant for local dev
+│   │   └── generate_sqlc.sh
+│   │
+│   ├── vendor/                        # committed if reproducible-build policy requires it
+│   ├── go.mod
+│   ├── go.sum
+│   ├── sqlc.yaml
+│   ├── .golangci.yml
+│   ├── Caddyfile                      # reverse proxy config, deployed alongside build/
+│   └── Makefile
+│       # make run/api          -> air (dev, no docker)
+│       # make db/migrations/new name=...
+│       # make db/migrations/up / down
+│       # make sqlc/generate
+│       # make test             -> go test ./... -race
+│       # make audit            -> go vet + staticcheck + golangci-lint
+│       # make build/api        -> static binary for the Docker build stage
+│
+├── frontend/                         # Nuxt 4 / Vue 3
+│   ├── app/
+│   │   ├── app.vue
+│   │   ├── error.vue
+│   │   └── layouts/
+│   │       ├── default.vue           # manager dashboard shell (sidebar nav)
+│   │       ├── admin.vue             # super-admin shell
+│   │       └── public.vue            # bare layout for /pay/* and /auth/*
+│   │
+│   ├── pages/
+│   │   ├── auth/
+│   │   │   ├── signup.vue
+│   │   │   ├── activate.vue
+│   │   │   ├── login.vue
+│   │   │   ├── forgot-password.vue
+│   │   │   └── reset-password.vue
+│   │   ├── properties/
+│   │   │   ├── index.vue             # card grid
+│   │   │   └── [id]/
+│   │   │       ├── index.vue         # tab shell: Units|Rent|Water|Garbage|Reports
+│   │   │       └── units/
+│   │   │           └── [unitId].vue  # tab shell: Rent|Water|Garbage ledgers
+│   │   ├── account.vue
+│   │   ├── billing.vue
+│   │   ├── pay/
+│   │   │   └── [propertySlug]/
+│   │   │       └── [unitCode].vue    # OTP -> balances -> intent -> STK -> receipt
+│   │   └── admin/
+│   │       ├── managers/
+│   │       │   ├── index.vue
+│   │       │   └── [id].vue
+│   │       ├── subscriptions.vue
+│   │       └── system.vue
+│   │
+│   ├── components/
+│   │   ├── property/
+│   │   │   ├── PropertyCard.vue
+│   │   │   ├── UnitCard.vue
+│   │   │   └── SpreadsheetTable.vue  # generic editable grid: Rent/Water/Garbage tabs
+│   │   ├── ledger/
+│   │   │   └── LedgerTable.vue
+│   │   ├── pay/
+│   │   │   ├── OtpChallenge.vue
+│   │   │   └── PayIntentForm.vue
+│   │   └── ui/                       # shared buttons, modals, toasts
+│   │
+│   ├── composables/
+│   │   ├── useApi.ts                 # $fetch wrapper, envelope unwrap, error normalize
+│   │   └── useCurrency.ts            # Kshs formatting to match generated PDFs
+│   │
+│   ├── stores/                       # Pinia
+│   │   ├── auth.ts
+│   │   ├── properties.ts
+│   │   ├── units.ts
+│   │   ├── ledgers.ts
+│   │   ├── payments.ts
+│   │   └── admin.ts
+│   │
+│   ├── middleware/
+│   │   └── auth.global.ts            # role-based route guard
+│   │
+│   ├── public/
+│   │   └── favicon.ico
+│   │
+│   ├── nuxt.config.ts                 # modules: @pinia/nuxt, @nuxt/icon, @nuxt/fonts,
+│   │                                   # @nuxtjs/tailwindcss; runtimeConfig.apiBase
+│   ├── tailwind.config.ts
+│   ├── package.json                   # pnpm
+│   ├── pnpm-lock.yaml
+│   └── .env.example
+│
+├── .github/
+│   └── workflows/
+│       ├── test.yml                   # Trigger: push/PR targeting `development` ONLY.
+│       │                              # This is the sole gate on that branch — go vet,
+│       │                              # golangci-lint, `golang-migrate up` + `sqlc generate
+│       │                              # --dry-run` against an ephemeral Postgres service
+│       │                              # container, `go test ./... -race`. Nothing is
+│       │                              # deployed from this workflow; a failing run simply
+│       │                              # blocks the PR from merging into `staging`.
+│       ├── deploy-staging.yml         # Trigger: push to `staging` (i.e. a merge from
+│       │                              # `development`). Re-runs the same test suite as a
+│       │                              # safety net, then — only if it passes — builds the
+│       │                              # multi-stage Docker image, pushes it to the
+│       │                              # registry, SSHes into the staging Compose stack,
+│       │                              # runs migrations, and does `docker compose pull &&
+│       │                              # up -d`. This is the only workflow allowed to touch
+│       │                              # the staging server.
+│       └── deploy-production.yml      # Trigger: push to `main` (i.e. a merge from
+│                                      # `staging`, normally via a tagged release). Same
+│                                      # build-and-migrate steps as staging, targeting the
+│                                      # production Compose stack, plus a pre-deploy
+│                                      # `pg_dump` logical snapshot taken as a rollback net
+│                                      # before migrations run. This is the only workflow
+│                                      # allowed to touch the production server.
+│       #
+│       # Branch flow this enforces:  development --(test.yml gates PR)--> staging
+│       #                             --(deploy-staging.yml)--> main --(deploy-production.yml)
+│       # Nothing merges to `staging` or `main` without test.yml having passed on the PR
+│       # into it, and only `staging`/`main` pushes are wired to a deploy workflow at all —
+│       # `development` can never accidentally deploy anywhere.
+│
+├── examples/
+│   └── payhero-webhook-payloads/      # captured sample JSON for local testing
+│       ├── stk_push_success.json
+│       └── c2b_unmatched.json
+│
+├── docs/                              # top-level, cross-cutting docs (repo root)
+│   ├── system-design.txt
+│   └── project-structure.txt
+│
+└── README.md
+================================================================================

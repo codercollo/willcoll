@@ -1,0 +1,409 @@
+================================================================================
+WILLCOLL — DESIGN TOKENS
+Theme reference: dark-navy-sidebar / light-canvas dashboard (reference image,
+"Property Screen" — tenant-facing real-estate app)
+Satisfies: system-design.txt (section 6, Frontend Design) and
+           project-structure.txt (frontend/ tree: components, pages, layouts)
+================================================================================
+How to use this file: it is the single source of truth a Tailwind config
+(tailwind.config.ts) and a CSS variables file (assets/css/tokens.css) are
+both generated FROM. Nothing in frontend/ hardcodes a hex value, a px
+spacing, or a font-size outside of these tokens.
+
+
+--------------------------------------------------------------------------------
+1. COLOR — PRIMITIVES
+--------------------------------------------------------------------------------
+Taken directly from the reference screen: near-black navy sidebar, white
+card surfaces on a soft gray canvas, one confident blue accent, gold star
+rating, and a small set of status colors for arrears/paid states that
+Willcoll needs but the reference doesn't show (ledgers are the whole
+product, so "paid / arrears / partial / vacant" need to be unambiguous
+at a glance).
+
+  navy-950   #0B1220     -- sidebar background (darkest, matches reference)
+  navy-900   #111C34     -- sidebar hover / section dividers within sidebar
+  navy-800   #1B2A4A     -- sidebar active item pill, tenant-app-card overlays
+  navy-700   #27395E     -- borders/rules on dark surfaces
+  navy-500   #4C5E85     -- borders/dividers on dark surfaces ONLY (2.9:1: too low for text)
+  navy-400   #7C8DB5     -- muted text/icons on dark surfaces (5.6:1 on navy-950; added after the AA scan)
+  navy-100   #E9ECF3     -- faint navy tint for selected rows on light surfaces
+
+  blue-600   #2F6FED     -- primary accent (buttons, links, active tab underline,
+                             focus ring) — the "Apply for leasing" button blue
+  blue-700   #2557C2     -- primary hover/pressed
+  blue-100   #E3ECFF     -- primary-tint backgrounds (info banners, badge bg)
+  blue-050   #F2F6FF     -- selected-row / lightest tint
+
+  gray-900   #111827     -- primary text on light surfaces
+  gray-700   #374151     -- secondary body text
+  gray-500   #626977     -- muted/placeholder text, helper text (was #6B7280, which is 4.3:1 on
+                             the gray-100 canvas; #626977 is 4.9:1 there and 5.5:1 on white)
+  gray-300   #D7DCE3     -- borders, table rules, input borders
+  gray-100   #F1F3F6     -- page canvas background (behind cards)
+  gray-050   #F8F9FB     -- table zebra stripe / subtle panel fill
+  white      #FFFFFF     -- card surfaces, sidebar-active text
+
+  gold-500   #F5A623     -- rating stars (kept for landlord/property rating
+                             displays only — not reused for money states)
+
+-- Semantic status colors (Willcoll-specific: ledgers must read instantly)
+  status-paid       #1AA971  bg-tint #E7F7F1   -- balance = 0 / current
+  status-arrears    #E0433D  bg-tint #FDEDEC   -- balance > 0, overdue
+  status-partial    #E08A1E  bg-tint #FDF2E3   -- part-paid this period
+  status-vacant     #6B7280  bg-tint #F1F3F6   -- unit has no active lease
+  status-pending    #2F6FED  bg-tint #E3ECFF   -- payment_intent awaiting webhook
+  status-unmatched  #8B5CF6  bg-tint #F1EBFC   -- reconciliation review queue item
+
+-- Status colours as TEXT (added after an automated WCAG AA scan)
+The solid status colours above are 3.0-4.0:1 on white, which fails AA for body
+text. Use the solid colour for dots, progress bars and borders ONLY. For any
+status-coloured text (amounts, badge labels, alerts) use the -text variants:
+  status-paid-text       #0F7A52   (5.4:1 on white, 4.8:1 on its tint)
+  status-arrears-text    #C0322C   (5.6:1 on white, 4.9:1 on its tint)
+  status-partial-text    #9A5B00   (5.4:1 on white, 4.8:1 on its tint)
+  status-pending-text    #2557C2   (= blue-700)
+  status-unmatched-text  #6D28D9   (7.0:1 on white)
+The count pill on the sidebar (white text) uses status-unmatched-text as its fill.
+
+-- Status colours as TEXT (added after an automated WCAG AA scan)
+The solid status colours above are 3.0-4.0:1 on white, which fails AA for body
+text. Use the solid colour for dots, progress bars and borders ONLY. For any
+status-coloured text (amounts, badge labels, alerts) use the -text variants:
+  status-paid-text       #0F7A52   (5.4:1 on white, 4.8:1 on its tint)
+  status-arrears-text    #C0322C   (5.6:1 on white, 4.9:1 on its tint)
+  status-partial-text    #9A5B00   (5.4:1 on white, 4.8:1 on its tint)
+  status-pending-text    #2557C2   (= blue-700)
+  status-unmatched-text  #6D28D9   (7.0:1 on white)
+The count pill on the sidebar (white text) uses status-unmatched-text as its fill.
+
+Contrast rule: every text/background pairing above meets WCAG AA (4.5:1
+body text, 3:1 large text/icons). navy-950 sidebar text is always white or
+navy-400 (never gray-500 or navy-500, which fail on navy-950).
+
+
+--------------------------------------------------------------------------------
+2. COLOR — SEMANTIC ASSIGNMENT (where each token is actually used)
+--------------------------------------------------------------------------------
+  --color-surface-canvas        gray-100     page background behind cards
+  --color-surface-card          white        PropertyCard, UnitCard, panels,
+                                              SpreadsheetTable container
+  --color-surface-sidebar       navy-950     manager + admin sidebar
+  --color-surface-sidebar-hover navy-900
+  --color-surface-sidebar-active navy-800    active nav item pill
+  --color-border-default        gray-300
+  --color-border-subtle         gray-100
+  --color-text-primary          gray-900     on light surfaces
+  --color-text-secondary        gray-500
+  --color-text-inverse          white        on navy-950/900/800
+  --color-text-inverse-muted    navy-400     inactive sidebar labels
+  --color-accent-primary        blue-600     buttons, links, active tab, focus ring
+  --color-accent-primary-hover  blue-700
+  --color-accent-primary-tint   blue-100     badge/banner backgrounds
+  --color-accent-text           blue-700     links and small blue TEXT (blue-600 is 3.8-4.3:1 on tints; use
+                                             accent-primary for fills, borders and focus rings only)
+  --color-ledger-paid           status-paid
+  --color-ledger-arrears        status-arrears
+  --color-ledger-partial        status-partial
+  --color-ledger-vacant         status-vacant
+  --color-ledger-pending        status-pending
+  --color-ledger-unmatched      status-unmatched
+
+
+--------------------------------------------------------------------------------
+3. TYPOGRAPHY
+--------------------------------------------------------------------------------
+Font family (via @nuxt/fonts): "Inter", system-ui fallback stack. Matches
+the geometric, tight-letterspacing sans in the reference screenshot.
+Numerals: tabular-nums enabled globally on any element carrying a Kshs
+amount, a meter reading, or a unit number — ledgers and spreadsheet grids
+must have digits align in columns.
+
+  --font-family-base   'Inter', ui-sans-serif, system-ui, sans-serif
+  --font-feature-nums  'tnum' 1     -- applied to .money, .reading, table <td> numerics
+
+  Scale (name / size / line-height / weight / usage):
+  display    28px / 36px / 700   Page hero numbers only (rare — e.g. "Grand
+                                   Total Payment" on the generated schedule
+                                   PDF preview, not in normal UI chrome)
+  h1         22px / 30px / 700   Page title ("Properties", "The Silver
+                                   Square" property name header)
+  h2         18px / 26px / 600   Card section headers, tab panel titles
+  h3         15px / 22px / 600   Card titles (PropertyCard name, UnitCard
+                                   tenant name), table column group headers
+  body       14px / 20px / 400   Default body text, table cell text, form
+                                   labels' sibling text
+  body-strong 14px / 20px / 600  Emphasized inline values (a balance figure
+                                   inline in a sentence)
+  label      13px / 18px / 500   Form field labels, table column headers
+                                   (uppercase, +0.02em letter-spacing)
+  caption    12px / 16px / 400   Helper text, timestamps, receipt numbers,
+                                   sidebar section dividers
+  money-lg   20px / 26px / 700   Ledger balance figures, card KPI numbers
+                                   ("rent collected vs expected")
+  money-sm   14px / 20px / 600   Inline table amounts
+
+Letter-spacing: -0.01em on h1/h2 (matches the tight heading in reference),
++0.02em on `label` (uppercase table headers), 0 elsewhere.
+
+
+--------------------------------------------------------------------------------
+4. SPACING SCALE (4px base unit — every margin/padding in the app is one
+   of these; no ad-hoc pixel values in component code)
+--------------------------------------------------------------------------------
+  space-0   0px
+  space-1   4px    icon-to-label gaps, badge internal padding (vertical)
+  space-2   8px    input internal vertical padding, tight icon-button padding
+  space-3   12px   badge horizontal padding, table cell vertical padding
+  space-4   16px   default gap between form fields (vertical stack), card
+                    internal padding on compact cards (UnitCard)
+  space-5   20px   table cell horizontal padding, sidebar item vertical padding
+  space-6   24px   card internal padding (PropertyCard, panels, tab content
+                    wrapper) — THE default "page has breathing room" unit
+  space-8   32px   gap between major page sections (e.g. KPI row -> card grid),
+                    modal internal padding
+  space-10  40px   page top padding under the app header
+  space-12  48px   gap between sidebar top logo block and first nav group
+  space-16  64px   empty-state vertical centering padding
+
+
+--------------------------------------------------------------------------------
+5. RADIUS, ELEVATION, BORDERS
+--------------------------------------------------------------------------------
+  --radius-sm    6px    inputs, badges, small buttons, table row hover fill
+  --radius-md    10px   cards (PropertyCard, UnitCard, panels), modals
+  --radius-lg    16px   the sidebar's active-item pill, the hero image panel
+                          on the tenant pay page (matches reference's rounded
+                          hero photo)
+  --radius-full  9999px avatar circles, status dot indicators, pill badges
+
+  --shadow-card    0 1px 2px rgba(16,24,40,0.05), 0 1px 3px rgba(16,24,40,0.08)
+  --shadow-popover 0 4px 8px rgba(16,24,40,0.08), 0 12px 24px rgba(16,24,40,0.10)
+  --shadow-modal   0 8px 16px rgba(16,24,40,0.10), 0 24px 48px rgba(16,24,40,0.16)
+
+  --border-width-hairline  1px    default card/table border, uses gray-300
+  --border-width-focus     2px    focus ring, uses accent-primary at 40% opacity
+                                   as an outer glow + solid 2px inner ring
+
+
+--------------------------------------------------------------------------------
+6. LAYOUT GRID / STRUCTURAL DIMENSIONS
+--------------------------------------------------------------------------------
+6.1 Manager & Admin shell (matches reference: fixed dark sidebar + light canvas)
+  --sidebar-width-expanded   248px
+  --sidebar-width-collapsed  72px   (icon-only, labels hidden — used <1024px)
+  --topbar-height            64px   (breadcrumb/page title + account menu, sits
+                                      on gray-100 canvas, not on navy)
+  --content-max-width        1280px (centers on ultra-wide monitors; property
+                                      card grid and tables never stretch edge
+                                      to edge past this)
+  --content-padding-x        32px  (space-8) desktop, 16px (space-4) mobile
+  --content-padding-top      40px  (space-10)
+
+6.2 Sidebar nav item
+  height: 44px
+  padding: 0 space-5 (20px) horizontal, vertically centered
+  icon size: 20px, gap to label: space-3 (12px)
+  active state: background navy-800, radius-md, full-bleed to sidebar's own
+                horizontal padding (not a floating pill with side margins —
+                matches the reference's edge-to-edge active row)
+  section label ("PROPERTIES", "ACCOUNT", "BILLING" group headers if grouped):
+                caption size, navy-500, uppercase, +0.04em, padding-top space-6
+
+6.3 Breakpoints
+  --bp-sm   640px    tenant pay page single-column below this
+  --bp-md   768px    sidebar auto-collapses to icon-only below this
+  --bp-lg   1024px   card grids drop from 3-col to 2-col below this
+  --bp-xl   1280px   content-max-width ceiling
+
+
+--------------------------------------------------------------------------------
+7. COMPONENT SPECS
+--------------------------------------------------------------------------------
+7.1 PropertyCard (Properties page — card grid)
+  container: radius-md, shadow-card, surface-card, padding space-6
+  grid: 3 columns @ >=1280px, 2 @ >=1024px, 1 @ below
+  gap between cards: space-6 (24px) both axes
+  layout inside card, top to bottom:
+    - property name (h3) + landlord name (caption, gray-500) — gap space-1
+    - KPI row (gap space-4 between the two stats):
+        "Rent collected vs expected"  -> money-sm value + a thin progress
+           bar (4px height, radius-full, track gray-100, fill accent-primary;
+           fill color switches to status-arrears if collected < 60% of
+           expected past the 20th of the month)
+        "Units" -> "37 occupied / 48 total" body text, with a small
+           occupied/vacant dot pair (status-paid dot, status-vacant dot)
+    - divider (hairline, gray-100), margin-y space-4
+    - footer: "View property" as a text link, accent-primary, right-aligned
+  hover: shadow elevates to shadow-popover, border tints to blue-100,
+         120ms ease-out transition — no layout shift
+
+7.2 UnitCard (Units tab inside a Property)
+  more compact than PropertyCard: padding space-4, radius-md, shadow-card
+  content: unit_code (h3) top-left, status badge top-right (paid/arrears/
+           partial/vacant — see 7.5 Badge), tenant_name (body) below,
+           "Leased since {date}" (caption, gray-500)
+  grid: 4 columns @ >=1280px, 3 @ >=1024px, 2 @ >=768px, 1 below
+  gap: space-4 (tighter than PropertyCard — these are denser, higher-count)
+
+7.3 Tabs (Property page: Units|Rent|Water|Garbage|Reports — Unit page:
+     Rent ledger|Water ledger|Garbage ledger)
+  height: 44px, sits directly under the property/unit header, no card
+          wrapper (full-bleed on content-max-width)
+  tab item: padding space-3 space-5, body-strong weight when active
+  active indicator: 2px accent-primary underline, gray-300 track underneath
+                    the full tab row
+  inactive text: gray-500; active text: gray-900
+  spacing between tab labels: space-8 (24-32px breathing room, these are
+                                click targets a manager taps daily — no
+                                dense cramming)
+
+7.4 SpreadsheetTable (Rent / Water / Garbage generation grids — the
+     highest-stakes component, directly digitizes the paper ledger)
+  container: surface-card, radius-md, shadow-card, NO internal padding
+             (the table fills the card edge-to-edge; padding lives in cells)
+  header row: sticky top:0, background gray-050, label-style text
+              (uppercase, gray-500), height 40px, border-bottom
+              border-width-hairline gray-300
+  body row height: 48px (tall enough for an inline numeric input without
+                    the row feeling cramped — this grid is edited, not just
+                    read)
+  cell padding: space-3 vertical, space-5 horizontal
+  zebra striping: OFF by default (a flat white table reads calmer at 48
+                  rows-per-property); instead, hover highlights the row
+                  with blue-050 background
+  editable cell (current_reading, rate override): input has NO visible
+      border at rest (blends into the row), gains border-width-focus
+      accent-primary ring + surface-card background on focus — signals
+      "this cell is live" without every cell looking like a form at rest
+  computed cell (units_consumed, amount, prior balance): text-only,
+      money-sm, right-aligned, gray-700 — never editable, never boxed
+  arrears/total cell: money-sm, bold, colored via ledger status tokens
+      (arrears in status-arrears, fully paid in status-paid) exactly like
+      the red-ink annotations in the paper ledger you're replacing
+  row-level lock state (after "Generate billing invoices"): row background
+      gray-050, all cells become read-only text, a small lock icon (14px,
+      gray-500) appears at the row's leading edge
+  footer row: sticky bottom:0, surface-card, border-top hairline, holds
+      column totals (matches the paper ledger's bottom summary row),
+      money-lg weight
+  action bar (above the table, not inside it): "Generate billing invoices"
+      primary button, right-aligned, space-4 below the tab row, space-4
+      above the table card
+
+7.5 Badge / status pill (ledger status, everywhere a balance state shows)
+  height: 22px, padding 0 space-3, radius-full, label-size text (13px),
+          weight 600
+  background: the status's *-tint color; text/dot: the status's solid color
+  always paired with a 6px status dot (radius-full) at the leading edge,
+  gap space-1 to the text — never color-only (colorblind-safe: status also
+  differs by label text: "Paid" / "Arrears" / "Partial" / "Vacant" /
+  "Pending" / "Review")
+
+7.6 Buttons
+  primary:   height 40px, padding 0 space-5, radius-sm, background
+             accent-primary, text white, body-strong; hover
+             accent-primary-hover; disabled: gray-300 bg, gray-500 text
+  secondary: same sizing, background white, border hairline gray-300,
+             text gray-900; hover background gray-050
+  destructive (rare — e.g. "Terminate lease"): same sizing, text
+             status-arrears, border status-arrears at 30% opacity, hover
+             bg status-arrears bg-tint
+  icon-only (table row actions, sidebar collapse toggle): 32px square,
+             radius-sm, gray-500 icon, hover background gray-100
+  button group spacing: space-3 between adjacent buttons in a toolbar
+
+7.7 Forms (Sign up/in, Account, and the Tenant pay-intent form especially
+     — this is the form a non-technical tenant fills on a phone, so it
+     gets the most generous spacing of any form in the system)
+  field stack gap: space-5 (20px) between fields — more than the space-4
+                    default, because mis-taps on a phone are costly here
+  label: label style, margin-bottom space-2, always visible (no
+         placeholder-as-label anti-pattern)
+  input: height 44px (comfortable tap target), radius-sm, border hairline
+         gray-300, padding 0 space-4, focus -> border-width-focus
+         accent-primary + subtle accent-primary-tint glow
+  helper/error text: caption size, margin-top space-1; error text uses
+         status-arrears color and an inline 14px warning icon
+  amount input (payment intent lines): right-aligned, tabular-nums,
+         money-sm, prefixed with a static "Ksh" affix (gray-500, not
+         inside the editable area) — mirrors how every paper document
+         studied writes amounts
+  submit button: full-width on the tenant pay page (mobile-first), height
+         48px (slightly taller than the 40px desktop default — thumb
+         target), sits space-6 below the last field, never sticky/floating
+         (a fixed bottom bar is where accidental double-taps happen)
+
+7.8 Tenant public pay page layout (the one screen a non-manager ever sees)
+  single card, radius-lg (matches the reference's rounded hero panel
+  language), max-width 480px, centered, surface-card, shadow-popover,
+  padding space-8
+  vertical rhythm, top to bottom: property name + unit code (h2), OTP step
+  OR balances summary (each ledger type as a compact row: label left,
+  money-sm right, status badge inline), divider, PayIntentForm (7.7),
+  submit, then a live STK-push status stepper (three states: "Sent to your
+  phone" / "Waiting for PIN" / "Confirmed" — each state a horizontal step
+  with a 24px icon, connected by a 2px gray-300 line that fills
+  accent-primary as it progresses) — no page reload, polls
+  /v1/pay/intents/:id/status
+
+7.9 Reports tab (generates the physical documents)
+  period picker + two primary actions ("Generate schedule PDF", "Generate
+  receipts PDF") in a toolbar, space-4 below the tab row
+  totals preview: a read-only summary table mirroring the exact columns of
+  "ALL IN ONE PAYMENTS SCHEDULE" (Hse No. | Tenant | Rent Paid | Water
+  Bills Paid | Rent Deposit | Water Deposit | Total) so the manager
+  reviews on-screen in the identical shape as the PDF they're about to
+  hand the landlord — no surprises between preview and export
+  garbage column in this preview is entirely omitted (not grayed out,
+  not shown-as-zero) when the property's garbage_enabled is false,
+  matching the spec's "garbage can be ignored/omitted"
+
+7.10 KPI stat tiles (Properties page header, Admin dashboard)
+  height 88px, radius-md, surface-card, shadow-card, padding space-5
+  layout: caption label top (gray-500), money-lg value below, optional
+  small delta/trend caption (status-paid or status-arrears colored)
+  grid gap space-4, 4-up on desktop, 2-up on tablet, 1-up on mobile
+
+
+--------------------------------------------------------------------------------
+8. MOTION
+--------------------------------------------------------------------------------
+  --duration-fast    120ms   hover states, badge color changes
+  --duration-base    200ms   tab switches, card hover elevation
+  --duration-slow    320ms   modal open/close, sidebar collapse/expand
+  --easing-standard  cubic-bezier(0.2, 0, 0, 1)
+  Reduced motion: all of the above collapse to 0ms when
+  prefers-reduced-motion is set — the STK-push status stepper (7.8) must
+  still convey state via icon/color change alone, since its progress-line
+  fill animation is motion-gated.
+
+
+--------------------------------------------------------------------------------
+9. ICONOGRAPHY
+--------------------------------------------------------------------------------
+  Source: @nuxt/icon, a single outline icon set throughout (no mixing
+  filled + outline styles). Default stroke width 1.75px at 20px/24px
+  sizes to match the reference screenshot's line-icon sidebar.
+  Sizes used: 16px (inline with caption text), 20px (sidebar nav, table
+  row actions), 24px (empty states, modal headers).
+
+
+--------------------------------------------------------------------------------
+10. DARK-SURFACE / LIGHT-SURFACE RULE (where each theme applies)
+--------------------------------------------------------------------------------
+Willcoll is NOT a dark-mode app end to end — the reference image itself
+only darkens the navigation chrome. Applied consistently:
+  DARK  (navy-950/900/800 + white/navy-500 text): sidebar only, on every
+        shell (manager, admin). Never the content canvas, never a card,
+        never a table, never the tenant pay page.
+  LIGHT (gray-100 canvas, white cards, gray-900 text): everything else —
+        all forms, all ledgers, all spreadsheet grids, all generated
+        document previews, the entire tenant-facing surface.
+Rationale: ledgers and spreadsheet grids are read for long stretches and
+compared against printed PDFs in good light (a manager sitting with the
+paper ledger book open beside the screen, per the actual workflow) — high
+sustained contrast and print-adjacent color wins there over a full dark
+theme, while the navy sidebar still gives the app the confident, branded
+identity of the reference screen.
+================================================================================

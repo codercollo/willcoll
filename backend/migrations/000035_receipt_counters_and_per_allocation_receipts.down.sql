@@ -1,0 +1,11 @@
+ALTER TABLE receipts DROP CONSTRAINT IF EXISTS receipts_tenant_property_receipt_no_key;
+ALTER TABLE receipts DROP COLUMN IF EXISTS void_reason;
+ALTER TABLE receipts DROP COLUMN IF EXISTS voided_at;
+ALTER TABLE receipts DROP COLUMN IF EXISTS arrears_note;
+ALTER TABLE receipts DROP COLUMN IF EXISTS ledger_type;
+ALTER TABLE receipts DROP COLUMN IF EXISTS payment_allocation_id;
+ALTER TABLE receipts ALTER COLUMN property_id DROP NOT NULL;
+ALTER TABLE receipts DROP COLUMN IF EXISTS property_id;
+ALTER TABLE receipts ALTER COLUMN payment_ids SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS receipts_unit_period_key ON receipts (unit_id, period);
+DROP TABLE IF EXISTS receipt_counters;

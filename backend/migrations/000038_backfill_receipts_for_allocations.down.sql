@@ -1,0 +1,2 @@
+-- Data backfill: not reversible without losing which receipts were the
+-- backfilled ones vs. issued live afterward, so down is a no-op.
