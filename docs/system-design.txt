@@ -1,0 +1,314 @@
+================================================================================
+WILLCOLL — SYSTEM DESIGN
+One platform, three products: Rentals (shipped), Estates (to build), Waste
+(to build). Paired with docs/project-structure.txt, which lays out the repo
+layout this design implies.
+================================================================================
+Supersedes backend/docs/system-design.txt's two-product draft: same platform
+model, extended to three products and moved to the repo root as the one
+canonical design doc. backend/docs/ is retired entirely — see
+project-structure.txt Part C for where its ADRs and ERD moved. Conventions
+carried through every product: Greenlight
+(Let's Go Further) API architecture, Simple Bank ledger/db hardening —
+append-only ledger, storno instead of UPDATE/DELETE, SERIALIZABLE + retry on
+posting transactions, a zero-sum check before every ledger transaction
+commits, SET LOCAL tenant_id + Row-Level Security on every tenant-scoped
+table.
+
+
+================================================================================
+PART A — PLATFORM (shared across every product)
+================================================================================
+A.1 Identity
+  One login per manager, at the platform level, not per product. A manager
+  signs up once, activates once, and sees whichever products their
+  manager_modules row enables. Staff roles (sub-accounts under a manager)
+  are a platform concept too, so a future product never re-implements auth.
+
+A.2 Platform database (willcoll_platform)
+  managers, staff, sessions, tokens, subscriptions, subscription_plans,
+  subscription_invoices, manager_modules (per-manager, per-product
+  entitlement flag — disabling a module never deletes that product's data,
+  it only blocks routing to it), payment_inbox (see A.4), payment_channels
+  (every PayHero channel's owner AND which product it belongs to),
+  service_links (a collector's optional link from one product's tenant to
+  another, with consent), handoff_invoices (a bulk invoice one product
+  raises against a linked tenant in another — see Part E).
+
+  Splitting managers/admins out of willcoll_rentals into this database
+  means willcoll_rentals' tenant_id columns can no longer FK to managers
+  (no cross-database foreign keys, E.3) — tenant_id becomes a plain uuid,
+  validated at the application layer instead. The cut-over requires a
+  backup of willcoll immediately before the split and an RLS isolation
+  test afterward (one manager's session still cannot read another
+  manager's rows with tenant_id no longer FK-backed). See
+  docs/adr/0006-platform-database-split.md and project-structure.txt
+  Part D step 3 for the full sequence.
+
+A.1.1 Go module — DECISION: one go.mod for three binaries (rentals-api,
+  estates-api, waste-api); internal/platform is a package, not a binary.
+  Not one module per product. Revisit only if build times force a split;
+  nothing about the platform/product boundary requires separate modules.
+
+A.3 requireModule() — the only gate
+  Middleware chain for every tenant route, in order: authenticate ->
+  requireActivatedManager -> requireSubscription -> requireModule("<product>").
+  requireModule reads manager_modules for (manager, product); a 403 here is
+  the ONLY thing that stops a manager reaching a product's data — nothing
+  about disabling a module deletes rows, ever (Part E.4).
+
+A.4 Money isolation
+  Every PayHero channel belongs to exactly one product and one owner,
+  enforced by payment_channels at registration time — a channel created
+  under Rentals can never be pointed at Estates or Waste later without a
+  new registration.
+
+  Webhook routing — DECISION: inline, no gateway binary. Each channel's
+  PayHero callback URL is registered pointing straight at the owning
+  product's own API (e.g. a Rentals channel's callback hits
+  rentals-api's /v1/webhooks/payhero/collections, not a shared front
+  door). There is no separate webhooks-gateway process.
+
+  payment_inbox carries a status (claimed|posted) and a claimed_at
+  timestamp. Flow:
+    1. Claim: INSERT INTO platform.payment_inbox (mpesa_receipt, status,
+       claimed_at, ...) VALUES (..., 'claimed', now(), ...)
+       ON CONFLICT (mpesa_receipt) DO NOTHING RETURNING id. If a row is
+       returned, the handler holds the claim and proceeds to step 2. If
+       no row is returned because a row already exists and its status is
+       still 'claimed' (not yet 'posted'), the handler does NOT stop —
+       it continues as if it had just claimed the row itself, so a retry
+       or a second concurrent webhook delivery for the same receipt still
+       drives the posting through rather than silently dropping it. If
+       the existing row is already 'posted', the handler stops: the
+       receipt was already fully handled.
+    2. Post locally: the handler posts into its own product's ledger —
+       its own reconciliation (that product's own reconciliation,
+       Part B / Part C / Part D) runs entirely inside its own database.
+    3. Mark 'posted': once local posting succeeds, the payment_inbox row
+       is updated to status='posted'. Each product's own payments table
+       ALSO carries a unique constraint on mpesa_receipt — this is the
+       final guard against a duplicate ledger posting even if step 1's
+       claim logic is ever wrong, so a duplicate insert there fails loud
+       rather than double-posting money.
+  A shared internal/shared/jobs task sweeps payment_inbox for rows still
+  'claimed' more than 5 minutes after claimed_at (a crash or a hung
+  request between claim and post) and re-drives step 2 for each, so a
+  claimed-but-never-posted receipt doesn't sit unposted forever.
+
+  No product ever reads another product's ledger tables, and there are no
+  cross-database foreign keys — a service_link or handoff_invoice
+  reference is an application-level pointer (id + product name), checked
+  at write time, never a DB-enforced FK across databases.
+
+A.5 Shared code (internal/shared/)
+  Reusable across every product: ledgerkit (entry insert, storno, zero-sum
+  assertion), reconcile (matcher/subsetsum/waterfall — generalized over
+  "which ledger types this product has," not Rentals-specific), httpx
+  (envelope, writeJSON/readJSON, error responders, the product-agnostic
+  half of middleware), auth (SCS session wiring, tokens table access),
+  plans (subscription pricing + manager_modules), jobs
+  (application.background()), exportx (CSV import/export), pdf
+  (primitives only — page setup, money/date formatting; each product keeps
+  its own document builders), payhero client + webhook verification, sms,
+  mailer, validator, jsonlog, vcs.
+
+
+================================================================================
+PART B — RENTALS (shipped — summary only; see features-functionalities.txt
+for the endpoint-by-endpoint spec, not repeated here)
+================================================================================
+Multi-tenant property/rent reconciliation for Kenyan management firms.
+
+Actors: Manager (tenant), Landlord (a data record, not a login), Tenant/
+renter (no login — OTP-gated public pay page), Super Admin (platform).
+
+Domain: Manager -> Landlord -> Property -> Unit -> Lease, with 0..N
+LeasePayers per lease. Six ledger types per unit (RENT, WATER, GARBAGE,
+RENT_DEPOSIT, WATER_DEPOSIT, ELECTRICITY), each an append-only account —
+balance is always derived from summed entries, never stored.
+
+Billing runs: RentSchedule -> monthly rent Charge; WaterReading (per-unit or
+shared plot meter, current vs previous) -> Charge; garbage billed per lease;
+electricity is a one-off deposit-based Charge at lease start when enabled.
+All four are draft-then-generate: a manager previews the run before it
+posts.
+
+Pay flow: a PayHero webhook, a manual entry, or an organic paybill payment
+lands as a Payment; reconciliation (Part A.5's shared matcher) either
+auto-allocates it against open charges or surfaces it in a manager-facing
+review queue. Tenants get an OTP-gated public pay page
+(/pay/:propertySlug/:unitCode) with no signup.
+
+Reports: the monthly payments-schedule report, water/garbage invoices, and
+receipts are generated PDFs that replace the paper documents the product
+was built to digitize — see features-functionalities.txt section 0 for the
+source material.
+
+Today Rentals is the only product with real code: one Go binary
+(cmd/api), one flat internal/data/ package, one Postgres database
+(willcoll), one Nuxt app (frontend/rentals). The migration to internal/
+rentals/ + willcoll_rentals + cmd/rentals-api is project-structure.txt
+Part D, step 1-2.
+
+
+================================================================================
+PART C — ESTATES (to build)
+================================================================================
+Own database: willcoll_estates.
+
+Actors
+  Manager + staff        the management firm (platform identity, Part A.1)
+  Owner                  pays, sees their own statement — a data record,
+                          like Rentals' Landlord+Tenant combined
+  Occupant (optional)    a non-owner payer living in a unit (P1)
+  Committee member       approves budgets/expenses, sees the estate's books
+                          (P1)
+  Super Admin            platform-level, unchanged from Part A
+
+C.1 P0 — must ship first
+  - estates, blocks, units (type, floor/area, share %), owners; CSV import;
+    opening balances.
+  - Annual budget apportioned four ways: equal, floor area, unit type,
+    share % — with exact-total rounding (the apportioned amounts must sum
+    to exactly the budget total, not "close enough").
+  - Automatic monthly or quarterly service-charge + reserve-fund invoices,
+    generated the same draft-then-generate way as Rentals' billing runs.
+  - Levies (one-off or recurring special charges), optional water billing
+    and late-payment penalties.
+  - Pay flow: OTP pay link (mirrors Rentals' pattern) + paybill account-
+    matching + bank statement import, reusing internal/shared/reconcile.
+  - SMS/email arrears reminders, arrears ageing report, owner statements.
+  - Expenses with receipt photos; separate operating fund and reserve fund
+    balances (never commingled — two ledger subjects per estate, not one).
+  - Income & Expenditure report, budget-vs-actual, cash-flow forecast, an
+    AGM pack, PDF/CSV/XLSX exports throughout.
+
+C.2 P1 — after P0 is stable
+  - Owner/committee portal (read access to statements/books).
+  - Maintenance requests — closing one posts an expense automatically
+    (reuses internal/shared/ledgerkit's posting path, not a new engine).
+  - Notices, committee budget/expense approvals, a vendor list, a
+    clearance certificate (for owners selling/transferring a unit).
+
+C.3 Explicitly out of scope
+  Visitor/gate management, amenity bookings, an asset register, chat, card
+  payments, accounting-package sync, eTIMS integration.
+
+C.4 Design carryover from Rentals
+  Same ledger mechanics (append-only, storno, zero-sum, SERIALIZABLE +
+  retry), same RLS-by-tenant_id pattern, same requireModule("estates")
+  gate, same OTP + PayHero pay flow shape, same draft-then-generate billing
+  pattern — Estates is a new domain model over the same platform machinery,
+  not a new architecture.
+
+
+================================================================================
+PART D — WASTE (to build — lightweight, TAQA-style)
+================================================================================
+Own database: willcoll_waste. Deliberately the smallest of the three
+products — one ledger type, no owners/committee layer, no portal.
+
+Actors
+  Collector (manager + staff)   the tenant, platform identity as usual
+  Customer                      a household or business; no login, OTP pay
+                                 link only
+  Super Admin                   platform-level, unchanged
+
+Tables: zones, customers, fee_plans, billing_runs, collection_logs, plus
+the shared ledger tables (ledger_accounts, transaction_headers,
+ledger_entries) — but with exactly ONE ledger type, SERVICE_FEE. No
+per-customer type branching anywhere in the billing code; if a second
+ledger type is ever needed, that is a sign Waste has grown past its scope.
+
+Features: monthly auto-invoicing per fee_plan; paybill payment with the
+customer's code as the M-Pesa account number, so matching is a direct
+lookup on that code rather than subset-sum reconciliation. A payment that
+doesn't carry a recognizable customer code goes to the manager-facing
+review queue, same shape as Rentals' (Part B). A payment that does match
+a customer is allocated oldest invoice first — no partial-match waterfall,
+no subset-sum: Waste's one-ledger-type simplicity means "oldest open
+SERVICE_FEE invoice first" is always the correct allocation, so the
+matcher never needs to choose between combinations. SMS reminders;
+arrears; receipts; a route/pickup list PDF for the collector's crew; a
+bank-ready statement; CSV import for onboarding a zone's existing
+customer list.
+
+Explicitly out of scope: GPS/truck tracking, weighbridge integration,
+recycling/materials tracking.
+
+
+================================================================================
+PART E — CROSS-PRODUCT HANDOFF AND INTEGRITY
+================================================================================
+E.1 Service links
+  A collector (Waste) or a management firm (Estates/Rentals) can link their
+  tenant record to an estate or a rentals property via service_links
+  (platform table, A.2), with the linked party's consent recorded on the
+  link. This is the only sanctioned cross-product pointer, and it is an
+  application-level id + product-name pair — never a cross-database FK.
+
+E.2 Handoff invoices
+  A bulk Waste invoice raised against a linked estate or rentals property
+  appears in that product's own expense/approval queue (Estates' expense
+  approval queue, or Rentals' landlord expenses) via a handoff_invoices row
+  (platform table). Paying it posts SEPARATELY in each product's own
+  ledger — Estates/Rentals records the expense payment in its own database
+  as soon as the manager approves/pays it there. There is no shared ledger
+  entry; the two products' books agree because the same amount is posted
+  on each side, from the same handoff_invoices row.
+
+  Waste's side does NOT clear on the paying product's say-so alone: Waste
+  marks a handoff invoice paid only when money actually reaches the
+  collector's own PayHero channel (A.4) — the same payment_inbox dedup
+  path as any other Waste payment. If the paying product records the
+  expense as paid but the receipt hasn't landed in payment_inbox yet (or
+  never does — wrong channel, a bounced STK push, a manual "mark paid"
+  on the paying side with no matching money movement), the handoff invoice
+  shows as "paid (unconfirmed)" in Waste rather than fully paid, and stays
+  visible on the arrears/reconciliation surface until the money actually
+  arrives or someone investigates the mismatch.
+
+E.3 Invariants (enforced, not just documented)
+  - No cross-database foreign keys, anywhere.
+  - No product ever reads another product's ledger tables directly — only
+    through the platform's service_links / handoff_invoices pointers.
+  - Disabling a manager_modules entitlement never deletes that product's
+    data; requireModule() only blocks routing (A.3).
+  - Every PayHero channel belongs to exactly one product and one owner
+    (payment_channels, A.4); a webhook is deduplicated once, on
+    mpesa_receipt, in payment_inbox, then routed to exactly one product.
+
+E.4 Tests that prove E.3, named so they can be written before the code that
+    satisfies them:
+  - Duplicate handoff: the same handoff_invoices row cannot be paid twice
+    in the receiving product — a second payment attempt against an already-
+    settled handoff invoice is rejected, not silently re-posted.
+  - Payment claimed once: firing the identical mpesa_receipt at the same
+    product's webhook handler twice, concurrently, asserts exactly one
+    payment_inbox row and exactly one routed ledger posting — the
+    dual-webhook concurrency pattern already proven for Rentals
+    (test/ledger_concurrency_test.go), run here against the inline
+    ON CONFLICT DO NOTHING insert (A.4) instead of a single product's
+    payment table.
+  - Handoff clearing lag: a handoff invoice marked paid on the paying
+    product's side but with no corresponding payment_inbox row on Waste's
+    side shows as "paid (unconfirmed)" in Waste, not "paid" (E.2).
+  - Crash between claim and post: a receipt is claimed (payment_inbox row
+    inserted, status='claimed') and local posting is then forced to fail
+    (e.g. the process is killed or the posting transaction is made to
+    error). Asserts the row is left 'claimed', and that either a retried
+    webhook delivery or the 5-minute sweeper (A.4) eventually posts it —
+    and that it posts exactly once, never zero or twice.
+  - Revoked consent: revoking a service_link's consent stops future
+    handoff_invoices from being created against it, but does not touch
+    already-posted ledger entries in either product.
+  - Module-gated 403s: a manager whose manager_modules row disables a
+    product gets a 403 from requireModule() on every route of that
+    product's API, while their data in that product's database is
+    unchanged and reappears intact the moment the module is re-enabled.
+  - Wrong-product channel: a payment_channels row scoped to product X
+    cannot be used to post into product Y's ledger even if the webhook
+    payload is otherwise well-formed — the routing decision in A.4 is keyed
+    off payment_channels.product, not anything in the webhook body.
+================================================================================

@@ -1,0 +1,839 @@
+================================================================================
+WILLCOLL — SYSTEM DESIGN
+Multi-product Kenyan property SaaS platform
+================================================================================
+Version: 2.0 (supersedes 1.0 — adds Willcoll Estates as a second product
+alongside Willcoll Rentals, under one platform identity)
+Stack: Go (Gin) + PostgreSQL + Nuxt 4 / Vue 3 + PayHero Kenya + Caddy + Contabo VPS
+Conventions: "Let's Go Further" (Greenlight) API architecture, "Simple Bank"
+             (Golang backend curriculum) ledger/db hardening principles.
+
+This file is organized in five parts:
+  PART A — PLATFORM      shared identity, module gating, shared code, money
+                         isolation, deployment — read this first, always
+  PART B — RENTALS       the existing product (sections 1-10, numbering kept
+                         stable because CLAUDE.md and other docs point at
+                         "system-design.txt section 4" etc.)
+  PART C — ESTATES       the new product (sections 1-10, mirrors Part B's
+                         numbering and actor list)
+  PART D — CROSS-PRODUCT DATA INTEGRITY
+  PART E — MISMATCHES & DECISIONS LOG (kept in-file so it travels with the
+                         doc; superseded entries are struck through, not
+                         deleted)
+
+
+================================================================================
+PART A — PLATFORM (shared across Rentals and Estates)
+================================================================================
+A.0 Why a platform layer at all
+--------------------------------------------------------------------------------
+Willcoll started as one product (Rentals). Willcoll Estates is a second,
+genuinely different domain — a residential estate's service-charge scheme,
+where each unit has its own OWNER (not a landlord renting it out), and a
+COMMITTEE approves budgets and expenses collectively. The two products do
+not share a ledger, a report, or a PDF. They share exactly three things:
+  1. Who is logged in (one manager/staff/admin identity, one session).
+  2. Money plumbing that must never double-count or cross-post a shilling.
+  3. Generic infrastructure with no domain opinion (HTTP envelope, PDF
+     kerning, SMS/mailer transport, structured logging, job scheduling).
+
+A.1 Product isolation
+--------------------------------------------------------------------------------
+  - Two binaries: cmd/rentals-api, cmd/estates-api. Each is its own Gin
+    `application`, its own `main.go`, its own Makefile targets, its own
+    Docker image, its own systemd unit / Compose service, its own Caddy
+    route (api.willcoll.app/rentals/*, api.willcoll.app/estates/* — or two
+    subdomains; see project-structure.txt E.4 for the exact Caddyfile).
+  - Two BUSINESS databases: willcoll_rentals, willcoll_estates. Every table
+    that models a Rentals or Estates concept (properties/units/leases/
+    ledgers/charges/payments/reports on the Rentals side; estates/blocks/
+    units/owners/budgets/levies/ledgers/expenses on the Estates side) lives
+    in exactly one of these two databases. No table, foreign key, ledger
+    row, report, or generated PDF is ever shared or mixed between products.
+    A payment collected for an Estates levy is never a Rentals `payments`
+    row and vice versa — see PART D for how a single incoming shilling is
+    still only ever claimed once.
+  - Two Nuxt apps: frontend/rentals (existing), frontend/estates (new; the
+    scaffolded frontend/estate — singular — directory is a naming mismatch
+    to fix during migration, see project-structure.txt).
+  - A manager who runs both a rental portfolio and manages an estate signs
+    in ONCE (platform identity, A.3) and gets a product switcher in the
+    UI; each product's data is completely invisible from the other's app
+    even though it's the same login.
+
+A.2 Shared code — internal/shared/
+--------------------------------------------------------------------------------
+Only code with NO domain opinion belongs here. A package graduates into
+internal/shared/ the moment a second product needs it unchanged; it is
+never speculatively created for one product "in case Estates needs it
+later" — that is exactly the premature-abstraction trap the Estates split
+must not repeat.
+
+  internal/shared/ledgerkit   the append-only ledger primitives BOTH products
+                              use identically: transaction_header + ledger_entry
+                              insert helpers, the zero-sum assertion (3.8/A
+                              in the Rentals part), the storno/reversal
+                              builder, and the `unit_ledger_balances`-style
+                              view pattern (generalized to "subject" rather
+                              than "unit" — a Rentals Unit and an Estates
+                              Unit are both a "ledger subject" to this
+                              package, nothing more).
+                              NOTE: ledgerkit is a LIBRARY, not a shared
+                              table. Rentals' ledger_entries lives in
+                              willcoll_rentals; Estates' lives in
+                              willcoll_estates. Same Go code, two databases,
+                              two independent sequences of entries.
+  internal/shared/reconcile   the phone/name matcher and subset-sum/waterfall
+                              fallback (today's internal/reconciliation),
+                              generalized over "the open balances of one
+                              ledger subject" instead of "one Rentals Unit."
+  internal/shared/httpx       envelope, writeJSON/readJSON, errors.go's
+                              centralized responders, the Gin middleware
+                              chain (recoverPanic, rate limiting, CORS,
+                              metrics) — today's cmd/api/helpers.go,
+                              errors.go and the product-agnostic half of
+                              middleware.go.
+  internal/shared/auth        SCS session wiring, the tokens table
+                              accessor, password hashing — everything that
+                              reads/writes the PLATFORM database's identity
+                              tables (A.3). Both binaries import this; only
+                              the platform DB connection is theirs to hold.
+  internal/shared/plans       subscription plan pricing (today's pricing
+                              overhaul: flat vs per-unit, is_test/archived
+                              guards) and the manager_modules entitlement
+                              check — genuinely platform-level billing, not
+                              a Rentals concept even though it originated
+                              there.
+  internal/shared/jobs        the `application.background()` goroutine-with-
+                              recovery pattern and (once Estates exists) a
+                              shared job-status table if bulk PDF runs need
+                              polling in both products.
+  internal/shared/storage     nothing today (no blob storage anywhere per
+                              CLAUDE.md's "no blob storage" decision for
+                              Rentals) — reserved for whichever product
+                              needs it first; Estates' P0/P1 scope (C.0)
+                              does not need it either.
+  internal/shared/exportx     CSV import/export helpers (today's Rentals
+                              units-import CSV parsing, generalized).
+  internal/shared/pdf         ONLY the primitive layer (page setup, money/
+                              date formatting shared with pkg/moneyfmt,
+                              header/footer chrome). The actual documents —
+                              Rentals' four templates (4.10 in Part B) and
+                              Estates' levy invoice / receipt / statement
+                              templates (C.4) — stay in
+                              internal/rentals/pdf and internal/estates/pdf
+                              respectively, because a water invoice and a
+                              levy invoice do not resemble each other beyond
+                              "a PDF with a logo and a total."
+  internal/shared/payhero      the PayHero API client and webhook signature/
+                              IP verification (today's internal/payhero,
+                              unchanged in behavior) — see A.5 for how a
+                              webhook is routed to a product AFTER shared
+                              verification and dedup.
+  internal/shared/sms          Africa's Talking client (today's internal/sms).
+  internal/shared/mailer       activation/reset/notification email sending
+                              (today's internal/mailer) — template FILES
+                              stay per-product (a Rentals activation email
+                              and an Estates one read differently) but the
+                              SMTP transport is one package.
+  internal/shared/validator    the hand-rolled Validator{Errors} (unchanged).
+  internal/shared/jsonlog      structured logger (unchanged).
+  internal/shared/vcs          build-info version string (unchanged).
+
+  internal/rentals/{data,db,pdf}   everything that is Rentals' own business
+                                    data, its own sqlc-generated repository
+                                    layer against willcoll_rentals, and its
+                                    own PDF templates. This is today's
+                                    internal/data + internal/db + internal/pdf,
+                                    moved and renamed, with zero behavior
+                                    change.
+  internal/estates/{data,db,pdf}   the new, symmetric package set for
+                                    Estates, against willcoll_estates.
+
+A.3 Identity — one platform database, one login for both products
+--------------------------------------------------------------------------------
+willcoll_platform holds:
+  admins            unchanged from today's Rentals-only admins table.
+  managers          unchanged shape (firm_name, username, email, phone,
+                    password_hash, status, activated_at) — but the word
+                    "manager" now means "the firm," not "the Rentals firm."
+                    A manager row does not imply Rentals; it implies an
+                    account on the platform.
+  staff             NEW. Today's system is single-login-per-firm (1.2 in
+                    Part B, unchanged for now as the default). staff is
+                    additive: zero or more named logins under one manager,
+                    each with a role (e.g. "caretaker," "accountant,"
+                    "committee_secretary") whose actual permission set is
+                    still to be designed — out of scope for this doc's
+                    Estates P0/P1 (C.0). It exists in the schema now so the
+                    Estates Committee-member and Resident-portal actors
+                    (C.1) have somewhere to attach a login WITHOUT a
+                    migration later; it is not exposed anywhere yet.
+  sessions          unchanged (SCS Postgres store), shared verbatim — a
+                    staff or manager session is one row regardless of which
+                    product's UI it is currently driving.
+  tokens            unchanged (activation/password-reset).
+  subscriptions,
+  subscription_plans,
+  subscription_invoices   unchanged shape from the pricing overhaul (flat
+                    vs per-unit, is_test/archived) — a subscription is to
+                    THE PLATFORM, not to a product.
+  manager_modules   NEW. manager_id, module text check in ('rentals',
+                    'estates'), enabled boolean, enabled_at, disabled_at.
+                    One row per manager per module they have ever turned on.
+                    Disabling a module flips enabled=false; it NEVER deletes
+                    or archives the module's business-database rows — those
+                    stay exactly where they are in willcoll_rentals /
+                    willcoll_estates, untouched, ready to re-enable.
+  payment_inbox     NEW — see A.5.
+
+No cross-database foreign keys exist ANYWHERE in this design: a
+willcoll_rentals row cannot FK into willcoll_platform, and neither business
+database can FK into the other. Every reference across a database boundary
+is a plain uuid column (e.g. willcoll_rentals.properties.tenant_id is a
+manager id that happens to also be a row in willcoll_platform.managers) —
+application-enforced, exactly the way "tenant_id" already works today
+without a physical FK to a shared managers table in a DIFFERENT database.
+This is a real, deliberate weakening of referential integrity in exchange
+for product isolation; see PART D for how the tests compensate.
+
+A.4 requireModule() — module gating, not data deletion
+--------------------------------------------------------------------------------
+Each business API's middleware chain gains one more link, inserted where
+today's Rentals-only chain has requireActivatedManager() + requireSubscription()
+(4.2 / A in Part B):
+
+  recoverPanic -> logRequest -> metrics -> rateLimit -> tenantSession ->
+  requireActivatedManager -> requireSubscription -> requireModule("rentals") ->
+  enableCORS -> route handler
+
+requireModule(name) reads manager_modules for (tenant, name) against the
+PLATFORM database connection (every request already resolves the manager
+from the platform-backed session, so this is one more indexed lookup, not
+an extra round trip class) and 403s with a "module not enabled" envelope if
+disabled. It runs in EACH product's own binary — cmd/rentals-api only ever
+checks "rentals", cmd/estates-api only ever checks "estates" — a manager
+who has never touched Estates gets a normal 403 from estates-api, not a 404
+or a silent redirect, so the frontend can distinguish "wrong login" from
+"right login, module off" and show an upsell rather than an error page.
+
+A.5 Money isolation
+--------------------------------------------------------------------------------
+Every PayHero channel is registered to EXACTLY ONE product PLUS ONE
+property (Rentals) or ONE estate (Estates) — this is already true for
+Rentals today (properties.payhero_channel_id, one channel per property,
+7.a in Part B) and Estates simply repeats the same rule with "estate"
+in place of "property." A channel is never shared across two properties,
+two estates, or across products.
+
+Webhook routing, updated for two products sharing one PayHero account:
+  1. Every PayHero callback (collections OR billing-channel) lands first on
+     a SINGLE platform-owned endpoint pair — POST /v1/webhooks/payhero/
+     collections and .../subscriptions, still served by... which binary?
+     DECISION (see E.2): a third, tiny process, cmd/webhooks-gateway (or a
+     route inside whichever binary is already the platform's — see E.2 for
+     the alternative considered and rejected), does ONLY:
+       a. verify signature/IP (internal/shared/payhero, unchanged logic)
+       b. INSERT INTO payment_inbox (mpesa_receipt, ...) ON CONFLICT
+          (mpesa_receipt) DO NOTHING RETURNING id  — the ONE place in the
+          whole platform a receipt is deduplicated, before either product
+          has seen it. This directly replaces today's Rentals-only dedup
+          (`payments.mpesa_receipt unique` insert in 8.4/A) by moving the
+          SAME idempotency key one layer up, so a receipt can never be
+          claimed by both products even if both happened to be watching
+          the same channel_id by operator error.
+       c. look up channel_id -> (product, property_or_estate_id) from a
+          small platform-held channel registry (a new
+          payment_channels table: channel_id, product, owner_id — populated
+          whenever a property/estate registers a PayHero channel, today's
+          registerPaymentChannelHandler logic, generalized).
+       d. forward the deduplicated payload to the OWNING product's own
+          internal webhook-ingest endpoint (a plain authenticated HTTP call
+          on the private network, or, if both binaries end up co-located,
+          a direct function call — an implementation detail, not a
+          contract) and mark payment_inbox row routed_to/routed_at.
+  2. From there, each product's existing reconciliation logic (5 in Part B,
+     C.5 in Part C) runs exactly as it does today, entirely inside its own
+     database. Track A (declared intent) / Track B (organic paybill,
+     subset-sum fallback) are per-product concepts; Estates' fallback
+     matches against estate ledger subjects (owners/units), never against
+     Rentals lease_payers.
+  3. A webhook that fails to route (unknown channel_id — a PayHero channel
+     registered outside this flow, or a data-entry mistake) stays in
+     payment_inbox with routed_at null and status='unmatched', surfaced on
+     a platform-level "unrouted payments" admin view — this is the
+     platform-layer equivalent of today's per-manager reconciliation queue,
+     one level up, for the case neither product can even attempt to claim.
+
+A.6 Deployment (shared, updated for two products)
+--------------------------------------------------------------------------------
+See PART E's ADR-style decision log (E.2-E.4) for what changed and why.
+Summary: still no containers in local dev (`make run/rentals-api`,
+`make run/estates-api`, plain `go run`, no air/hot-reload, per the existing
+"no Docker / no air" decision, CLAUDE.md); still Docker+Caddy only in
+staging/production; branch flow is development -> staging -> main,
+enforced by the CI already scaffolded (see project-structure.txt's workflow
+table): test.yml gates every push/PR to development and main; two
+per-product staging workflows and two per-product production workflows
+(currently empty stubs — rentals-staging.yml, rentals-production.yml,
+estates-staging.yml, estates-production.yml) plus a shared deploy.yml
+(currently an empty stub) that the per-product workflows call into for the
+steps that don't differ (build image, push registry, SSH, docker compose
+pull && up -d). A `staging` branch does not exist in the repository yet and
+none of the five new workflow files have content — this doc specifies the
+target shape; project-structure.txt's migration order (step 7) is where
+`staging` gets created and the stubs get filled in, one product at a time.
+
+
+================================================================================
+PART B — RENTALS
+================================================================================
+Everything below is section-numbered exactly as system-design.txt v1.0, so
+existing pointers ("system-design.txt section 4", "section 3.7", etc. — used
+in CLAUDE.md, ADRs, and code comments) keep resolving to the right topic.
+Content is corrected against the current code where the two disagreed (see
+PART E for the mismatch list); it is NOT re-derived endpoint-by-endpoint —
+features-functionalities.txt section 11 ("ENDPOINT INDEX") is the
+authoritative, kept-current route list, and CLAUDE.md's stage log is the
+authoritative build-progress record. This section describes ARCHITECTURE
+Estates must mirror or diverge from deliberately, not a duplicate endpoint
+inventory that would drift the moment either doc is edited.
+
+0. WHAT WILLCOLL RENTALS REPLACES
+--------------------------------------------------------------------------------
+Source material studied: THE RUNDA'S ARCADE monthly "ALL IN ONE PAYMENTS
+SCHEDULE" reports (Word), the hand-ruled water/garbage meter-reading ledger
+book, the printed "WATER AND GARBAGE COLLECTION BILL" invoice slip, and the
+"KIWI PLACE" carbon receipt book.
+
+These four documents ARE the product spec. Rentals digitizes:
+  1. The meter-reading ledger book        -> Water tab (spreadsheet input)
+  2. The printed water/garbage bill slip  -> generated PDF invoice
+  3. The KIWI PLACE receipt book          -> generated PDF receipt
+  4. The monthly payments-schedule report -> Reports tab (generated PDF)
+
+Everything downstream of "how does a payment get classified" (the whole
+reconciliation conversation, section 5) exists to fill these four documents
+in automatically instead of by hand.
+
+1. ACTORS
+--------------------------------------------------------------------------------
+1.1 Super Admin — platform-level (A.3), not a Rentals concept, but exercised
+    through Rentals-specific admin endpoints (4.9) today.
+1.2 Manager (management firm) — the tenant. Signs up, activates, subscribes
+    (platform billing, A.3/3.6), then owns Landlords -> Properties -> Units
+    -> Leases and every ledger under them. Single login per firm (the
+    platform-level `staff` table, A.3, is not yet exposed for Rentals).
+1.3 Landlord — a data record owned by a Manager, not a login-holding actor.
+    A Property belongs to exactly one Landlord; reports/receipts are
+    generated FOR the landlord.
+1.4 Tenant (renter) — no signup/login. Public OTP-gated /pay page per unit,
+    driven by an SMS one-time code (Africa's Talking), declares a Payment
+    Intent and triggers a PayHero STK push.
+
+2. DOMAIN MODEL (ENTITY OVERVIEW)
+--------------------------------------------------------------------------------
+Manager (tenant boundary)
+  Landlord
+    Property  (garbage_enabled, garbage_fee, water_rate_per_unit,
+               management_fee_percent, payhero_channel_id, print_theme)
+      Unit  (unit_code, meter_number, status)
+        Lease  (0..N historical, 0 or 1 active per Unit)
+          LeasePayer (0..N — "OR NAME OR NAME" co-payers)
+
+Per Unit, five independent LedgerAccounts (never a shared "balance" row):
+      RENT | WATER | GARBAGE | RENT_DEPOSIT | WATER_DEPOSIT
+plus ELECTRICITY where a property has electricity billing enabled (added
+after v1.0 — see PART E mismatch list).
+
+Charges land on a LedgerAccount from billing events: RentSchedule -> monthly
+Charge, WaterReading -> Charge, Property-level garbage fee -> Charge (now
+computed per-lease, not purely per-property flat fee — PART E), Lease
+creation -> one-off RENT_DEPOSIT/WATER_DEPOSIT Charge, Electricity deposit
+-> one-off Charge.
+
+Money lands on a LedgerAccount via:
+  Payment (PayHero webhook or manual) -> PaymentAllocation -> LedgerEntry
+
+3. DATABASE DESIGN (PostgreSQL) — willcoll_rentals after the split
+--------------------------------------------------------------------------------
+Structurally unchanged from v1.0's sections 3.1-3.9 for the tenant-graph and
+ledger tables (landlords, properties, units, leases, lease_payers,
+ledger_accounts, water_readings, garbage_runs, rent_runs, charges,
+transaction_headers, ledger_entries, unit_ledger_balances view,
+payment_intents, payments, payment_allocations, receipts, reports) with one
+structural change: 3.1's admins/managers/tokens/sessions and 3.6's
+subscription_plans/subscriptions/subscription_invoices MOVE to
+willcoll_platform (A.3) — Rentals-specific migrations for those tables are
+retired in favor of the platform's own migration set; see
+project-structure.txt's migration path table for exactly which files move
+versus which get superseded.
+
+3.7 Multi-tenancy enforcement — Row-Level Security. Unchanged mechanism:
+tenant_id = the owning manager's id (now a platform-database id referenced
+by value, A.3) on every willcoll_rentals table, SET LOCAL app.tenant_id as
+the first statement of every tenant-scoped transaction, `willcoll_app`
+(RLS-bound) vs `willcoll_admin` (BYPASSRLS, read-mostly, admin-handler-only)
+Postgres roles — now created inside willcoll_rentals specifically, with an
+identically-named but separately-created pair inside willcoll_estates
+(same role NAMES, different database, Postgres roles are cluster-wide but
+each product's roles are only ever granted on its own database's objects).
+
+3.8 Concurrency & correctness (Simple Bank hardening). Unchanged: SERIALIZABLE
++ retry-on-40001, idempotent webhook ingestion (now one layer up in
+payment_inbox, A.5, with the mpesa_receipt-unique pattern preserved exactly,
+just moved), zero-sum assertion before COMMIT, storno/reversal never
+UPDATE/DELETE on charges or ledger_entries (ADR-0002), atomic multi-row
+mutations.
+
+4. API DESIGN — cmd/rentals-api
+--------------------------------------------------------------------------------
+Application shell, corrected against the actual code (PART E mismatch #1):
+  type config struct { port, env, db{dsn,...,adminDSN,queryTimeout},
+      payhero{...}, pay{...}, trialDays, subscriptionGate, qr{...},
+      africastalking{...}, smtp{...}, cors{...}, session{...}, frontendURL,
+      trustedProxies }
+Config is loaded via command-line flags that each default to an environment
+variable (envString/envInt/... helpers) — NOT Viper. This keeps local dev
+(flags from a shell-exported .env) and containerized deploys (env vars
+only) on one code path without a config-file parser dependency.
+  type application struct { config, logger *slog.Logger, models data.Models,
+      sessionManager *scs.SessionManager, mailer, payhero, sms, db *sql.DB,
+      wg sync.WaitGroup }
+
+Middleware chain (Gin), corrected (PART E mismatch #2) and extended with
+module gating (A.4):
+  recoverPanic -> requestID/logging -> metrics -> rateLimit (trusted-proxy
+  aware token bucket) -> CORS -> [manager group: requireActivatedManager ->
+  requireSubscription -> requireModule("rentals")] -> route handler
+  Admin routes: requireAdmin() instead of the manager chain.
+  Public /pay routes: rate-limited, no session requirement, OTP-gated
+  inside the handler.
+
+Response envelope & error handling: unchanged Greenlight pattern (envelope
+map[string]interface{}, writeJSON/readJSON, centralized errors.go
+responders). Validation: go-playground/validator struct tags for mechanical
+checks, internal/shared/validator's hand-rolled Validator for business
+rules.
+
+Auth & session: SCS Postgres-backed sessions (ADR-0001), bcrypt passwords,
+Greenlight-style generic tokens table — all now backed by willcoll_platform
+via internal/shared/auth (A.2/A.3) rather than a Rentals-local table.
+
+RBAC: requireActivatedManager (tenant session + RLS tx) and requireAdmin
+(platform session, BYPASSRLS pool) are independent layers — "belt and
+suspenders," unchanged principle, now joined by requireModule (A.4) as a
+third, product-specific layer.
+
+Core resource endpoints, PayHero webhooks, admin endpoints, PDF generation:
+see features-functionalities.txt section 11 for the current, exhaustive,
+kept-in-sync list (PART E notes exactly how much this has grown since
+v1.0 — electricity billing, water storage/plot-meter readings, garbage
+billed per lease rather than flat per property, receipt counters, report
+confirmation workflow with history, arrears commitments, onboarding +
+CSV bulk import, unit QR stickers, a payment review queue, PayHero payment-
+channel self-registration, and the plan-pricing overhaul with per-unit
+Enterprise pricing and a dev-only test plan). Architecturally, none of
+these additions changed the shape described in this Part B — they are all
+more billing engines, more ledger types, or more admin surface on the SAME
+tenant/RLS/append-only-ledger foundation, which is exactly why Estates
+(Part C) can reuse the foundation instead of the endpoint inventory.
+
+4.10 PDF generation: internal/rentals/pdf template builders (maroto/
+gofpdf-family — verify the exact library against internal/pdf/pdf.go,
+PART E mismatch #3), one per physical document: water/garbage invoice,
+receipt, monthly schedule, subscription invoice, electricity-deposit
+statement. Rendered synchronously for one unit; queued through
+application.background() for a whole-property bulk run.
+
+5. RECONCILIATION LOGIC — unchanged from v1.0, now living in
+internal/shared/reconcile (A.2) called with Rentals' own ledger-subject
+adapter (a Unit + its lease_payers). Track A (declared intent, exact) /
+Track B (organic paybill, phone/name match then subset-sum over open
+charge balances, then waterfall fallback, then manual-review flag).
+
+6. FRONTEND DESIGN — frontend/rentals (Nuxt 4 / Vue 3), unchanged route
+map and component structure from v1.0's section 6, grown considerably in
+practice (onboarding wizard, unit QR management, electricity pages, payment
+review queue UI, admin plan management with archive/restore) — again, see
+features-functionalities.txt for the current route table rather than
+duplicating it here.
+
+7. PAYHERO INTEGRATION SUMMARY — corrected (A.5): the collections channel
+(landlord's own paybill, per-property) and billing channel (Willcoll's own,
+platform subscription) relationship is unchanged in SPIRIT, but the webhook
+ENTRY POINT is no longer Rentals' own /v1/webhooks/payhero/* — see A.5 for
+the platform-level dedup-then-route step that now sits in front of it.
+
+8. DEPLOYMENT & OPERATIONS — see PART A.6 and E.2-E.4; the "no Docker / no
+air locally, Docker+Caddy only in staging/production" rule is unchanged and
+now applies identically to cmd/estates-api.
+
+9. TESTING STRATEGY — unchanged (sqlc + gomock unit tests, a Postgres
+integration suite in /test including a dual-webhook concurrency test,
+table-driven throughout) — see PART D for the additional cross-product
+tests the split requires.
+
+10. HOW EACH ACTOR'S STATED NEED IS SATISFIED — unchanged from v1.0.
+
+
+================================================================================
+PART C — ESTATES  (new product)
+================================================================================
+C.0 Scope for this revision — P0 and P1 only
+--------------------------------------------------------------------------------
+No docs/estates/estates-scope.txt exists in this repository at the time of
+writing (see PART E, mismatch #7) — there is nothing to "follow" for scope
+as the task instructions assumed. The P0/P1 split below is this document's
+own proposal, using the same judgment v1.0 applied to Rentals (digitize
+what a real estate committee already does on paper/WhatsApp/Excel today),
+and should be treated as a decision to confirm, not a transcription of an
+existing source. Anything not listed is explicitly P2+ / out of scope for
+now.
+
+  P0 (must exist before Estates can replace a spreadsheet):
+    - Estate, Block (optional grouping — some estates have no blocks, just
+      units), Unit, Owner (the person who owns the unit — analogous to
+      Rentals' Landlord+Tenant combined, section C.1).
+    - A monthly SERVICE CHARGE LEVY per unit (the Estates equivalent of
+      Rentals' RentSchedule -> monthly Charge), typically a flat amount or
+      a per-square-metre rate; billed the same draft -> generate pattern as
+      Rentals' water/garbage runs (3.9 in Part B).
+    - One ledger per unit (owed vs paid, append-only, same
+      ledgerkit/unit_ledger_balances-style mechanics as Rentals — this is
+      the whole reason the ledger core moved to internal/shared).
+    - Owner payment via PayHero (same STK-push-on-a-public-page pattern as
+      Rentals' tenant Pay page, OTP-gated) and a generated receipt PDF.
+    - A monthly financial statement PDF per estate (levies billed vs
+      collected vs outstanding) — the Estates equivalent of Rentals'
+      "ALL IN ONE PAYMENTS SCHEDULE."
+    - Committee visibility: read-only access to the estate's books (ledger
+      balances, the monthly statement) — does not yet need its own login
+      type beyond what the platform `staff` table (A.3) already provides
+      the schema room for.
+
+  P1 (next, once P0 is live and used):
+    - Budgets: an annual/period budget line-item set the committee approves
+      before it becomes the basis for levy amounts — today's spreadsheet
+      approval-by-email process, digitized.
+    - Expenses: committee-approved expenditure against the budget, posted
+      to the SAME append-only ledger core as a distinct entry type (not a
+      new ledger engine — reusing internal/shared/ledgerkit exactly the way
+      Rentals' storno/reversal does), so "money in" (levies) and "money
+      out" (expenses) are both visible in one estate's books.
+    - Arrears handling mirroring Rentals' arrears-commitments concept
+      (a committed repayment plan for an owner behind on levies).
+    - Resident portal (an Occupant who is not the Owner — a tenant renting
+      from an owner within the estate — gets read-only visibility into
+      that unit's levy status, mirroring the trust boundary Rentals draws
+      between Landlord and Tenant).
+
+  Explicitly NOT in P0/P1 (flag for a future revision, do not build): AGM
+  voting/motions, maintenance ticketing, visitor/gate management, asset
+  registers, insurance tracking. These are common "estate management"
+  features in the market but are not implied by "service charge" and would
+  turn this into a much larger product than the P0/P1 slice above.
+
+C.1 Actors — mirrored against Part B's 1.1-1.4
+--------------------------------------------------------------------------------
+C.1.1 Super Admin — identical role to 1.1, platform-level, exercised through
+      Estates-specific admin endpoints in cmd/estates-api. Need satisfied
+      the same way: sees every manager's subscription/module state and
+      platform health without read/write access to any tenant's ledger.
+C.1.2 Manager (the estate management firm) — the tenant, identical
+      relationship to 1.2 but owning Estates -> Blocks -> Units -> Owners
+      instead of Landlords -> Properties -> Units -> Leases. Need
+      satisfied: digitizes the exact levy-tracking spreadsheet/WhatsApp-
+      chase workflow already in use, the same way Rentals digitizes the
+      meter-book and receipt book.
+      Plus staff roles (platform `staff` table, A.3): a manager firm running
+      an estate typically has more than one person touching the books
+      (an accountant recording levies, a caretaker fielding owner queries)
+      even when Rentals' single-login-per-firm model is sufficient for a
+      small rental portfolio — this is WHY `staff` exists in the platform
+      schema now even though Rentals doesn't expose it yet.
+C.1.3 Owner (a data record, like Landlord+Tenant combined) — owns one or
+      more Units outright (unlike a Rentals Tenant, who rents), is billed
+      the monthly levy, and is the one who PAYS it — collapsing Rentals'
+      "Landlord receives reports" and "Tenant pays" into one actor because
+      in an estate the person who owes the levy and the person who cares
+      about the estate's finances are usually the same person. Need
+      satisfied: pays via the same OTP-gated public pay page pattern as a
+      Rentals Tenant, sees their own statement (a scoped, read-only version
+      of the estate financial statement) without a full account.
+C.1.4 Occupant (optional payer) — someone living in a unit who is not the
+      Owner (a family member, or a Rentals-style renter-from-the-owner).
+      Mirrors Rentals' Tenant: no login, can be designated (by the Owner or
+      the Manager) as allowed to pay the levy on the Owner's behalf, same
+      "OR NAME OR NAME" co-payer pattern as Rentals' lease_payers (P0: the
+      designation and paying capability; P1: their own read-only statement
+      view, listed under Resident portal user below).
+C.1.5 Committee member — approves budgets and expenses (P1) and can see the
+      estate's books at any time (P0) — a role that has NO Rentals
+      equivalent, because no single tenant or landlord in Rentals holds
+      collective financial oversight the way an estate committee does by
+      design. Need satisfied: read access to ledger balances and the
+      monthly statement from day one (P0), and an approval action once
+      budgets/expenses exist (P1) — attaches to the platform `staff` table
+      (A.3) with an estates-specific role, not a new identity mechanism.
+C.1.6 Resident portal user — the umbrella read-only view for an Owner or
+      Occupant who wants to check their statement without going through
+      the OTP pay-flow each time. P0 ships the OTP-gated pay+balance view
+      (functionally required); a persisted, revisitable "portal" (as
+      opposed to a one-time OTP session) is P1, mirroring how Rentals'
+      Landlord portal was noted in v1.0 (1.3) as "additive, no migration
+      needed" rather than built immediately.
+
+C.2 Domain model — mirrors Part B section 2
+--------------------------------------------------------------------------------
+Manager (tenant boundary)
+  Estate
+    Block  (optional — omit for estates with no block structure)
+      Unit  (unit_code, owner_id)
+        Owner  (name, phone, email, bank details — same shape as Rentals'
+                Landlord fields, because both are "who does the money
+                ultimately belong to/come from")
+          Occupant (0..N, optional — mirrors LeasePayer)
+
+Per Unit, at minimum one LedgerAccount type: LEVY (P0). P1 adds no new
+per-unit ledger type for expenses/budgets — those post at the ESTATE level,
+not per-unit, which is the one structural difference from Rentals' unit-
+centric ledger design and the reason Estates' ledgerkit adapter needs an
+"estate-level ledger subject" in addition to the "unit-level ledger
+subject" Rentals only ever needed.
+
+C.3 Database design — willcoll_estates
+--------------------------------------------------------------------------------
+Mirrors Part B section 3's shape with Estates nouns, reusing
+internal/shared/ledgerkit for transaction_headers/ledger_entries and the
+balance-view pattern:
+  estates          id, tenant_id, name, address, created_at
+  blocks           id, tenant_id, estate_id, name (nullable use — many
+                   estates have none)
+  units            id, tenant_id, estate_id, block_id null, unit_code,
+                   owner_id, created_at
+  owners           id, tenant_id, name, phone, email, bank_*, created_at
+  occupants        id, tenant_id, unit_id, name, phone null   (P1)
+  ledger_accounts  id, tenant_id, unit_id null, estate_id null, type check
+                   in ('LEVY') for P0, plus ('EXPENSE') at the estate level
+                   for P1 — the nullable unit_id/estate_id pair is how one
+                   table serves both "ledger subject" kinds; exactly one of
+                   the two is set, enforced by a check constraint.
+  levy_schedules   id, tenant_id, estate_id, amount or rate, effective_from
+                   (P0's equivalent of Rentals' rent_schedule)
+  levy_runs        id, tenant_id, estate_id, period, locked  (P0, mirrors
+                   rent_runs/garbage_runs' draft->generate pattern)
+  charges, transaction_headers, ledger_entries — identical shape to Part B
+                   3.3/3.4, same append-only/storno rules (ADR-0002 applies
+                   verbatim), same RLS strategy (3.7, own willcoll_app/
+                   willcoll_admin roles inside willcoll_estates).
+  budgets, budget_lines, expenses  (P1) — an expense posts a CREDIT-side
+                   entry against the estate-level LEVY ledger balance the
+                   same way a Rentals payment does against a unit's charge,
+                   conceptually "money leaving the pot," using the same
+                   ledgerkit primitives, not a new posting engine.
+
+C.4 PDF generation — internal/estates/pdf
+--------------------------------------------------------------------------------
+  BuildLevyInvoice(unit, owner, period, amount, priorBalance)
+  BuildLevyReceipt(receiptNo, ownerName, unitCode, amount, period)
+  BuildEstateStatement(estate, period, rows, totals)  -- the "ALL IN ONE"
+      equivalent: levies billed vs collected vs outstanding, per unit
+  BuildOwnerStatement(owner, period, units, totals)   -- P1, the read-only
+      view a Resident portal user sees
+
+C.5 Reconciliation — reuses internal/shared/reconcile exactly as Part B
+section 5 describes, with the ledger-subject adapter pointed at an Estates
+Unit + its Owner/Occupant records instead of a Rentals Unit + lease_payers.
+Track A/B, subset-sum, waterfall fallback: unchanged logic, different data.
+
+C.6 API design — cmd/estates-api, mirrors Part B section 4's shell,
+middleware chain (with requireModule("estates")), and RBAC pattern exactly.
+Endpoint list is intentionally not enumerated here (same reasoning as Part
+B's note) — it should be added to features-functionalities.txt as Estates
+routes ship, following the same "kept in sync with routes.go" convention
+already established for Rentals.
+
+C.7 Frontend — frontend/estates (see project-structure.txt for the naming
+fix from today's scaffolded frontend/estate), mirrors Part B section 6's
+Nuxt structure and shares zero pages/components/stores with frontend/rentals
+except through published, versioned shared UI packages if that need arises
+later — not assumed here.
+
+
+================================================================================
+PART D — CROSS-PRODUCT DATA INTEGRITY
+================================================================================
+The concrete failure modes a manager running BOTH products must never hit,
+and the mechanism (schema, code, or test) that rules each one out:
+
+D.1 A manager's Rentals data leaking into Estates' UI (or vice versa)
+    Mechanism: no cross-database query is physically possible — each
+    binary holds exactly one business-database connection pool
+    (cmd/rentals-api never opens a willcoll_estates DSN, and vice versa;
+    this is enforced at the config-loading level, not just by convention).
+    Test: a startup-time assertion in each binary's main.go that its
+    configured DSN's database name matches an expected constant
+    (rentals_api_only_connects_to_its_own_db_test.go /
+    estates_api_only_connects_to_its_own_db_test.go), so a copy-pasted .env
+    mistake fails loudly at boot, not silently at query time.
+
+D.2 One shilling claimed by both products (a PayHero channel misconfigured
+    to point at both, or a receipt somehow processed twice)
+    Mechanism: payment_inbox's mpesa_receipt unique constraint (A.5) is the
+    ONLY place a receipt is ever inserted before routing; routing happens
+    exactly once (routed_at set inside the same transaction as the
+    dedup-insert). Once routed, the OWNING product's own payments-style
+    table also has its own mpesa_receipt unique constraint as a second,
+    redundant guard (belt-and-suspenders, matching the RBAC pattern's
+    philosophy in 4.5/A) — so even a routing bug that forwarded one receipt
+    to both products still cannot post it twice on either side.
+    Test: a concurrency test analogous to today's dual-webhook race test
+    (test/ledger_concurrency_test.go) but at the payment_inbox layer —
+    fires the identical mpesa_receipt at the gateway twice simultaneously
+    and asserts exactly one payment_inbox row and exactly one routed
+    downstream posting.
+
+D.3 A manager's platform subscription/module state disagreeing between
+    what Rentals shows and what Estates shows (e.g. Estates thinks a module
+    is enabled after the manager disabled it in the Rentals UI's account
+    settings)
+    Mechanism: manager_modules lives in willcoll_platform, read by BOTH
+    binaries' requireModule() (A.4) from the same row — there is no
+    per-product cached copy of entitlement state to go stale. A toggle
+    takes effect on the very next request to either product.
+    Test: an integration test that disables a module via one product's
+    admin/account endpoint and asserts the OTHER product's requireModule()
+    check 403s on its next call, no caching window.
+
+D.4 A staff/admin session created in one product's login being usable to
+    silently act in the other product without the relevant module being
+    enabled
+    Mechanism: the session itself (willcoll_platform.sessions) carries no
+    product; requireModule() is what gates product access, checked on
+    EVERY request, not just at login. Logging into Rentals never implies
+    Estates access — it implies platform identity, which A.4's per-request
+    check then either allows or blocks per module.
+    Test: covered by the same test as D.3 plus a login-once/hit-both-APIs
+    integration test asserting the 403 shape (not just presence).
+
+D.5 Disabling a module accidentally destroying data (the one place "isolate
+    the products" and "never lose data" could conflict if implemented
+    carelessly)
+    Mechanism: manager_modules.enabled is a boolean flip, never a delete,
+    never a cascade — A.4 states this explicitly and no migration in
+    project-structure.txt's plan drops a business-database row on module
+    disable. The business database itself is not even touched by a module
+    toggle; only the platform database's manager_modules row changes.
+    Test: an integration test that disables a module, asserts the business
+    database's row counts are unchanged (a direct query against
+    willcoll_rentals or willcoll_estates, bypassing the API), then
+    re-enables and asserts the API surfaces the SAME rows again.
+
+D.6 Two products' migration numbering colliding or one product's migration
+    tool accidentally running against the other's (or the platform's)
+    database
+    Mechanism: three independent migrations/ directories (platform/,
+    rentals/, estates/ — project-structure.txt), three independent
+    MIGRATE_DSN values, and the existing CLAUDE.md convention ("Two DSNs,
+    never swapped: DB_DSN vs MIGRATE_DSN") extended to "three sets of two
+    DSNs, never swapped across products" — each product's Makefile targets
+    (db/migrations/up etc.) are parameterized on which migrations/ directory
+    and which DSN pair they read, and CI's job matrix (project-structure.txt
+    E's CI table) runs each product's migration set against its own
+    ephemeral database, never a shared one.
+
+
+================================================================================
+PART E — MISMATCHES & DECISIONS LOG
+================================================================================
+Per the "code is truth" instruction, and because Part B's Rentals content
+above intentionally stops short of re-deriving the exhaustive endpoint list.
+
+E.1 [FIXED IN THIS REVISION] v1.0 section 4.1 said config loads via Viper.
+    The actual code (backend/cmd/api/config.go) uses the standard library
+    `flag` package with each flag defaulting to an environment variable via
+    small envString/envInt/envBool/envDuration helpers — no Viper dependency
+    exists in go.mod. Part B's section 4 now describes this correctly.
+
+E.2 [FIXED IN THIS REVISION] v1.0 section 8.1 said local development uses
+    "air-driven reload." The actual convention (CLAUDE.md, and no
+    .air.toml in the repo — an old one was in fact deleted per git status)
+    is explicitly NO hot-reload tooling: `make run/api` is a plain `go run`.
+    Part A.6/Part B section 8 now state this correctly, and this doc treats
+    it as a hard constraint for cmd/estates-api too, not a Rentals-only
+    habit.
+
+E.3 [FLAGGED, NOT YET VERIFIED] v1.0 section 4.10 named "maroto" as the PDF
+    library. internal/pdf/pdf.go was not opened during this revision to
+    confirm the exact library still in use after the many PDF template
+    additions since v1.0 (electricity deposits, QR stickers, etc.) — Part B
+    section 4.10 now hedges ("maroto/gofpdf-family — verify against
+    internal/pdf/pdf.go") rather than asserting a possibly-stale fact.
+    ACTION: confirm and correct on the next pass through this file.
+
+E.4 [FIXED IN THIS REVISION] v1.0's three-workflow deploy model
+    (test.yml / deploy-staging.yml / deploy-production.yml, a `develop`
+    branch, `main`) does not match either the actual CI (test.yml runs on
+    `[main, development]` only, no `staging` branch reference anywhere in
+    it) or the five NEW, currently-empty workflow stub files already added
+    to .github/workflows/ (deploy.yml, estates-production.yml,
+    estates-staging.yml, rentals-production.yml, rentals-staging.yml) —
+    deploy-staging.yml and deploy-production.yml have been deleted from the
+    repository. Part A.6 and project-structure.txt's workflow table now
+    describe the FIVE-FILE, per-product target shape these empty stubs
+    imply, with a `staging` branch as something the migration plan CREATES
+    (project-structure.txt step 7), not something that exists today.
+
+E.5 [DECISION] The user's task instructions ask me to follow
+    "docs/estates/estates-scope.txt" for P0/P1 Estates scope. NO SUCH FILE
+    EXISTS anywhere in this repository (confirmed via a full-repo search
+    for any "estate"-named file: only .github/workflows/estates-
+    production.yml, estates-staging.yml, backend/api/estates/openapi.yaml,
+    and frontend/estate/ exist, and every one of them is an empty
+    placeholder). Section C.0 above is this document's OWN proposed P0/P1
+    split, not a transcription — flagged here so it gets explicit sign-off
+    rather than being mistaken for an existing, agreed scope.
+
+E.6 [DECISION] docs/features-functionalities.txt (repo root, ~40KB) is a
+    real, current, Rentals-only functional spec with zero mentions of
+    Estates. It is NOT one of the two files this revision was asked to
+    update, and this revision does not restructure it — but Part B above
+    now explicitly POINTS at it (rather than duplicating its content) as
+    the authoritative endpoint/route inventory. Recommend a follow-up pass
+    that adds an Estates section to it once Estates has real endpoints,
+    mirroring its existing section 11 "ENDPOINT INDEX" convention.
+
+E.7 [DECISION] File location. This repository currently has THREE places a
+    "system-design.txt" or "project-structure.txt" could live:
+      - system-design.txt at the repo root: 877 lines of real content
+        (this is the file this revision updated).
+      - docs/system-design.txt and docs/project-structure.txt (repo-root
+        docs/ folder): both EMPTY (0 bytes) placeholders.
+      - backend/docs/system-design.txt: empty placeholder.
+      - backend/docs/project-structure.txt: 287 lines of real content (the
+        file project-structure.txt's update in this revision targeted,
+        since the repo-root project-structure.txt file itself has been
+        DELETED — confirmed via git status — and docs/project-structure.txt
+        is empty).
+    CLAUDE.md's own guidance ("docs/ and backend/docs/ copies are currently
+    empty placeholders — read the root one") only unambiguously covers
+    system-design.txt. This revision's project-structure.txt update went
+    to backend/docs/project-structure.txt as the only copy with real
+    content to build on; the repo-root docs/project-structure.txt was left
+    untouched (still empty) rather than guessed at. RECOMMEND: pick ONE
+    canonical location for each file (most consistent with CLAUDE.md would
+    be repo-root for both, matching system-design.txt) and delete or
+    redirect the others, so a future session doesn't hit this same
+    three-way ambiguity.
+
+E.8 [OBSERVATION, NOT A MISMATCH] The scaffolding already in the repo
+    (backend/api/{rentals,estates}/openapi.yaml — both empty;
+    frontend/{rentals,estate} — note "estate" singular vs the workflow
+    files' "estates" plural; five empty .github/workflows/*.yml files) is
+    consistent with — and was clearly written in anticipation of — exactly
+    this split, but contains no actual content to reconcile against. The
+    frontend/estate vs. frontend/estates naming inconsistency is called out
+    explicitly in project-structure.txt so it gets fixed once, during
+    migration, rather than perpetuated.
+================================================================================
