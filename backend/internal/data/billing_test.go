@@ -9,7 +9,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db/mock"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"

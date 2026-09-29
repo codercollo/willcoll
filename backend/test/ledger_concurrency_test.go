@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"

@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
 )
 
@@ -137,7 +137,7 @@ func (app *application) registerPaymentChannelHandler(c *gin.Context) {
 	}
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{
-		"channel": envelope{"id": channel.ID, "account_number": channel.AccountNumber, "reused": reused},
+		"channel":  envelope{"id": channel.ID, "account_number": channel.AccountNumber, "reused": reused},
 		"property": property,
 	}, nil); err != nil {
 		app.serverErrorResponse(c, err)
@@ -242,7 +242,7 @@ func (app *application) sendPaymentChannelTestHandler(c *gin.Context) {
 		app.badRequestResponse(c, err)
 		return
 	}
-	phone := reconciliation.NormalizePhone(input.Phone)
+	phone := reconcile.NormalizePhone(input.Phone)
 	v := validator.New()
 	v.Check(property.PayheroChannelID != nil && *property.PayheroChannelID != "", "channel", "connect a payment channel first")
 	v.Check(strings.HasPrefix(phone, "+254") && len(phone) == 13, "phone", "must be a Kenyan mobile number")

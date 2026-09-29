@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/google/uuid"
 )
 

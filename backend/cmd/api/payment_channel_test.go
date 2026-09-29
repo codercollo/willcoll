@@ -8,7 +8,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db/mock"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/mock/gomock"
 )

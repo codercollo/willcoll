@@ -27,7 +27,7 @@ run/api:
 	go run ./cmd/api
 
 # Version embedding: the release version comes from git (tag, else commit),
-# the time from the clock; internal/vcs adds the VCS revision at run time.
+# the time from the clock; internal/shared/vcs adds the VCS revision at run time.
 # No shell operators inside $(shell ...): some Windows makes have no sh.
 git_description = $(or $(shell git describe --always --dirty --tags --long),dev)
 current_time = $(or $(shell date -u +%Y-%m-%dT%H:%M:%SZ),unknown)

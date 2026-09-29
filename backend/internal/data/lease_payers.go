@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/google/uuid"
 )
 
@@ -76,12 +76,12 @@ func CheckLeasePayers(primaryPhone string, payers []LeasePayer) error {
 	if len(payers) > maxLeasePayers {
 		return ErrTooManyPayers
 	}
-	seen := map[string]bool{reconciliation.NormalizePhone(primaryPhone): true}
+	seen := map[string]bool{reconcile.NormalizePhone(primaryPhone): true}
 	for _, p := range payers {
 		if p.Phone == nil {
 			continue
 		}
-		n := reconciliation.NormalizePhone(*p.Phone)
+		n := reconcile.NormalizePhone(*p.Phone)
 		if seen[n] {
 			return fmt.Errorf("%w: %s", ErrDuplicatePayer, *p.Phone)
 		}

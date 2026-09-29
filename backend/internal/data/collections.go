@@ -11,7 +11,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 )
@@ -295,7 +295,7 @@ func (m CollectionsModel) ingest(ctx context.Context, q sqlc.Querier, tenantID u
 		if err != nil {
 			return err
 		}
-		method, guessed = string(match.Method), match.Method == reconciliation.ByName
+		method, guessed = string(match.Method), match.Method == reconcile.ByName
 	}
 	result.UnitID, result.Method = &unitID, method
 
@@ -304,12 +304,12 @@ func (m CollectionsModel) ingest(ctx context.Context, q sqlc.Querier, tenantID u
 	if err != nil {
 		return err
 	}
-	open := make([]reconciliation.OpenBalance, 0, len(balances))
+	open := make([]reconcile.OpenBalance, 0, len(balances))
 	for _, b := range balances {
-		open = append(open, reconciliation.OpenBalance{LedgerType: b.Type, Balance: b.Balance})
+		open = append(open, reconcile.OpenBalance{LedgerType: b.Type, Balance: b.Balance})
 	}
 
-	combos := reconciliation.FindMatchingCombinations(in.Amount, open)
+	combos := reconcile.FindMatchingCombinations(in.Amount, open)
 	switch len(combos) {
 	case 1:
 		outcome := PaymentOutcome{Status: PaymentStatusAllocated, IntentID: intentID, Note: note}
@@ -330,7 +330,7 @@ func (m CollectionsModel) ingest(ctx context.Context, q sqlc.Querier, tenantID u
 			Note: joinNotes(note, "no exact combination of open balances; applied by the default waterfall"),
 		}
 		result.Status, result.NeedsReview = outcome.Status, true
-		if err := postPaymentAllocations(ctx, q, tenantID, payment, unitID, toAllocations(reconciliation.ApplyWaterfall(in.Amount, open)), "system", outcome); err != nil {
+		if err := postPaymentAllocations(ctx, q, tenantID, payment, unitID, toAllocations(reconcile.ApplyWaterfall(in.Amount, open)), "system", outcome); err != nil {
 			return err
 		}
 		result.Applied = true
@@ -347,18 +347,18 @@ func (m CollectionsModel) ingest(ctx context.Context, q sqlc.Querier, tenantID u
 
 // identify finds the unit a payment belongs to among the units on the
 // payment's collections channel.
-func (m CollectionsModel) identify(ctx context.Context, q sqlc.Querier, tenantID uuid.UUID, in CollectionPayment) (reconciliation.UnitMatch, error) {
+func (m CollectionsModel) identify(ctx context.Context, q sqlc.Querier, tenantID uuid.UUID, in CollectionPayment) (reconcile.UnitMatch, error) {
 	rows, err := q.ListPayerCandidates(ctx, sqlc.ListPayerCandidatesParams{TenantID: tenantID, ChannelID: &in.ChannelID})
 	if err != nil {
-		return reconciliation.UnitMatch{}, err
+		return reconcile.UnitMatch{}, err
 	}
-	byUnit := map[string]*reconciliation.Candidate{}
+	byUnit := map[string]*reconcile.Candidate{}
 	var order []string
 	for _, r := range rows {
 		id := r.UnitID.String()
 		c, ok := byUnit[id]
 		if !ok {
-			c = &reconciliation.Candidate{UnitID: id}
+			c = &reconcile.Candidate{UnitID: id}
 			byUnit[id] = c
 			order = append(order, id)
 		}
@@ -368,11 +368,11 @@ func (m CollectionsModel) identify(ctx context.Context, q sqlc.Querier, tenantID
 			c.Names = append(c.Names, r.Value)
 		}
 	}
-	cands := make([]reconciliation.Candidate, 0, len(order))
+	cands := make([]reconcile.Candidate, 0, len(order))
 	for _, id := range order {
 		cands = append(cands, *byUnit[id])
 	}
-	return reconciliation.MatchUnit(in.Msisdn, in.PayerName, cands), nil
+	return reconcile.MatchUnit(in.Msisdn, in.PayerName, cands), nil
 }
 
 // FailIntent records that an STK push failed or was cancelled, unless the
@@ -419,7 +419,7 @@ func parseIntentLines(raw json.RawMessage, paid moneyfmt.Money) ([]Allocation, b
 	return out, sum == paid
 }
 
-func toAllocations(in []reconciliation.Allocation) []Allocation {
+func toAllocations(in []reconcile.Allocation) []Allocation {
 	out := make([]Allocation, len(in))
 	for i, a := range in {
 		out[i] = Allocation{LedgerType: a.LedgerType, Amount: a.Amount}

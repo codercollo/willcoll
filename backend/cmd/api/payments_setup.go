@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/codercollo/willcoll/backend/internal/payhero"
-	"github.com/codercollo/willcoll/backend/internal/sms"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/sms"
 )
 
 // stkPusher is what handlers need from the PayHero client. The real client

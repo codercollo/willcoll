@@ -1,7 +1,7 @@
-// Package reconciliation works out what a shilling paid for (system-design.txt
+// Package reconcile works out what a shilling paid for (system-design.txt
 // section 5). It is pure: no database, no clock. Callers pass in a unit's open
 // balances and the payment, and get back proposed allocations.
-package reconciliation
+package reconcile
 
 import "github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 

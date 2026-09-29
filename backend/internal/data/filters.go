@@ -3,7 +3,7 @@ package data
 import (
 	"math"
 
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 )
 
 // Filters carries pagination and sort parameters shared by every list

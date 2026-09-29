@@ -16,10 +16,10 @@ import (
 	"github.com/alexedwards/scs/postgresstore"
 	"github.com/alexedwards/scs/v2"
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/jsonlog"
-	"github.com/codercollo/willcoll/backend/internal/mailer"
-	"github.com/codercollo/willcoll/backend/internal/validator"
-	"github.com/codercollo/willcoll/backend/internal/vcs"
+	"github.com/codercollo/willcoll/backend/internal/shared/jsonlog"
+	"github.com/codercollo/willcoll/backend/internal/shared/mailer"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/vcs"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

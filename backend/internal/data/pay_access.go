@@ -15,7 +15,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 )
@@ -106,7 +106,7 @@ func (m PayAccessModel) IssueOTP(ctx context.Context, t PayTarget, phone string,
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
-	phone = reconciliation.NormalizePhone(phone)
+	phone = reconcile.NormalizePhone(phone)
 	if phone == "" {
 		return "", false, nil
 	}
@@ -120,7 +120,7 @@ func (m PayAccessModel) IssueOTP(ctx context.Context, t PayTarget, phone string,
 		}
 		known := false
 		for _, p := range phones {
-			if reconciliation.NormalizePhone(p) == phone {
+			if reconcile.NormalizePhone(p) == phone {
 				known = true
 				break
 			}
@@ -166,7 +166,7 @@ func (m PayAccessModel) VerifyOTP(ctx context.Context, t PayTarget, phone, code 
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
-	phone = reconciliation.NormalizePhone(phone)
+	phone = reconcile.NormalizePhone(phone)
 	code = strings.TrimSpace(code)
 	if phone == "" || code == "" {
 		return "", ErrInvalidCode
@@ -337,7 +337,7 @@ func (m PayAccessModel) CreateIntent(ctx context.Context, t PayTarget, phone str
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
-	phone = reconciliation.NormalizePhone(phone)
+	phone = reconcile.NormalizePhone(phone)
 	if !strings.HasPrefix(phone, "+254") || len(phone) != 13 {
 		return nil, fmt.Errorf("%w: phone must be a Kenyan mobile number", ErrInvalidInput)
 	}

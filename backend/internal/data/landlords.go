@@ -6,7 +6,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/google/uuid"
 )
 

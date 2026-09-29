@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
 )
@@ -118,7 +118,7 @@ func (app *application) requestPayOTPHandler(c *gin.Context) {
 	}
 
 	if issued {
-		phone := reconciliation.NormalizePhone(input.Phone)
+		phone := reconcile.NormalizePhone(input.Phone)
 		app.background(func() { app.sendOTP(phone, code) })
 	}
 	if err := app.writeJSON(c, http.StatusAccepted, envelope{"message": "if that number is on this unit, a code has been sent"}, nil); err != nil {
@@ -254,7 +254,7 @@ func (app *application) createPaymentIntentHandler(c *gin.Context) {
 
 	resp, err := app.payhero.STKPush(ctx, payhero.STKPushRequest{
 		Amount:            intent.Shillings,
-		PhoneNumber:       strings.TrimPrefix(reconciliation.NormalizePhone(phone), "+"),
+		PhoneNumber:       strings.TrimPrefix(reconcile.NormalizePhone(phone), "+"),
 		ChannelID:         intent.ChannelID,
 		ExternalReference: intent.Reference,
 		CustomerName:      intent.PropertyName + " " + intent.UnitCode,

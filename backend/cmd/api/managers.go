@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
 )
 

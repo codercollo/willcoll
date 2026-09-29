@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"

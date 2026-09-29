@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -198,7 +198,7 @@ func (s *seeder) must(err error, what string) {
 	}
 }
 
-func money(shillings int64) moneyfmt.Money { return moneyfmt.FromCents(shillings * 100) }
+func money(shillings int64) moneyfmt.Money     { return moneyfmt.FromCents(shillings * 100) }
 func moneyPtr(shillings int64) *moneyfmt.Money { m := money(shillings); return &m }
 
 // at is a moment in the given month, in Kenya time, never in the future.

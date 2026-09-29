@@ -7,7 +7,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db"
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"

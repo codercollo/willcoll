@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
-	"github.com/codercollo/willcoll/backend/internal/sms"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/sms"
 	"github.com/gin-gonic/gin"
 )
 

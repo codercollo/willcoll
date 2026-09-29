@@ -11,7 +11,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/db/sqlc"
 	"github.com/codercollo/willcoll/backend/internal/pdf"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 )
 
 // PrintTheme is the properties.print_theme document: how a property's

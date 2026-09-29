@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
 	"github.com/codercollo/willcoll/backend/internal/pdf"
-	"github.com/codercollo/willcoll/backend/internal/reconciliation"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/reconcile"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -121,7 +121,7 @@ func (app *application) renewSubscriptionHandler(c *gin.Context) {
 	if input.Phone != "" {
 		phone = input.Phone
 	}
-	phone = reconciliation.NormalizePhone(phone)
+	phone = reconcile.NormalizePhone(phone)
 	if !strings.HasPrefix(phone, "+254") || len(phone) != 13 {
 		app.failInvoice(c, tenantID, renewal.Invoice.ID)
 		v := validator.New()

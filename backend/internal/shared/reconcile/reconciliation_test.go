@@ -1,4 +1,4 @@
-package reconciliation
+package reconcile
 
 import (
 	"reflect"

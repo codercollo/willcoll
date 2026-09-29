@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/validator"
+	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
