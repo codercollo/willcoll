@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+@layer base {
+  html { background: var(--color-surface-canvas); color: var(--color-text-primary); }
+  body { font-family: var(--font-sans); font-size: var(--text-body); line-height: var(--text-body--line-height); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: var(--text-h1); line-height: var(--text-h1--line-height); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: var(--text-h2); line-height: var(--text-h2--line-height); font-weight: 600; letter-spacing: -0.01em; }
+  h3 { font-size: var(--text-h3); line-height: var(--text-h3--line-height); font-weight: 600; }
+  :focus-visible { outline: var(--border-width-focus) solid var(--color-accent-primary); outline-offset: 2px; }
+  button:not(:disabled), [role='button'] { cursor: pointer; }
+}
+
+@layer utilities {
+  .money, .reading, .tnum { font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
+  .th-text { font-size: var(--text-label); line-height: var(--text-label--line-height); font-weight: 500; letter-spacing: 0.02em; text-transform: uppercase; color: var(--color-text-secondary); }
+  .card { background: var(--color-surface-card); border-radius: var(--radius-md); box-shadow: var(--shadow-card); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --duration-fast: 0ms; --duration-base: 0ms; --duration-slow: 0ms; }
+  *, *::before, *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; }
+}

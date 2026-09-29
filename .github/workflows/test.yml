@@ -1,0 +1,115 @@
+# Runs on every push and pull request: the same checks as `make audit`, plus
+# the whole suite against a real PostgreSQL (make test/integration), because
+# the ledger's guarantees (row-level security, serializable transactions,
+# advisory locks, append-only grants) can only be tested against Postgres.
+name: test
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  audit:
+    name: audit (fmt, vet, staticcheck, golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: go.mod is tidy and modules verify
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+          go mod verify
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          working-directory: backend
+
+  test:
+    name: test (unit + integration, race detector)
+    runs-on: ubuntu-latest
+    needs: audit
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: willcoll
+          POSTGRES_PASSWORD: ci-owner-password
+          POSTGRES_DB: willcoll
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U willcoll -d willcoll"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The owner/superuser role runs roles and migrations; the API and admin
+      # roles are created below. These are throwaway CI-only credentials for a
+      # database that lives for the length of the job.
+      MIGRATE_DSN: postgres://willcoll:ci-owner-password@localhost:5432/willcoll?sslmode=disable
+      DB_DSN: postgres://willcoll_app:ci-app-password@localhost:5432/willcoll?sslmode=disable
+      DB_ADMIN_PASSWORD: ci-admin-password
+      DB_APP_PASSWORD: ci-app-password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install golang-migrate
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Create the API and admin database roles
+        run: |
+          psql "$MIGRATE_DSN" \
+            -v app_password="$DB_APP_PASSWORD" -v admin_password="$DB_ADMIN_PASSWORD" \
+            -f scripts/db_roles.sql
+
+      - name: Unit tests with the race detector
+        # Integration tests skip themselves here: no WILLCOLL_TEST_DB_DSN yet.
+        run: go test -race -vet=off ./...
+
+      - name: Integration and concurrency tests on a throwaway database
+        run: sh scripts/test_integration.sh

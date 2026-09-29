@@ -1,0 +1,28 @@
+# Dependency directories
+node_modules/
+bower_components/
+vendor/
+
+# Build outputs and caches
+dist/
+build/
+.next/
+.nuxt/
+out/
+.cache/
+*.pyc
+
+# IDEs, logs, and system files
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
+
+# Heavy media assets (Claude doesn't need to read raw binaries)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.pdf
