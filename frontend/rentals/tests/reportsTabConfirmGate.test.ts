@@ -4,16 +4,16 @@ import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import ReportsTab from '~/components/property/ReportsTab.vue'
-import Button from '~/components/ui/Button.vue'
-import Badge from '~/components/ui/Badge.vue'
-import FormAlert from '~/components/ui/FormAlert.vue'
-import Field from '~/components/ui/Field.vue'
-import Input from '~/components/ui/Input.vue'
-import { ApiError } from '~/utils/apiError'
-import { formatMoney, isNegativeMoney, isZeroMoney } from '~/utils/money'
-import { formatDate, formatDay } from '~/utils/date'
+import Button from '#base/components/ui/Button.vue'
+import Badge from '#base/components/ui/Badge.vue'
+import FormAlert from '#base/components/ui/FormAlert.vue'
+import Field from '#base/components/ui/Field.vue'
+import Input from '#base/components/ui/Input.vue'
+import { ApiError } from '#base/utils/apiError'
+import { formatMoney, isNegativeMoney, isZeroMoney } from '#base/utils/money'
+import { formatDate, formatDay } from '#base/utils/date'
 import { reportColumns } from '~/utils/reportColumns'
-import { sumMoney } from '~/utils/money'
+import { sumMoney } from '#base/utils/money'
 import type { ReportChecks } from '~/types/report'
 
 const Icon = { props: ['name'], template: '<i :data-icon="name" />' }
@@ -90,7 +90,7 @@ describe('ReportsTab confirm gate', () => {
       UiButton: Button, UiBadge: Badge, UiFormAlert: FormAlert, UiConfirmDialog: ConfirmDialogStub,
       UiField: Field, UiInput: Input, UiSkeleton: Skeleton, UiKpiTile: KpiTile, UiPeriodPicker: PeriodPicker,
       UiCard: { template: '<div><slot /></div>' },
-      PropertySpreadsheetTable: SpreadsheetTable,
+      SpreadsheetTable: SpreadsheetTable,
       Icon, NuxtLink,
     },
   }

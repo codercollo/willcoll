@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
 import type { BulkQrSummary } from '~/stores/qr'
 
 definePageMeta({ title: 'Property' })
@@ -138,8 +138,8 @@ const s = computed(() => property.value?.summary)
       <section v-if="tab === 'units'" class="flex flex-col gap-6">
         <div class="flex flex-wrap items-center gap-3">
           <div class="w-full sm:w-72"><UiInput v-model="search" placeholder="Search tenant name" aria-label="Search tenants" /></div>
-          <div class="w-40"><UiSelect v-model="status" aria-label="Status" :options="[{ value: '', label: 'All units' }, { value: 'occupied', label: 'Occupied' }, { value: 'vacant', label: 'Vacant' }]" /></div>
-          <div class="ml-auto flex gap-3">
+          <div class="w-full sm:w-40"><UiSelect v-model="status" aria-label="Status" :options="[{ value: '', label: 'All units' }, { value: 'occupied', label: 'Occupied' }, { value: 'vacant', label: 'Vacant' }]" /></div>
+          <div class="flex flex-wrap gap-3 sm:ml-auto">
             <template v-if="selectMode">
               <UiButton variant="secondary" @click="selectAllOccupied">{{ allSelected ? 'Deselect all' : 'Select all occupied' }}</UiButton>
               <UiButton :loading="generatingQr" :disabled="!selectedLeaseIds.size" @click="generateStickers"><Icon name="lucide:qr-code" class="size-4" />Generate QR stickers ({{ selectedLeaseIds.size }})</UiButton>
@@ -157,7 +157,7 @@ const s = computed(() => property.value?.summary)
         <UiFormAlert v-if="unitsError">{{ unitsError }} <button type="button" class="font-semibold text-accent-text" @click="loadUnits">Retry</button></UiFormAlert>
         <UiFormAlert v-if="bulkSummary" tone="success" class="flex flex-col gap-1">
           <span>{{ bulkSummary.created }} created, {{ bulkSummary.reused }} reused.</span>
-          <span v-if="bulkSummary.skipped.length">{{ bulkSummary.skipped.length }} skipped: <span v-for="(s, i) in bulkSummary.skipped" :key="s.lease_id">{{ i > 0 ? '; ' : '' }}{{ s.reason }}</span></span>
+          <span v-if="bulkSummary.skipped.length">{{ bulkSummary.skipped.length }} skipped: <span v-for="(sk, i) in bulkSummary.skipped" :key="sk.lease_id">{{ i > 0 ? "; " : "" }}{{ sk.reason }}</span></span>
         </UiFormAlert>
         <div v-if="unitsLoading && !units.list.length" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"><UiSkeleton v-for="i in 8" :key="i" block /></div>
         <div v-else-if="units.list.length" class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

@@ -27,3 +27,15 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/worktrees/
+
+# deps & build output (all workspaces)
+node_modules/
+.nuxt/
+.output/
+.data/
+dist/
+
+# secrets
+.env
+.env.*
+!.env.example

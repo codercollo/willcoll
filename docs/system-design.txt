@@ -1,0 +1,409 @@
+================================================================================
+WILLCOLL — SYSTEM DESIGN
+One platform, three products: Rentals (shipped), Estates (to build),
+Waste (to build). Paired with docs/project-structure.txt (repo layout) and
+docs/build-phases.txt (build order). Where these disagree, this file wins
+on RULES, project-structure.txt wins on PATHS, build-phases.txt on ORDER.
+================================================================================
+Conventions in every product: Greenlight (Let's Go Further) API
+architecture; Simple Bank ledger hardening — append-only ledger, storno
+instead of UPDATE/DELETE, SERIALIZABLE + 40001 retry on posting
+transactions, a zero-sum check before commit, SET LOCAL app.tenant_id +
+Row-Level Security on every tenant-scoped table; money is always
+pkg/moneyfmt.Money (numeric(12,2)), never float.
+
+
+================================================================================
+PART A — PLATFORM (shared by every product)
+================================================================================
+A.1 Identity and roles
+  Super Admin   One row, platform-wide. Plans, subscriptions, manager
+                suspension, module activation, system health, backups.
+                Never reads or writes a product's tenant data.
+  Manager       The SaaS tenant (a management firm, estate agency or waste
+                collector). ONE login for all products. tenant_id = manager id
+                in every product database.
+  Staff         Sub-accounts under a manager. Roles:
+                  owner       everything incl. billing, staff, modules
+                  accountant  payments, allocations, reversals, reports,
+                              exports; no billing/staff
+                  officer     day-to-day entry (water readings, unit and
+                              customer lookups, cash receipts, expenses
+                              draft); no reversals, no reports, no billing
+                  viewer      read-only
+                Each staff row also lists which products it may open
+                (module_access), a subset of the manager's active modules.
+  Public payers (tenants, owners, waste customers) never have accounts;
+  they use OTP-gated pay links per product (A.9).
+
+A.2 Platform database (willcoll_platform)
+  admins, managers, staff, sessions (SCS store), tokens (activation,
+  password-reset), audit_log (manager, staff, product, action, entity,
+  summary, created_at — append-only), system_metadata,
+  subscription_plans (product, tier, pricing_type flat|per_unit,
+    per_unit_price, min_price, unit_cap, included_seats, features[],
+    is_test, archived_at),
+  subscriptions (manager, product, plan, status trialing|active|past_due|
+    cancelled, period, version) — unique active per (manager, product),
+  subscription_invoices (plan chosen at renewal, mpesa_receipt unique),
+  manager_modules (manager, product rentals|estates|waste, status
+    requested|trialing|active|suspended, timestamps),
+  manager_addons (manager, addon, status) — e.g. landlord_portal,
+    branding, custom_sender_id,
+  sms_wallets + sms_ledger (prepaid SMS units per manager, append-only),
+  payment_channels (channel_id pk, manager, product, owner_id — the
+    property/estate/zone it collects for, callback_url),
+  payment_inbox (mpesa_receipt unique, channel_id, product, amount,
+    msisdn, raw_payload, status claimed|posted, claimed_at, posted_at),
+  service_links, handoff_invoices (Part E).
+
+  tenant_id in product databases is a plain uuid (no cross-database FK);
+  validated against platform.managers by the app. RLS is unchanged.
+  See docs/adr/0006-platform-database-split.md.
+
+A.3 Binaries, hosts and databases — DECISION (supersedes "three binaries")
+  FOUR binaries in ONE Go module:
+    platform-api  auth, signup/activation, sessions, account, staff,
+                  modules, plans/billing (+ subscription webhook), SMS
+                  wallet, audit log read, super admin.
+    rentals-api   Rentals routes + Rentals collections webhook.
+    estates-api   Estates routes + Estates collections webhook.
+    waste-api     Waste routes + Waste collections webhook.
+  Why a platform-api: identity and billing change once and deploy once;
+  product APIs never serve login or billing, they only VERIFY the session.
+  Every product API holds two pools: PLATFORM_DB_DSN (read sessions,
+  modules, roles, channels, inbox) and its own DB_DSN.
+
+  Hosts (production; staging = staging.<host>):
+    app.willcoll.co.ke        frontend/platform
+    rentals.willcoll.co.ke    frontend/rentals
+    estates.willcoll.co.ke    frontend/estates
+    waste.willcoll.co.ke      frontend/waste
+    api.willcoll.co.ke        platform-api
+    api-rentals / api-estates / api-waste.willcoll.co.ke   product APIs
+  Existing Rentals paths (/v1/properties, /v1/pay/..., etc.) are kept
+  unchanged on api-rentals; auth/account/billing/admin paths move to
+  api.willcoll.co.ke with the same shapes.
+
+A.4 Sessions across apps
+  SCS session in willcoll_platform. Cookie Domain=.willcoll.co.ke,
+  HttpOnly, Secure, SameSite=Lax (all hosts are same-site). Every app
+  calls its APIs with credentials:'include'; every API's CORS allows only
+  the willcoll app origins. Logout or suspension deletes the session row
+  and every app is signed out at once.
+  Sliding expiry: activity renews a session; idleness or age ends it.
+  platform-api stamps created_at/touched_at (Unix seconds) at login and
+  touches the session at most once per SESSION_IDLE_TIMEOUT/4 while the
+  user is active; idle >= SESSION_IDLE_TIMEOUT, or age >= SESSION_LIFETIME
+  (absolute cap, default 12h, never extended by renewal), ends it. Product
+  APIs only check the same two limits and never write the session; the
+  shared frontend layer pings GET /v1/sessions on user activity in any app
+  so work in a product app keeps the session alive. A suspended firm's
+  sessions are never renewed.
+
+A.5 Request gates (in order, every tenant route in every product API)
+  recoverPanic -> logRequest -> metrics -> loadSession -> authenticate
+  -> requireActivatedManager -> requireSubscription(product)
+  -> requireModule(product) -> requireRole(min role, per route)
+  -> requireFeature(feature)   (only on plan-gated routes)
+  -> open tenant tx (SET LOCAL app.tenant_id)
+  A 403 from requireModule never deletes data; re-enabling restores
+  access to everything untouched. Public pay routes skip session gates,
+  use a shared rate limiter and OTP.
+
+A.6 Money isolation
+  Every PayHero channel belongs to exactly one product and one owner
+  (payment_channels). Its callback URL points at that product's API. The
+  subscription channel (Willcoll's own) points at platform-api.
+  Collections webhook flow (in the receiving product API):
+    1. Claim: INSERT INTO platform.payment_inbox (...status='claimed')
+       ON CONFLICT (mpesa_receipt) DO NOTHING RETURNING id.
+       No row + existing row 'claimed' -> continue (retry drives it).
+       No row + existing row 'posted'  -> stop, acknowledge 200.
+       Existing row with a different product -> reject + alert.
+    2. Post locally in the product's own database (its reconciliation).
+       The product's payments.mpesa_receipt is also unique: final guard.
+    3. Mark the inbox row 'posted'.
+  Each product API runs a shared/jobs sweeper for ITS product's rows
+  still 'claimed' after 5 minutes. Always ack PayHero within its timeout;
+  posting runs in a tracked background job.
+
+A.7 Plans, trials, add-ons, SMS
+  - Per-product subscriptions, priced per unit/customer with a monthly
+    minimum; bundle discount when 2+ products are active.
+  - Trial per product (TRIAL_DAYS); paywall via requireSubscription.
+  - Features on a plan (features[]) are enforced by requireFeature.
+  - Add-ons via manager_addons.
+  - SMS: OTPs and payment confirmations are free (platform cost);
+    reminders, bulk sends and notices debit the manager's SMS wallet.
+    Wallet top-ups go through Willcoll's billing channel.
+  Suggested plan grid (validate with first customers):
+    Rentals   Starter / Growth / Business (flat tiers) + Enterprise
+              (per unit) — as shipped (migration 000044)
+    Estates   Starter / Pro / Agency, per unit (~KES 80-150/unit/month)
+    Waste     Free (<= 100 customers) / Standard / Pro, per customer
+
+  DECISION — billable usage is REPORTED by products, PRICED by platform
+  (build-phases.txt 3c-iii/3c-iv). platform-api prices per-unit plans
+  without ever querying a product database or calling a product API — it
+  cannot: per-unit pricing needs a count (units, customers) that lives in
+  the product's own database, and no product may read another's tables
+  (E.4). The bridge is platform.module_usage (manager_id, product,
+  billable_count, reported_at), primary key (manager_id, product):
+    - Rentals counts active units, Estates counts units, Waste counts
+      active customers.
+    - Each product API upserts its own row whenever the count changes
+      (a unit/customer created, archived, imported), plus a daily
+      shared/jobs task that re-counts it as a safety net against a missed
+      upsert.
+    - platform-api's renewal pricing, plan lists and dev plan-switch tools
+      read module_usage, never CountManagerUnits-style live queries.
+    - Fallback rule (revised — a missing count is refused, never guessed):
+        Flat-priced plans need no count at all; this only applies to
+        per_unit plans.
+        No module_usage row for (manager, product): REFUSE the renewal —
+        503 "billing data unavailable, contact support", logged as an
+        error and surfaced on the Super Admin health page. Never price at
+        the plan minimum or at zero: both under-price a real subscriber
+        and neither is caught without a human looking.
+        A module_usage row older than 48 hours: price from it anyway (a
+        renewal must not block on a merely-late background job), but flag
+        it on the Super Admin health page so a genuinely stuck reporter
+        gets noticed.
+  Test (system-design.txt E.5 style): after a unit import, the price shown
+  for the next renewal changes to match the new count.
+
+A.8 Shared code (internal/shared) — never imports a product package
+  (enforced by depguard + internal/shared/depguard_test.go)
+  ledgerkit   serialization helpers today; generic ExecTx[Q] +
+              tenant SET LOCAL + retry + advisory-lock variant (6-pre)
+  reconcile   matcher / subset-sum / waterfall, parameterised by the
+              product's ledger types and waterfall order
+  httpx       envelope, read/writeJSON, error responders, generic
+              middleware, rate limiter
+  auth        SCS wiring, token hashing, session verification for
+              product APIs, role checks; pay-link OTP/HMAC with generic
+              claims (6-pre)
+  plans       plan pricing, requireSubscription/requireModule/
+              requireFeature helpers (reads platform)
+  jobs        background() + WaitGroup; DB-backed scheduled jobs
+              (recurring runs, reminders, inbox sweeper)
+  exportx     CSV upload/parse primitives, CSV + XLSX writers
+  storage     S3-compatible uploads (receipt photos, request photos,
+              branding logos) — added in Phase 6 (Estates expenses)
+  pdf         maroto primitives only; each product owns its builders
+  payhero, sms (wallet-aware send), mailer, validator, jsonlog, vcs
+  pkg/moneyfmt stays outside internal (Money, periods, amount in words).
+
+A.9 Frontend architecture
+  frontend/ is ONE pnpm workspace:
+    layers/base   Nuxt layer every app extends: design system from
+                  design-tokens.txt (ui/ components), LedgerTable,
+                  SpreadsheetTable, OtpChallenge, PayIntentForm (generic
+                  lines), useApi (envelope unwrap, 401 -> app login),
+                  useCurrency, usePeriod, useSubmit, useToast,
+                  useSession + useModules, module + role route guards,
+                  AppShell with the product switcher.
+    platform      app.willcoll.co.ke: signup, activate, login, password
+                  reset, account, staff, modules (start trial / request),
+                  plans & billing, SMS wallet, audit log, super admin.
+    rentals       manager app + public /pay/[propertySlug]/[unitCode]
+    estates       manager app + public /pay/[estateSlug]/[unitCode]
+                  + owner/committee /portal/[estateSlug] (P1)
+    waste         manager app + public /pay/[collectorSlug]/[customerCode]
+  Rules: a product app never calls another product's API; login/billing
+  pages exist only in platform; the product switcher shows only active
+  modules; money is formatted from the API string, never parseFloat.
+
+A.10 Operations
+  One Postgres server per environment, four databases, one app role +
+  one admin role per database. WAL archiving + weekly base backup;
+  pre-deploy pg_dump per database in production; a backup-verify job
+  feeds the super admin health page. Caddy terminates TLS for all hosts.
+
+
+================================================================================
+PART B — RENTALS (shipped; extended in Phase 5)
+================================================================================
+B.1 Actors
+  Manager + staff, Landlord (data record; read-only portal is an add-on),
+  Tenant/renter (no account; OTP pay page), Super Admin.
+
+B.2 Domain
+  Manager -> Landlord -> Property -> Unit -> Lease (0..N history, 0/1
+  active) -> LeasePayers (co-payers). Ledger types per unit: RENT, WATER,
+  GARBAGE, RENT_DEPOSIT, WATER_DEPOSIT, ELECTRICITY.
+
+B.3 Shipped (see features-functionalities.txt for endpoints)
+  Draft-then-generate runs for rent, water (per-unit or plot meter),
+  garbage (per lease), electricity deposits; OTP pay page + STK push;
+  organic paybill matching (phone/name -> subset-sum -> waterfall ->
+  review queue); manual payments, charges, reversals; onboarding import
+  (units + tenants + opening balances); unit QR stickers; payments
+  schedule report with confirmation + arrears commitments; invoices and
+  receipts PDFs; PayHero channel self-registration; trial + tiered plans.
+
+B.4 To build before selling widely (Phase 5 — P0 for sales)
+  - Landlord expenses + remittance statement (collected - management fee
+    - expenses = net payable; remittance record; PDF per landlord/period).
+  - Arrears ageing across the portfolio + bulk SMS reminders (wallet).
+  - Tenant statement PDF (any range, all ledgers).
+  - Move-out & deposit refund workflow (final reading, deductions against
+    deposits, refund record, move-out statement).
+  - CSV/XLSX export of every list and report.
+  - Portfolio dashboard (expected vs collected, collection rate, arrears,
+    vacancies, review queue count).
+  - Staff roles applied to Rentals routes (officer can enter readings
+    and cash, cannot reverse).
+  - Optional automatic late penalties (per property).
+
+B.5 Add-ons (after Phase 5, sold via manager_addons)
+  Landlord portal (OTP, read-only statements/remittances), maintenance
+  requests (cost -> landlord expenses), branding on PDFs/pay page,
+  custom SMS sender ID. Receiving Waste handoff invoices into landlord
+  expenses arrives in Phase 8.
+
+B.6 Frontend (frontend/rentals)
+  Properties grid, property tabs (Units, Rent, Water, Garbage,
+  Electricity, Reports), unit page (ledgers), landlords, payments review,
+  onboarding, dashboard, arrears, remittances, exports; public pay page;
+  QR print page. Auth/account/billing/admin pages move to platform.
+
+
+================================================================================
+PART C — ESTATES (to build — Phase 6 P0, Phase 8 P1)
+================================================================================
+Own database willcoll_estates. Detailed tables: docs/estates/
+service-charge-design.txt (read "properties (sectional)" as estates and
+ignore its section 3.1 — nothing is shared with Rentals). Scope source:
+docs/estates/estates-scope.txt.
+
+C.1 Actors
+  Manager + staff; Owner (data record: pays, gets statements; portal in
+  P1); Occupant (optional payer when the owner passes charges through);
+  Committee member (P1: approves budgets/expenses, sees the books);
+  Super Admin.
+
+C.2 Domain
+  Estate -> Block -> Unit (code, type, floor, area m2, share %) ->
+  Ownership (history) -> Parties (co-owners). Budget -> lines ->
+  frozen assessments per unit. Funds per estate: OPERATING, RESERVE,
+  LEVY (fund_entries INFLOW/OUTFLOW, cash basis). Unit ledger types:
+  SERVICE_CHARGE, RESERVE_FUND, SPECIAL_LEVY, PENALTY, WATER.
+
+C.3 P0 (Phase 6)
+  - Estates, blocks, units, owners; CSV import (dry-run, row errors);
+    opening balances (units + funds, once).
+  - Budget apportioned by equal | plinth area | unit type | share %,
+    largest-remainder rounding so sum == budget exactly; overrides
+    (unit > block); approval freezes assessments.
+  - Recurring SC + reserve runs (monthly/quarterly, scheduled via jobs),
+    special levies, optional metered water, optional penalties;
+    invoice PDF.
+  - OTP pay link, webhook via platform inbox, paybill matching (owner
+    phone/name, account ref) with the Estates waterfall
+    (PENALTY -> SPECIAL_LEVY -> SERVICE_CHARGE -> RESERVE_FUND, per-estate
+    configurable), bank statement CSV import, review queue, receipts.
+  - Reminders (SMS/email schedule + bulk, logged), ageing, owner
+    statement, demand letter.
+  - Expenses (category, fund, payee, receipt photo, storno), fund
+    balances; reserve spend requires a resolution reference.
+  - I&E, budget vs actual, fund movements, collections, 3-month cash-flow
+    forecast, AGM pack; CSV/XLSX exports.
+
+C.4 P1 (Phase 8)
+  Owner/committee portal (OTP), maintenance requests (closing posts an
+  expense), notices (+ SMS), committee approvals (budget, expenses above
+  threshold, reserve spend, levies), vendor register, clearance
+  certificate + ownership transfer gate.
+
+C.5 Out of scope
+  Visitor/gate, amenity bookings, asset register, chat, card payments,
+  accounting sync, eTIMS, polls, rent collection (that is Rentals).
+
+C.6 Frontend (frontend/estates)
+  Estates list; estate tabs: Units | Budget | Billing | Collections |
+  Arrears | Expenses | Reports (+ Requests | Notices | Committee in P1);
+  unit page (owner, ledgers, statement, clearance); payments review;
+  public pay page; portal (P1).
+
+
+================================================================================
+PART D — WASTE (to build — Phase 7, lightweight, TAQA-style)
+================================================================================
+Own database willcoll_waste. The smallest product: one ledger type, no
+portal, no committee.
+
+D.1 Actors
+  Collector (manager + staff), Customer (household or business; no
+  account; OTP pay link), Super Admin.
+
+D.2 Tables
+  zones, customers (customer_code unique per collector, zone, fee_plan,
+  phone, status), fee_plans, billing_runs, collection_logs (pickup
+  done/missed per customer per date), receipts, plus ledger tables with
+  exactly ONE ledger type: SERVICE_FEE.
+
+D.3 Features
+  Monthly auto-invoicing per fee_plan (scheduled); paybill with the
+  customer code as the account number -> direct match; unknown code ->
+  review queue; matched payments allocated oldest invoice first;
+  receipts; SMS reminders (wallet); arrears list; route/pickup list PDF;
+  bank-ready statement PDF; CSV import per zone; CSV/XLSX exports.
+
+D.4 Out of scope
+  GPS/truck tracking, weighbridge, recycling/materials. A second ledger
+  type means Waste has outgrown its scope.
+
+D.5 Frontend (frontend/waste)
+  Customers (by zone), fee plans, billing runs, payments review,
+  arrears, route list, reports; public pay page.
+
+
+================================================================================
+PART E — ONE MANAGER, MANY PRODUCTS: INTEGRATION AND INTEGRITY
+================================================================================
+E.1 Using one, two or three products
+  A manager chooses products at signup or later (Modules page on
+  app.willcoll.co.ke: start trial / request activation). Each active
+  product appears in the switcher; each has its own subscription,
+  channels, data and pay links. Nothing in one product's database refers
+  to another's rows.
+
+E.2 Service links
+  service_links (collector_manager_id, target_product rentals|estates,
+  target_owner_id, consent_status pending|granted|revoked, timestamps)
+  in willcoll_platform. The linked party grants consent in their own
+  product. Application-level pointer only.
+
+E.3 Handoff invoices
+  handoff_invoices (link_id, amount, period, status issued|approved|
+  paid_unconfirmed|paid|rejected, waste_invoice_ref, target_expense_ref).
+  Waste issues a bulk invoice; it appears in the Estates expense approval
+  queue or Rentals landlord expenses; paying it posts an expense in that
+  product's own database. Waste marks it paid only when money reaches
+  the collector's channel through payment_inbox; until then it shows
+  "paid (unconfirmed)".
+
+E.4 Invariants
+  - No cross-database foreign keys.
+  - No product reads another product's tables; cross-product data moves
+    only through platform service_links / handoff_invoices.
+  - Disabling a module or subscription never deletes data.
+  - A channel belongs to one product and one owner; a receipt is claimed
+    once in payment_inbox and posted once in exactly one product.
+  - Product APIs never write platform identity/billing tables except
+    payment_inbox status, audit_log, and their own module_usage row (A.7)
+    — module_usage is the one platform table a product owns the write for,
+    since only that product knows its own billable count.
+
+E.5 Tests (write before the code that satisfies them)
+  RLS isolation (manager A cannot read B, per database) · module-gated
+  403 with data intact on re-enable · role-gated 403 (officer cannot
+  reverse) · payment claimed once (concurrent duplicate webhooks) ·
+  crash between claim and post (retry or sweeper posts exactly once) ·
+  wrong-product channel rejected · duplicate handoff rejected · handoff
+  clearing lag shows "paid (unconfirmed)" · revoked consent blocks new
+  handoffs, keeps posted entries · session shared across app hosts,
+  logout signs out everywhere · shared never imports products (depguard).
+================================================================================

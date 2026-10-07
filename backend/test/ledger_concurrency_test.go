@@ -8,13 +8,13 @@ package test
 import (
 	"context"
 	"database/sql"
-	"os"
+	"github.com/codercollo/willcoll/backend/internal/testenv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/codercollo/willcoll/backend/internal/data"
-	"github.com/codercollo/willcoll/backend/internal/payhero"
+	"github.com/codercollo/willcoll/backend/internal/rentals/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -23,10 +23,8 @@ import (
 // env connects the two pools, or skips.
 func env(t *testing.T) (models data.Models, app *sql.DB) {
 	t.Helper()
-	appDSN, adminDSN := os.Getenv("WILLCOLL_TEST_DB_DSN"), os.Getenv("WILLCOLL_TEST_ADMIN_DB_DSN")
-	if appDSN == "" || adminDSN == "" {
-		t.Skip("WILLCOLL_TEST_DB_DSN and WILLCOLL_TEST_ADMIN_DB_DSN not set; skipping")
-	}
+	dsns := testenv.Require(t, "WILLCOLL_TEST_DB_DSN", "WILLCOLL_TEST_ADMIN_DB_DSN")
+	appDSN, adminDSN := dsns[0], dsns[1]
 	open := func(dsn string) *sql.DB {
 		db, err := sql.Open("pgx", dsn)
 		if err != nil {
@@ -84,12 +82,9 @@ func newWorld(t *testing.T) *world {
 	models, db := env(t)
 	ctx := context.Background()
 
+	// tenant_id is a plain uuid now (build-phases.txt 3i / ADR-0006) — no
+	// local managers table to seed a row into for it to be valid.
 	w := &world{models: models, db: db, tenant: uuid.New(), channel: "CH-" + uuid.NewString()[:8]}
-	if _, err := db.Exec(`INSERT INTO managers (id, firm_name, username, email, phone, password_hash)
-		VALUES ($1, 'Concurrency Test', $2, $3, '+254700000000', '\x00')`, w.tenant, "u-"+w.tenant.String(), w.tenant.String()+"@example.com"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Exec(`DELETE FROM managers WHERE id = $1`, w.tenant) })
 
 	landlord := uuid.New()
 	tenantTx(t, db, w.tenant, func(tx *sql.Tx) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PlotMeterReading, ReportChecks, ReportPayment, ReportRow } from '~/types/report'
-import type { BadgeStatus } from '~/components/ui/Badge.vue'
-import { ApiError } from '~/utils/apiError'
+import type { BadgeStatus } from '#base/components/ui/Badge.vue'
+import { ApiError } from '#base/utils/apiError'
 
 // Reports tab (design-tokens 7.9): the on-screen preview has the exact columns
 // of the printed ALL IN ONE PAYMENTS SCHEDULE, so there are no surprises
@@ -265,7 +265,7 @@ async function open(kind: 'schedule' | 'receipts') {
         <UiKpiTile label="Grand total collected" :value="`Ksh ${cur.format(report.totals.grand_total)}`" :delta="`Management fee ${report.management_fee_percent}% = Ksh ${cur.format(report.management_fee)}`" />
       </section>
 
-      <PropertySpreadsheetTable :columns="columns" :rows="report.rows" :row-key="(r: ReportRow) => r.house_no" :footer="report.rows.length ? footer : undefined" footer-label="Totals" empty="No occupied units this month.">
+      <SpreadsheetTable :columns="columns" :rows="report.rows" :row-key="(r: ReportRow) => r.house_no" :footer="report.rows.length ? footer : undefined" footer-label="Totals" empty="No occupied units this month.">
         <template #cell-house_no="{ row }"><span class="tnum font-semibold">{{ row.house_no }}</span></template>
         <template #cell-tenants="{ row }">
           <div>
@@ -281,7 +281,7 @@ async function open(kind: 'schedule' | 'receipts') {
           <span v-else class="text-gray-500">—</span>
         </template>
         <template #cell-total="{ row }"><span class="font-bold">{{ cur.format(rowTotal(row)) }}</span></template>
-      </PropertySpreadsheetTable>
+      </SpreadsheetTable>
     </template>
 
     <UiConfirmDialog

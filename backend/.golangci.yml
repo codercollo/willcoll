@@ -21,6 +21,7 @@ linters:
     - sqlclosecheck # rows and statements are closed
     - errorlint     # errors.Is / errors.As, never == or a type switch on wrapped errors
     - misspell
+    - depguard      # internal/shared must stay product-agnostic: see below
   settings:
     errcheck:
       check-type-assertions: true
@@ -28,11 +29,49 @@ linters:
       errorf: true
       asserts: true
       comparison: true
+    depguard:
+      rules:
+        shared:
+          # internal/shared/* is imported by every product's binary
+          # (rentals-api today, estates-api/waste-api later); if it
+          # imports a product package, that product becomes an implicit
+          # dependency of every other product. TestSharedDoesNotImportRentals
+          # (internal/shared/depguard_test.go) enforces the same rule via
+          # `go list -deps`, so it still fails in a `go test` run with no
+          # golangci-lint installed.
+          files:
+            - "internal/shared/**/*.go"
+          deny:
+            - pkg: github.com/codercollo/willcoll/backend/internal/rentals
+              desc: internal/shared may not import internal/rentals (or any of its subpackages)
+            - pkg: github.com/codercollo/willcoll/backend/internal/estates
+              desc: internal/shared may not import internal/estates (or any of its subpackages)
+            - pkg: github.com/codercollo/willcoll/backend/internal/waste
+              desc: internal/shared may not import internal/waste (or any of its subpackages)
+        platform:
+          # internal/platform is imported by every product API for
+          # identity/billing; if it imported a product package, that
+          # product would become an implicit dependency of every other
+          # product through the platform layer (project-structure.txt Part
+          # D). TestPlatformOnlyImportsShared
+          # (internal/platform/depguard_test.go) enforces the same rule via
+          # `go list -deps`.
+          files:
+            - "internal/platform/**/*.go"
+          deny:
+            - pkg: github.com/codercollo/willcoll/backend/internal/rentals
+              desc: internal/platform may not import internal/rentals (or any of its subpackages) — platform imports shared only
+            - pkg: github.com/codercollo/willcoll/backend/internal/estates
+              desc: internal/platform may not import internal/estates (or any of its subpackages) — platform imports shared only
+            - pkg: github.com/codercollo/willcoll/backend/internal/waste
+              desc: internal/platform may not import internal/waste (or any of its subpackages) — platform imports shared only
   exclusions:
     generated: lax
     paths:
-      - internal/db/sqlc
-      - internal/db/mock
+      - internal/rentals/db/sqlc
+      - internal/rentals/db/mock
+      - internal/platform/db/sqlc
+      - internal/platform/db/mock
     rules:
       # Tests may drop the error from cleanup calls (Close, best-effort DELETE).
       - path: _test\.go
@@ -45,5 +84,7 @@ formatters:
   exclusions:
     generated: lax
     paths:
-      - internal/db/sqlc
-      - internal/db/mock
+      - internal/rentals/db/sqlc
+      - internal/rentals/db/mock
+      - internal/platform/db/sqlc
+      - internal/platform/db/mock

@@ -2,12 +2,12 @@ version: "2"
 sql:
   - engine: postgresql
     # golang-migrate files: sqlc reads the .up.sql files and skips .down.sql.
-    schema: migrations
-    queries: internal/db/query
+    schema: migrations/rentals
+    queries: internal/rentals/db/query
     gen:
       go:
         package: sqlc
-        out: internal/db/sqlc
+        out: internal/rentals/db/sqlc
         sql_package: database/sql
         emit_interface: true
         emit_empty_slices: true
@@ -62,3 +62,62 @@ sql:
             go_type:
               type: string
               pointer: true
+
+  - engine: postgresql
+    schema: migrations/platform
+    queries: internal/platform/db/query
+    gen:
+      go:
+        package: sqlc
+        out: internal/platform/db/sqlc
+        sql_package: database/sql
+        emit_interface: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          # Money is numeric(12,2) end to end — never float64 (pkg/moneyfmt).
+          - db_type: pg_catalog.numeric
+            go_type: github.com/codercollo/willcoll/backend/pkg/moneyfmt.Money
+          - db_type: pg_catalog.numeric
+            nullable: true
+            go_type:
+              import: github.com/codercollo/willcoll/backend/pkg/moneyfmt
+              type: Money
+              pointer: true
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: date
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: jsonb
+            go_type: encoding/json.RawMessage
+          - db_type: jsonb
+            nullable: true
+            go_type:
+              import: encoding/json
+              type: RawMessage
+              pointer: true
+          - db_type: citext
+            go_type: string
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          # staff.module_access, subscription_plans.features (text[]).
+          - db_type: "text[]"
+            go_type: github.com/lib/pq.StringArray

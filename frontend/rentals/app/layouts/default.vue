@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { NavItem } from '~/components/ui/AppShell.vue'
+import type { NavItem } from '#base/components/ui/AppShell.vue'
 
 const auth = useAuthStore()
+const links = useAppLinks()
 const payments = usePayments()
 const onboarding = useOnboarding()
 
@@ -17,8 +18,10 @@ const nav = computed<NavItem[]>(() => [
   { label: 'Properties', to: '/properties', icon: 'lucide:building-2' },
   { label: 'Payments', to: '/payments', icon: 'lucide:banknote', badge: payments.waiting },
   { label: 'Landlords', to: '/landlords', icon: 'lucide:users' },
-  { label: 'Account', to: '/account', icon: 'lucide:user-round', section: 'Account' },
-  { label: 'Billing', to: '/billing', icon: 'lucide:credit-card', section: 'Account' },
+  // Account and billing belong to the platform app (build-phases.txt 3l).
+  { label: 'Account', to: links.accountUrl(), icon: 'lucide:user-round', section: 'Account' },
+  // Billing is owner-only in platform (requireOwner), so staff are not offered it.
+  ...(auth.isOwner ? [{ label: 'Billing', to: links.billingUrl(), icon: 'lucide:credit-card', section: 'Account' }] : []),
 ])
 </script>
 

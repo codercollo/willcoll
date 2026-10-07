@@ -1,9 +1,19 @@
 // Command devtools provides local-only helpers for exercising the trial and
-// subscription paywall (internal/data/access.go, cmd/api/access.go) without
-// waiting on PayHero or the clock. It refuses to run unless ENV is exactly
-// "development": these subcommands write a fake, worthless plan and rewrite
-// a real manager's trial/subscription dates, which must never touch staging
-// or production.
+// subscription paywall (internal/platform/data/access.go,
+// cmd/rentals-api/gates.go) without waiting on PayHero or the clock. Those
+// subcommands refuse to run unless ENV is exactly "development": they
+// write a fake, worthless plan and rewrite a real manager's trial/
+// subscription dates, which must never touch staging or production.
+//
+// backfill-platform is the one exception (build-phases.txt Phase 3 step
+// 3d): it copies platform-owned rows into willcoll_platform for the real
+// cutover, so it is NOT gated by ENV — see backfill_platform.go.
+//
+// Since build-phases.txt 3i-b every other subcommand reads and writes
+// willcoll_platform only (identity, plans, trials and subscriptions live
+// there; rentals' own database has none of it any more). They open
+// PLATFORM_DSN — willcoll_platform's willcoll_platform_admin DSN, the same
+// one backfill-platform uses — and operate on the "rentals" product.
 //
 // Usage (via the Makefile, which loads backend/.env first):
 //
@@ -11,6 +21,10 @@
 //	make dev/expire-trial EMAIL=demo@willcoll.test
 //	make dev/reset-trial  EMAIL=demo@willcoll.test
 //	make dev/set-plan     EMAIL=demo@willcoll.test PLAN="TEST - KES 10"
+//	make db/backfill-platform
+//
+// claim-channels (run by make dev/setup) claims and verifies every
+// property's payment channel in platform; see claim_channels.go.
 package main
 
 import (
@@ -20,11 +34,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"time"
 
-	"github.com/codercollo/willcoll/backend/internal/data"
+	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
+	platformdb "github.com/codercollo/willcoll/backend/internal/platform/db"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -36,43 +50,35 @@ import (
 const TestPlanName = "TEST - KES 10"
 
 func main() {
-	requireDevEnv()
-
 	if len(os.Args) < 2 {
-		log.Fatal("usage: devtools <test-plan|expire-trial|reset-trial> [flags]")
+		log.Fatal("usage: devtools <test-plan|expire-trial|reset-trial|set-plan|claim-channels|backfill-platform> [flags]")
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 
-	appDSN := os.Getenv("DB_DSN")
-	if appDSN == "" {
-		log.Fatal("DB_DSN is not set (run through `make dev/...`, which loads backend/.env)")
-	}
-	adminDSN := os.Getenv("DB_ADMIN_DSN")
-	if adminDSN == "" {
-		adminDSN = deriveAdminDSN(appDSN, os.Getenv("DB_ADMIN_PASSWORD"))
-	}
-	if adminDSN == "" {
-		log.Fatal("set DB_ADMIN_DSN, or DB_ADMIN_PASSWORD to derive it from DB_DSN")
+	// backfill-platform is the one subcommand that runs outside
+	// development (build-phases.txt 3d) and needs a different pair of
+	// DSNs (source willcoll, destination willcoll_platform), so it's
+	// dispatched before requireDevEnv and before the rest of main() opens
+	// the usual DB_DSN/DB_ADMIN_DSN pair.
+	if cmd == "backfill-platform" {
+		runBackfillPlatform(args)
+		return
 	}
 
-	app, admin := mustOpen(appDSN), mustOpen(adminDSN)
-	defer app.Close()
-	defer admin.Close()
-	models := data.NewModels(app, admin, 30*time.Second)
-	ctx := context.Background()
+	requireDevEnv()
 
 	switch cmd {
 	case "test-plan":
-		testPlan(ctx, models)
+		runTestPlan()
 	case "expire-trial":
-		email := emailFlag(args)
-		expireTrial(ctx, models, email)
+		runExpireTrial(emailFlag(args))
 	case "reset-trial":
-		email := emailFlag(args)
-		resetTrial(ctx, models, email)
+		runResetTrial(emailFlag(args))
+	case "claim-channels":
+		runClaimChannels()
 	case "set-plan":
 		email, plan := emailAndPlanFlags(args)
-		setPlan(ctx, models, email, plan)
+		runSetPlan(email, plan)
 	default:
 		log.Fatalf("unknown devtools command %q", cmd)
 	}
@@ -117,114 +123,150 @@ func emailAndPlanFlags(args []string) (string, string) {
 	return *email, *plan
 }
 
-// testPlan upserts TestPlanName: KES 10, monthly, no unit cap. It is
-// idempotent so `make dev/test-plan` is safe to re-run.
-func testPlan(ctx context.Context, models data.Models) {
+// openPlatform opens willcoll_platform as the admin role (PLATFORM_DSN, the
+// same variable backfill-platform uses) and returns its models, with the
+// dev-only methods unlocked: requireDevEnv has already checked ENV, and
+// each dev method checks it again itself.
+func openPlatform() (platformdata.Models, func()) {
+	platformDSN := os.Getenv("PLATFORM_DSN")
+	if platformDSN == "" {
+		log.Fatal("PLATFORM_DSN is not set: willcoll_platform's willcoll_platform_admin DSN (same var backfill-platform uses)")
+	}
+	platformDB := mustOpen(platformDSN)
+
+	models := platformdata.NewModelsFromStore(platformdb.NewStore(platformDB), 30*time.Second)
+	models.Billing.Env = "development"
+	models.Modules.Env = "development"
+	return models, func() { _ = platformDB.Close() }
+}
+
+// runTestPlan upserts TestPlanName into the platform catalog: KES 10,
+// monthly, rentals, no unit cap. It is idempotent so `make dev/test-plan`
+// is safe to re-run.
+func runTestPlan() {
+	models, closeDB := openPlatform()
+	defer closeDB()
+	ctx := context.Background()
+
 	price, err := moneyfmt.Parse("10.00")
 	if err != nil {
 		log.Fatal(err)
 	}
-	input := data.PlanInput{Name: TestPlanName, Price: price, BillingInterval: "monthly", IsTest: true, SortOrder: 999}
+	input := platformdata.PlanInput{
+		Product: platformdata.ProductRentals, Name: TestPlanName, Price: price,
+		BillingInterval: "monthly", IncludedSeats: 1, Features: []string{},
+		IsTest: true, PricingType: platformdata.PricingFlat, SortOrder: 999,
+	}
 
-	plans, err := models.Platform.ListPlans(ctx)
+	plans, err := models.Plans.List(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	for _, p := range plans {
-		if p.Name == TestPlanName {
+		if p.Product == platformdata.ProductRentals && p.Name == TestPlanName && !p.Archived {
 			// A dev-only tool: always run as if in development, since it
 			// only exists to seed the TEST plan for local use.
-			if _, err := models.Platform.UpdatePlan(ctx, p.ID, input, true); err != nil {
+			if _, err := models.Plans.Update(ctx, p.ID, input, true); err != nil {
 				log.Fatal(err)
 			}
 			fmt.Printf("updated plan %s: %s\n", p.ID, TestPlanName)
 			return
 		}
 	}
-	p, err := models.Platform.CreatePlan(ctx, input, true)
+	p, err := models.Plans.Create(ctx, input, true)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("created plan %s: %s\n", p.ID, TestPlanName)
 }
 
-// expireTrial sets the manager's trial end, and any current subscription
-// period end, to yesterday: the 402 paywall should now close the dashboard.
-func expireTrial(ctx context.Context, models data.Models, email string) {
+// runExpireTrial sets the manager's Rentals trial end, and any current
+// Rentals subscription period end, to yesterday: the 402 paywall should
+// now close the dashboard.
+func runExpireTrial(email string) {
+	models, closeDB := openPlatform()
+	defer closeDB()
+	ctx := context.Background()
+
 	manager, err := models.Managers.GetByEmail(ctx, email)
 	if err != nil {
 		log.Fatalf("manager %s: %v", email, err)
 	}
 
-	yesterday := time.Now().AddDate(0, 0, -1)
-	manager.TrialEndsAt = &yesterday
-	if err := models.Managers.Update(ctx, manager); err != nil {
-		log.Fatal(err)
+	yesterday := moneyfmt.Now().AddDate(0, 0, -1)
+	if err := models.Modules.SetTrialEndForDev(ctx, manager.ID, platformdata.ProductRentals, yesterday); err != nil {
+		log.Fatalf("setting the rentals trial end (does %s have a rentals module?): %v", email, err)
 	}
-	fmt.Printf("trial_ends_at set to %s for %s\n", yesterday.Format(time.RFC3339), email)
+	fmt.Printf("rentals trial_ends_at set to %s for %s\n", yesterday.Format(time.RFC3339), email)
 
-	sub, err := models.Billing.Current(ctx, manager.ID)
-	if errors.Is(err, data.ErrRecordNotFound) {
+	_, err = models.Billing.ExpireForDev(ctx, manager.ID, platformdata.ProductRentals, today(yesterday))
+	if errors.Is(err, platformdata.ErrRecordNotFound) {
 		fmt.Println("no subscription to expire")
 		return
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := models.Billing.ExpireForDev(ctx, manager.ID, sub.Subscription.ID, today(yesterday)); err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("subscription %s current_period_end set to %s\n", sub.Subscription.ID, today(yesterday).Format("2006-01-02"))
+	fmt.Printf("rentals subscription current_period_end set to %s\n", today(yesterday).Format("2006-01-02"))
 }
 
-// resetTrial restores a fresh 7-day trial and deletes any subscription the
-// dev tools created, so the manager is back to a brand-new trial firm.
-func resetTrial(ctx context.Context, models data.Models, email string) {
+// runResetTrial restores a fresh trial and deletes any Rentals subscription
+// the dev tools created, so the manager is back to a brand-new trial firm.
+func runResetTrial(email string) {
+	models, closeDB := openPlatform()
+	defer closeDB()
+	ctx := context.Background()
+
 	manager, err := models.Managers.GetByEmail(ctx, email)
 	if err != nil {
 		log.Fatalf("manager %s: %v", email, err)
 	}
 
-	trialEnd := time.Now().AddDate(0, 0, data.DefaultTrialDays)
-	manager.TrialEndsAt = &trialEnd
-	if err := models.Managers.Update(ctx, manager); err != nil {
-		log.Fatal(err)
+	trialEnd := platformdata.TrialEnd(moneyfmt.Now(), platformdata.DefaultTrialDays)
+	if err := models.Modules.SetTrialEndForDev(ctx, manager.ID, platformdata.ProductRentals, trialEnd); err != nil {
+		log.Fatalf("setting the rentals trial end (does %s have a rentals module?): %v", email, err)
 	}
-	fmt.Printf("trial_ends_at reset to %s for %s\n", trialEnd.Format(time.RFC3339), email)
+	fmt.Printf("rentals trial_ends_at reset to %s for %s\n", trialEnd.Format(time.RFC3339), email)
 
-	n, err := models.Billing.DeleteForDev(ctx, manager.ID)
+	n, err := models.Billing.DeleteForDev(ctx, manager.ID, platformdata.ProductRentals)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("removed %d subscription(s)\n", n)
 }
 
-// setPlan puts a manager directly onto plan, active for one billing interval
-// from today, with no invoice or payment: for exercising the renew flow's
-// plan-switch behavior without a real PayHero payment.
-func setPlan(ctx context.Context, models data.Models, email, plan string) {
+// runSetPlan puts email's manager directly onto plan for the rentals
+// product, active for one billing interval from today, with no invoice or
+// payment: for exercising the renew flow's plan-switch behavior without a
+// real PayHero payment. plan must exist in the platform catalog
+// (dev/test-plan, or POST /v1/admin/plans against platform-api).
+func runSetPlan(email, plan string) {
+	models, closeDB := openPlatform()
+	defer closeDB()
+	ctx := context.Background()
+
 	manager, err := models.Managers.GetByEmail(ctx, email)
 	if err != nil {
 		log.Fatalf("manager %s: %v", email, err)
 	}
 
-	plans, err := models.Platform.ListPlans(ctx)
+	plans, err := models.Plans.List(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	var planID *uuid.UUID
 	for _, p := range plans {
-		if p.Name == plan {
+		if p.Product == platformdata.ProductRentals && p.Name == plan && !p.Archived {
 			id := p.ID
 			planID = &id
 			break
 		}
 	}
 	if planID == nil {
-		log.Fatalf("no plan named %q (see GET /v1/billing/plans)", plan)
+		log.Fatalf("no rentals plan named %q in the platform catalog (see GET /v1/admin/plans against platform-api)", plan)
 	}
 
-	if err := models.Billing.SetPlanForDev(ctx, manager.ID, *planID); err != nil {
+	if err := models.Billing.SetPlanForDev(ctx, manager.ID, platformdata.ProductRentals, *planID); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("%s is now on plan %q\n", email, plan)
@@ -243,16 +285,4 @@ func mustOpen(dsn string) *sql.DB {
 		log.Fatalf("cannot reach the database: %v", err)
 	}
 	return db
-}
-
-func deriveAdminDSN(appDSN, adminPassword string) string {
-	if adminPassword == "" {
-		return ""
-	}
-	u, err := url.Parse(appDSN)
-	if err != nil || u.Scheme == "" {
-		return ""
-	}
-	u.User = url.UserPassword("willcoll_admin", adminPassword)
-	return u.String()
 }

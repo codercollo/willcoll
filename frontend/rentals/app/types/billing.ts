@@ -1,6 +1,9 @@
 // Billing engine and ledger shapes (features-functionalities.txt section 5).
 // Every amount and reading is a decimal string. Never do arithmetic on them.
 import type { PageMeta } from '~/types/api'
+import type { LedgerEntry } from '#base/types/ledger'
+
+export type { LedgerEntry }
 
 export type LedgerType = 'rent' | 'water' | 'garbage' | 'rent_deposit' | 'water_deposit' | 'electricity_deposit'
 export type RentStatus = 'paid' | 'partial' | 'arrears'
@@ -50,17 +53,6 @@ export interface ElectricityDeposits {
   total_balance: string
 }
 
-export interface LedgerEntry {
-  id: string
-  direction: 'DEBIT' | 'CREDIT'
-  amount: string
-  reference_type: string
-  created_at: string
-  transaction_type: string
-  description: string
-  running_balance: string
-  reversed: boolean
-}
 
 export interface LedgerPage {
   balance: { unit_id: string; type: string; balance: string }

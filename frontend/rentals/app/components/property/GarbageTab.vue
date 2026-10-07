@@ -53,7 +53,7 @@ async function bills() {
   <div class="flex flex-col gap-4">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <UiPeriodPicker v-model="period" />
-      <div class="flex gap-3">
+      <div class="flex flex-wrap gap-3">
         <UiButton variant="secondary" :disabled="!preview?.already_generated" @click="bills"><Icon name="lucide:file-text" class="size-4" />Garbage bills PDF</UiButton>
         <UiButton :disabled="loading || !preview?.enabled || preview?.already_generated || !preview?.billed_count" @click="confirm = true"><Icon name="lucide:trash-2" class="size-4" />Generate garbage invoices</UiButton>
       </div>
@@ -66,12 +66,12 @@ async function bills() {
       <UiFormAlert v-if="!preview.enabled" tone="info">Garbage collection is switched off for this property. Turn it on in <NuxtLink :to="{ query: { tab: 'settings' } }" class="font-semibold text-accent-text">Settings</NuxtLink>.</UiFormAlert>
       <UiFormAlert v-else-if="preview.already_generated" tone="success">Garbage for {{ periodLabel(period) }} has already been billed.</UiFormAlert>
       <UiFormAlert v-else :tone="preview.billed_count ? 'info' : 'error'">{{ preview.message }}</UiFormAlert>
-      <PropertySpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: GarbageRow) => r.unit_id" :locked="() => !!preview?.already_generated" :footer="rows.length ? footer : undefined" empty="No occupied units.">
+      <SpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: GarbageRow) => r.unit_id" :locked="() => !!preview?.already_generated" :footer="rows.length ? footer : undefined" empty="No occupied units.">
         <template #cell-unit_code="{ row }"><NuxtLink :to="`/properties/${propertyId}/units/${row.unit_id}`" class="tnum font-semibold text-accent-text">{{ row.unit_code }}</NuxtLink></template>
         <template #cell-prior_balance="{ row }"><span :class="cur.isZero(row.prior_balance) ? 'text-gray-700' : 'font-semibold text-arrears-text'">{{ cur.format(row.prior_balance) }}</span></template>
         <template #cell-fee="{ row }"><span v-if="!row.billed" class="text-gray-500 italic">Not billed</span><template v-else>{{ cur.format(row.fee) }}</template></template>
         <template #cell-total_due="{ row }"><span class="font-bold">{{ row.billed ? cur.format(row.total_due) : cur.format(row.prior_balance) }}</span></template>
-      </PropertySpreadsheetTable>
+      </SpreadsheetTable>
     </template>
 
     <UiConfirmDialog v-model="confirm" title="Generate garbage invoices?" :text="preview?.message" confirm-label="Generate" :loading="gen.loading.value" @confirm="generate">

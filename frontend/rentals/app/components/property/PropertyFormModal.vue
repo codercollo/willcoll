@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Property } from '~/types/api'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ created: [Property] }>()

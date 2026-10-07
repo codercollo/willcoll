@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { BadgeStatus } from '~/components/ui/Badge.vue'
+import type { BadgeStatus } from '#base/components/ui/Badge.vue'
 import type { RentOverviewRow } from '~/types/billing'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 const props = defineProps<{ propertyId: string }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -75,7 +75,7 @@ async function generate() {
   <div class="flex flex-col gap-4">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <UiPeriodPicker v-model="period" />
-      <div class="flex gap-3">
+      <div class="flex flex-wrap gap-3">
         <UiButton v-if="dirty.length" variant="secondary" :loading="save.loading.value" :disabled="anyInvalid" @click="saveSchedule">Save {{ dirty.length }} rent change{{ dirty.length > 1 ? 's' : '' }}</UiButton>
         <UiButton :disabled="!unbilled || loading" @click="confirm = true"><Icon name="lucide:receipt" class="size-4" />Generate rent invoices</UiButton>
       </div>
@@ -86,7 +86,7 @@ async function generate() {
     <UiSkeleton v-if="loading" block />
 
     <template v-else-if="!error">
-      <PropertySpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: RentOverviewRow) => r.unit_id" :footer="rows.length ? footer : undefined" empty="No occupied units with an active lease.">
+      <SpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: RentOverviewRow) => r.unit_id" :footer="rows.length ? footer : undefined" empty="No occupied units with an active lease.">
         <template #cell-unit_code="{ row }"><NuxtLink :to="`/properties/${propertyId}/units/${row.unit_id}`" class="tnum font-semibold text-accent-text">{{ row.unit_code }}</NuxtLink></template>
         <template #cell-expected="{ row }">
           <PropertySpreadsheetInput v-if="editable(row)" :model-value="edits[row.unit_id] ?? row.expected" :label="`Expected rent for ${row.unit_code}`" :changed="changed(row)" :invalid="invalid(row)" @update:model-value="(v) => (edits[row.unit_id] = v)" />
@@ -96,7 +96,7 @@ async function generate() {
         <template #cell-balance="{ row }"><span v-if="!row.billed" class="text-gray-500">—</span><span v-else :class="['font-semibold', balanceClass(row)]">{{ cur.format(cur.isNegative(row.balance) ? row.balance.replace('-', '') : row.balance) }}<span v-if="cur.isNegative(row.balance)" class="ml-1 font-normal"> advance</span></span></template>
         <template #cell-status="{ row }"><UiBadge v-if="!row.billed" status="pending" label="Not billed" />
           <UiBadge v-else :status="statusBadge[row.status]!.status" :label="cur.isNegative(row.balance) ? 'Advance' : statusBadge[row.status]!.label" /></template>
-      </PropertySpreadsheetTable>
+      </SpreadsheetTable>
       <p class="text-gray-500">Rent amounts can be changed for months not yet billed. A change applies to the next run, never to a month already billed.</p>
     </template>
 

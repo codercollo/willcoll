@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
 import type { ImportRowError } from '~/types/api'
 import type { OnboardSummary } from '~/types/onboarding'
 import { ONBOARD_COLUMNS, templateHref } from '~/utils/onboardTemplate'

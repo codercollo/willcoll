@@ -68,7 +68,7 @@ const assignOpen = computed({ get: () => !!assigning.value, set: (v) => { if (!v
     <UiCard v-else-if="!error" :padded="false">
       <UiEmptyState v-if="!rows.length" :title="store.queue.length ? 'Nothing in this view' : 'All caught up'" :text="store.queue.length ? 'Try another filter.' : 'Every payment has been placed. New ones that need a decision show up here.'" icon="lucide:circle-check" />
       <div v-else class="overflow-x-auto">
-        <table class="w-full text-left">
+        <table class="stack-table w-full text-left">
           <thead>
             <tr class="h-10 border-b border-border-default bg-gray-50">
               <th class="th-text px-5 font-medium">Received</th><th class="th-text px-5 font-medium">Payer</th>
@@ -78,14 +78,14 @@ const assignOpen = computed({ get: () => !!assigning.value, set: (v) => { if (!v
           </thead>
           <tbody>
             <tr v-for="p in rows" :key="p.id" class="border-b border-border-subtle align-top hover:bg-blue-50">
-              <td class="px-5 py-4 whitespace-nowrap"><p class="tnum">{{ formatDateTime(p.received_at) }}</p><p class="tnum text-[length:var(--text-caption)] text-gray-500">{{ p.mpesa_receipt }}</p></td>
-              <td class="px-5 py-4"><p class="font-semibold">{{ p.payer_name || 'Unknown' }}</p><p class="tnum text-[length:var(--text-caption)] text-gray-500">{{ p.msisdn }}</p></td>
-              <td class="px-5 py-4">
+              <td class="px-5 py-4 whitespace-nowrap" data-label="Received"><p class="tnum">{{ formatDateTime(p.received_at) }}</p><p class="tnum text-[length:var(--text-caption)] text-gray-500">{{ p.mpesa_receipt }}</p></td>
+              <td class="px-5 py-4" data-label="Payer"><p class="font-semibold">{{ p.payer_name || 'Unknown' }}</p><p class="tnum text-[length:var(--text-caption)] text-gray-500">{{ p.msisdn }}</p></td>
+              <td class="px-5 py-4" data-label="Unit">
                 <NuxtLink v-if="p.matched_unit_id" :to="`/units/${p.matched_unit_id}`" class="tnum font-semibold text-accent-text">{{ p.unit_code }}</NuxtLink>
                 <span v-else class="text-gray-500">—</span>
               </td>
-              <td class="money px-5 py-4 text-right font-semibold whitespace-nowrap">{{ cur.format(p.amount) }}</td>
-              <td class="max-w-xs px-5 py-4">
+              <td class="money px-5 py-4 text-right font-semibold whitespace-nowrap" data-label="Amount">{{ cur.format(p.amount) }}</td>
+              <td class="max-w-xs px-5 py-4" data-label="Why it is here" data-wide>
                 <UiBadge v-if="isGuess(p)" status="partial" label="Placed on a guess" />
                 <UiBadge v-else status="review" label="Unmatched" />
                 <p v-if="p.review_note" class="mt-2 text-gray-700">{{ p.review_note }}</p>

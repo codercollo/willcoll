@@ -1,73 +1,58 @@
 #!/usr/bin/env sh
 # Runs the whole test suite, including the Postgres integration and
-# concurrency tests, against a THROWAWAY database. It never touches the
-# development database: it creates willcoll_verify next to it, applies every
-# migration, runs `go test ./...` with the integration DSNs set, and drops the
-# database again (also on failure or Ctrl-C).
+# concurrency tests, against THROWAWAY databases. It never touches the
+# development databases: it creates willcoll_verify (Rentals) and
+# willcoll_platform_verify (platform) next to them, applies every migration of
+# each, runs `go test ./...` with every integration DSN set, prints how many
+# tests ran / passed / failed / skipped per package, and drops both databases
+# again (also on failure or Ctrl-C).
 #
-# Needs, from the environment or backend/.env:
-#   MIGRATE_DSN        owner/superuser DSN of the dev database (its name must
-#                      be "willcoll"; the scratch database is derived from it)
-#   DB_DSN             the API DSN (role willcoll_app)
-#   DB_ADMIN_PASSWORD  password of the willcoll_admin role
-# and `psql` on the PATH. Uses golang-migrate (`migrate`) when installed,
+# INTEGRATION=1 is exported: with it, an integration test whose DSN is missing
+# FAILS instead of skipping (internal/testenv), so a green run here means the
+# database tests really ran. The summary's skip column shows anything else.
+#
+# Settings and the platform roles' passwords: see scripts/lib_testdb.sh.
+# Needs `psql` on the PATH; uses golang-migrate (`migrate`) when installed,
 # otherwise applies the .up.sql files with psql. DSNs are never printed.
 #
 # Usage: sh scripts/test_integration.sh [go test args, default ./...]
 set -eu
 
 cd "$(dirname "$0")/.."
-
-# Read only what is needed from .env, without sourcing it: the file is also
-# consumed by make, and a value like SMTP_SENDER=Willcoll <a@b> is not valid
-# shell. Anything already in the environment wins.
-envval() {
-    eval "current=\${$1:-}"
-    if [ -n "$current" ]; then
-        printf '%s' "$current"
-    elif [ -f .env ]; then
-        sed -n "s/^$1=//p" .env | head -n 1 | sed 's/^"\(.*\)"$/\1/'
-    fi
-}
-MIGRATE_DSN=$(envval MIGRATE_DSN)
-DB_DSN=$(envval DB_DSN)
-DB_ADMIN_PASSWORD=$(envval DB_ADMIN_PASSWORD)
-
-: "${MIGRATE_DSN:?MIGRATE_DSN is not set}"
-: "${DB_DSN:?DB_DSN is not set}"
-: "${DB_ADMIN_PASSWORD:?DB_ADMIN_PASSWORD is not set}"
+. ./scripts/lib_testdb.sh
+testdb_init
 
 SCRATCH=willcoll_verify
-swap_db() { echo "$1" | sed "s#/willcoll?#/${SCRATCH}?#"; }
+SCRATCH_PLATFORM=willcoll_platform_verify
 
-SCRATCH_MIGRATE=$(swap_db "$MIGRATE_DSN")
-SCRATCH_APP=$(swap_db "$DB_DSN")
-if [ "$SCRATCH_MIGRATE" = "$MIGRATE_DSN" ] || [ "$SCRATCH_APP" = "$DB_DSN" ]; then
-    echo "test_integration: expected the DSNs to name a database called willcoll" >&2
-    exit 1
-fi
-SCRATCH_ADMIN=$(echo "$SCRATCH_APP" | sed "s#//willcoll_app:[^@]*@#//willcoll_admin:${DB_ADMIN_PASSWORD}@#")
-
+# shellcheck disable=SC2317 # false positive: cleanup runs from the trap below
 cleanup() {
     psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${SCRATCH}" >/dev/null 2>&1 || true
+    psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${SCRATCH_PLATFORM}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
-psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${SCRATCH}" >/dev/null
-psql "$MIGRATE_DSN" -qc "CREATE DATABASE ${SCRATCH}"
-
-if command -v migrate >/dev/null 2>&1; then
-    migrate -path ./migrations -database "$SCRATCH_MIGRATE" up
-else
-    # golang-migrate keeps a schema_migrations table that migration 000018
-    # reads; without the tool, create a stand-in and apply the files in order.
-    psql "$SCRATCH_MIGRATE" -q -c "CREATE TABLE IF NOT EXISTS schema_migrations (version bigint PRIMARY KEY, dirty boolean NOT NULL)"
-    for f in $(ls migrations/*.up.sql | sort); do
-        psql "$SCRATCH_MIGRATE" -q -v ON_ERROR_STOP=1 -f "$f" >/dev/null
-    done
-fi
+for db in "$SCRATCH" "$SCRATCH_PLATFORM"; do
+    psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${db}" >/dev/null
+    psql "$MIGRATE_DSN" -qc "CREATE DATABASE ${db}"
+done
+migrate_up ./migrations/rentals "$(owner_dsn "$SCRATCH")"
+migrate_up ./migrations/platform "$(owner_dsn "$SCRATCH_PLATFORM")"
 
 if [ "$#" -eq 0 ]; then
     set -- ./...
 fi
-WILLCOLL_TEST_DB_DSN="$SCRATCH_APP" WILLCOLL_TEST_ADMIN_DB_DSN="$SCRATCH_ADMIN" go test -count=1 "$@"
+
+results="${TMPDIR:-/tmp}/willcoll_integration.json"
+status=0
+INTEGRATION=1 \
+WILLCOLL_TEST_DB_DSN="$(app_dsn "$SCRATCH")" \
+WILLCOLL_TEST_ADMIN_DB_DSN="$(admin_dsn "$SCRATCH")" \
+WILLCOLL_TEST_PLATFORM_DB_DSN="$(platform_app_dsn "$SCRATCH_PLATFORM")" \
+WILLCOLL_TEST_PLATFORM_ADMIN_DB_DSN="$(platform_admin_dsn "$SCRATCH_PLATFORM")" \
+    go test -count=1 -json "$@" >"$results" || status=$?
+
+# The json stream is the source of truth; the summary prints the per-package
+# table (run / pass / fail / skip) and, on failure, the failing output.
+go run ./cmd/testsummary <"$results" || status=1
+exit "$status"

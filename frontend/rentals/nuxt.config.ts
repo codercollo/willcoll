@@ -1,16 +1,17 @@
-import tailwindcss from "@tailwindcss/vite";
+import { RENTALS_GUARD } from "./guard.config";
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
+  // Components, composables, utils, design tokens and the auth middleware
+  // shared by every product (build-phases.txt 3k). Modules, Tailwind and the
+  // base CSS come with it.
+  extends: ["../layers/base"],
   compatibilityDate: "2025-07-15",
   devtools: { enabled: true },
   // Browser-rendered. API calls go same-origin (/v1) and are proxied to the API,
   // so the session cookie belongs to this origin and phones on the LAN work.
   ssr: false,
-  modules: ["@pinia/nuxt", "@nuxt/fonts", "@nuxt/icon", "@nuxt/image"],
-  css: ["~/assets/css/main.css"],
   vite: {
-    plugins: [tailwindcss()],
     // Dev only: allow Cloudflare quick-tunnel hostnames (QR scans from phones).
     server: { allowedHosts: [".trycloudflare.com"] },
   },
@@ -20,14 +21,30 @@ export default defineNuxtConfig({
     // Used both by the /v1/** proxy below and by server/routes/q/[token].get.ts,
     // which must NOT follow the API's redirect server-side (see that file).
     apiInternalBase: "http://localhost:4000",
+    // Same for platform-api (identity, account, billing, admin oversight),
+    // behind the /_platform/v1/** proxy below. NUXT_API_PLATFORM_INTERNAL_BASE.
+    apiPlatformInternalBase: "http://localhost:4100",
     public: {
       // Empty = same origin (proxied below). Overridden by NUXT_PUBLIC_API_BASE.
       apiBase: "",
+      // Where the browser reaches platform-api. Default: the same-origin
+      // /_platform proxy below, so the platform session cookie is first-party
+      // to this app and rentals-api (proxied the same way) receives it.
+      // Overridden by NUXT_PUBLIC_API_PLATFORM_BASE (e.g. https://api.willcoll.co.ke).
+      apiPlatformBase: "/_platform",
+      // platform-api's per-product billing routes and the session's trial /
+      // paywall standing key on this.
+      product: "rentals",
+      // The sign-in guard (layers/base utils/routeGuard.ts), Rentals' paths.
+      guard: RENTALS_GUARD,
     },
   },
   routeRules: {
     "/v1/**": {
       proxy: `${process.env.NUXT_API_INTERNAL_BASE || "http://localhost:4000"}/v1/**`,
+    },
+    "/_platform/v1/**": {
+      proxy: `${process.env.NUXT_API_PLATFORM_INTERNAL_BASE || "http://localhost:4100"}/v1/**`,
     },
   },
   icon: { serverBundle: "local" },

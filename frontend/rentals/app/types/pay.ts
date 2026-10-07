@@ -1,14 +1,9 @@
 // Public pay flow (features-functionalities.txt section 6).
+import type { PayBalance } from '#base/types/payLine'
+
+export type { PayBalance }
 export interface PayUnit { property_name: string; unit_code: string; can_pay: boolean }
 
-export interface PayBalance {
-  type: string // RENT | WATER | GARBAGE | RENT_DEPOSIT | WATER_DEPOSIT | ELECTRICITY_DEPOSIT
-  balance: string // what is owed; negative = credit
-  // Whether this line can be paid right now: always true for rent/water/
-  // garbage, false for a deposit that's already settled (still shown, just
-  // not payable — a deposit can't be paid ahead).
-  payable: boolean
-}
 
 export interface PayIntent { id: string; status: 'pending'; amount: string; expires_at: string }
 

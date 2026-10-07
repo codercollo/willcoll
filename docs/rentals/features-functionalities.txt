@@ -1,0 +1,201 @@
+================================================================================
+WILLCOLL RENTALS - FEATURES, FUNCTIONALITIES AND ENDPOINT INDEX
+================================================================================
+
+  NOTE ON THIS FILE'S HISTORY (build-phases.txt 3i-c). CLAUDE.md,
+  docs/build-phases.txt and docs/project-structure.txt all refer to a
+  features-functionalities.txt "kept in sync with cmd/rentals-api/routes.go".
+  No such file exists anywhere in this repository: it is not tracked by git
+  (git ls-files), not untracked, and not in any commit. So this is the first
+  version, written from the two routers as they stand after the platform split
+  (generated from router.Routes() of cmd/rentals-api and cmd/platform-api, then
+  grouped by hand), rather than an edit of an older document. If an older copy
+  exists on someone's machine, merge it into this one; the endpoint index below
+  is the part that is current.
+
+  WHERE EACH ROUTE LIVES (ADR-0006/0007, build-phases.txt Phase 3). Willcoll is
+  three binaries over separate databases:
+
+    platform-api   willcoll_platform   identity, sessions, staff, account,
+                                       billing, module entitlements, Super
+                                       Admin oversight
+    rentals-api    willcoll_rentals    the Rentals product: portfolio, ledgers,
+                                       runs, reports, the public pay page
+
+  rentals-api has NO login, registration, account, billing or manager-admin
+  routes of its own any more (3i-b). It reads the willcoll_session cookie that
+  platform-api sets (the same session table, ADR-0007) and answers per
+  principal. The Rentals frontend sends the platform routes to platform-api and
+  everything else to rentals-api (frontend/rentals/app/utils/apiTarget.ts).
+
+  Conventions: every path is under /v1 unless shown. Money and readings are
+  decimal strings. Errors use {"error": ...}. "manager" below means the firm's
+  own login (the implicit owner) or a staff member whose role is high enough;
+  see "Roles".
+
+--------------------------------------------------------------------------------
+ROLES (rentals-api, cmd/rentals-api/roles.go routeMinRole)
+--------------------------------------------------------------------------------
+  The firm's own login is always the implicit owner. A staff member has a role
+  (owner > accountant > officer > viewer) and a module_access list that must
+  contain "rentals". A route not listed in routeMinRole defaults to viewer for
+  GET/HEAD and owner for any write. roles.go is the source of truth; it is not
+  copied here.
+
+  Every rentals-api manager route is guarded, in order, by: an activated
+  manager (401 signed out / 403 pending or suspended), the staff member's
+  module_access, an active or trialing "rentals" module (403), a live
+  subscription or running trial (402, the paywall), and the minimum role (403).
+  The public pay page, the QR scan and the PayHero webhooks sit outside those
+  guards, so a lapsed or suspended firm's tenants can still pay and the money is
+  still recorded.
+
+--------------------------------------------------------------------------------
+PLATFORM-API  (willcoll_platform)
+--------------------------------------------------------------------------------
+Sign-up and sign-in (public; the credential endpoints are rate limited)
+  POST   /v1/managers                         register a firm (202); emails an activation token
+  PUT    /v1/managers/activated               activate with the emailed token; starts the Rentals trial
+  POST   /v1/tokens/activation                resend the activation email
+  POST   /v1/tokens/password-reset            email a password-reset token
+  PUT    /v1/managers/password                set a new password with that token
+  POST   /v1/sessions                         sign in: the firm's manager OR a staff member (one endpoint)
+  GET    /v1/sessions                         who is signed in; ?product=rentals adds the firm's paywall
+                                              standing ("access": trial | subscribed | expired, days_left)
+  DELETE /v1/sessions                         sign out (signs out of every product: one shared session)
+  POST   /v1/admin/sessions                   Super Admin sign-in
+  PUT    /v1/staff/activated                  a staff member sets their password from the invite token
+
+Account (signed-in, activated manager or staff)
+  GET    /v1/account                          the firm's profile
+  PATCH  /v1/account                          update firm name / phone
+  PUT    /v1/account/password                 change password (signs out other devices)
+
+Owner only: staff and billing (the firm's own login, or a staff owner)
+  GET    /v1/staff                            list staff
+  POST   /v1/staff                            invite a staff member (role, module_access) - emails a token
+  PATCH  /v1/staff/:id                        change role / module_access / status; disabling revokes sessions
+  GET    /v1/billing/:product/plans           plans for the product, plus unit_count (the firm's reported billable count)
+  GET    /v1/billing/:product/subscription    the firm's subscription to the product (404 if none yet)
+  POST   /v1/billing/:product/subscription/renew   start a renewal: STK push to the billing channel
+  GET    /v1/billing/:product/invoices        invoice history
+  GET    /v1/billing/:product/invoices/:id/pdf    one invoice as a PDF
+  (:product is rentals | estates | waste. The Rentals frontend maps its old /billing/... paths to /billing/rentals/...)
+
+Webhook (server to server; shared secret and/or source IP, never rate limited)
+  POST   /v1/webhooks/payhero/subscriptions   a subscription payment's outcome: settles the invoice, activates the plan
+
+Super Admin (requireAdmin) - oversight reads willcoll_platform only, never a product database
+  GET    /v1/admin/managers                   firms: ?status, ?sort (created_at|firm_name, "-" desc), page, page_size.
+                                              Each row: firm, status, latest subscription, modules, per-product
+                                              subscriptions, staff_count, unit_count and the module_usage rows.
+  GET    /v1/admin/managers/:id               one firm, same shape
+  POST   /v1/admin/managers/:id/suspend       suspend; deletes ALL the manager's and their staff's sessions at once
+                                              (sessions_revoked); audited as the admin; their staff cannot sign in either
+  POST   /v1/admin/managers/:id/reinstate     lift a suspension (a never-activated firm returns to pending)
+  GET    /v1/admin/subscriptions              every subscription: ?product, ?status, ?sort, paging
+  GET    /v1/admin/system/health              the ONE system health page (platform-api): checks the platform database
+                                              itself and asks each product API (RENTALS_API_URL) for its own report,
+                                              in parallel, each under HEALTH_TIMEOUT (default 5s). One dead service is
+                                              reported as that service (unreachable|unauthorized|not_configured|degraded)
+                                              with the rest still returned; 503 only if willcoll_platform is down.
+  GET    /v1/admin/plans                      the plan catalog with subscriber counts
+  POST   /v1/admin/plans                      create a plan (flat or per_unit pricing)
+  PATCH  /v1/admin/plans/:id                  edit a plan
+  POST   /v1/admin/plans/:id/archive          archive (hide from managers; subscribers keep their period)
+  POST   /v1/admin/plans/:id/restore          restore
+
+Operations
+  GET    /v1/healthcheck                      liveness / version
+  GET    /debug/vars                          expvar metrics (reverse-proxy restricted)
+
+--------------------------------------------------------------------------------
+RENTALS-API  (willcoll_rentals)
+--------------------------------------------------------------------------------
+Core resources
+  GET    /v1/landlords                        POST /v1/landlords
+  GET    /v1/landlords/:id                    PATCH /v1/landlords/:id
+  GET    /v1/properties                       POST /v1/properties   (a hand-typed payhero_channel_id is claimed in platform
+                                                    first: 409 if owned elsewhere, 503 if platform is unreachable)
+  GET    /v1/properties/:id                   PATCH /v1/properties/:id          DELETE /v1/properties/:id (archive)
+  PATCH  /v1/properties/:id/garbage           garbage settings
+  PATCH  /v1/properties/:id/electricity       electricity-deposit settings
+  PUT    /v1/properties/:id/print-theme       the property's print/PDF branding
+  GET    /v1/properties/:id/electricity/deposits  (.csv, .pdf)
+  GET    /v1/properties/:id/units             POST /v1/properties/:id/units     POST /v1/properties/:id/units/import
+  GET    /v1/units/:id                        PATCH /v1/units/:id
+  GET    /v1/onboarding                       POST /v1/properties/:id/onboarding/import   (units + tenants + opening balances)
+
+Leases and QR codes
+  POST   /v1/units/:id/leases                 GET /v1/units/:id/leases
+  GET    /v1/leases/:id                       PATCH /v1/leases/:id
+  POST   /v1/leases/:id/payers                DELETE /v1/leases/:id/payers/:payerId
+  GET    /v1/leases/:id/qr                    GET /v1/leases/:id/qr.png         POST /v1/leases/:id/qr/rotate
+  POST   /v1/properties/:id/qr/bulk           bulk-generate unit QR stickers (PDF)
+  GET    /q/:token                            public QR scan -> redirect to the pay page (outside /v1)
+
+Getting paid (PayHero channels)
+  POST   /v1/properties/:id/payment-channel         register / reuse a PayHero channel; claimed in platform's
+                                                    payment_channels first (409 if another property owns it)
+  GET    /v1/properties/:id/payment-channel/status  connected / problem / not connected
+  POST   /v1/properties/:id/payment-channel/test    send a test prompt
+  GET    /v1/payment-channel-banks                  supported banks
+
+Billing engines, ledgers, reports
+  PUT    /v1/properties/:id/rent-schedule           expected rent per unit
+  POST   /v1/properties/:id/rent/generate?period=   bill the month's rent (re-running bills nothing twice)
+  GET    /v1/properties/:id/rent/overview
+  POST   /v1/units/:id/rent/payments                record a cash payment
+  POST   /v1/units/:id/rent/charges                 post a manual charge
+  POST   /v1/ledger-entries/:id/reverse             storno reversal (the ledger is append-only)
+  GET    /v1/units/:id/ledger/:type                 a unit's ledger (rent | water | garbage | deposits)
+  POST   /v1/units/:id/arrears-commitments
+  GET/PUT /v1/properties/:id/water                  readings grid / save readings
+  POST   /v1/properties/:id/water/generate          GET /v1/properties/:id/water/invoices/:period (PDF)
+  GET/POST /v1/properties/:id/garbage/generate      preview / bill garbage
+  GET    /v1/properties/:id/garbage/invoices/:period (PDF)
+  GET    /v1/properties/:id/reports/:period         the monthly "ALL IN ONE PAYMENTS SCHEDULE"
+  GET    /v1/properties/:id/reports/:period/checks  sanity checks
+  GET/PUT /v1/properties/:id/reports/:period/plot-meter
+  POST   /v1/properties/:id/reports/:period/confirm       freeze the period
+  POST   /v1/properties/:id/reports/:period/generate      render the PDF
+  GET    /v1/properties/:id/receipts/:period/download     the receipt book (PDF)
+
+Payment review queue
+  GET    /v1/payments/review                  unmatched and unconfirmed payments
+  POST   /v1/payments/:id/allocate            POST /v1/payments/:id/confirm
+
+Public tenant pay surface (no login; OTP-gated; rate limited)
+  GET    /v1/pay/:propertySlug/:unitCode                  the unit (no tenant details)
+  POST   /v1/pay/:propertySlug/:unitCode/otp              text a code to a phone on the lease
+  POST   /v1/pay/:propertySlug/:unitCode/otp/verify       trade the code for a short-lived Bearer token
+  GET    /v1/pay/:propertySlug/:unitCode/balances         what is owed (Bearer)
+  POST   /v1/pay/:propertySlug/:unitCode/intent           STK push to the property's channel (Bearer)
+  GET    /v1/pay/intents/:id/status                       pending | completed | failed, with the receipt
+
+Webhook (server to server)
+  POST   /v1/webhooks/payhero/collections     STK outcome or organic paybill payment. Claimed in platform's
+                                              payment_inbox first (one receipt posts once, even across
+                                              redelivery); platform unreachable -> local-only posting, counted.
+
+Super Admin (requireAdmin; the platform session's admin principal) - Rentals' own report only
+  GET    /v1/admin/system/health              rentals' own database, backups, usage reporting, audit failures, inbox
+                                              fallbacks, unclaimed_channels (payments on a channel with no platform claim); read by platform-api's system health page, which forwards the
+                                              admin's session cookie (the Super Admin page itself is on platform-api)
+  GET    /v1/admin/backups                    last base backup, WAL archiving
+
+Operations
+  GET    /v1/healthcheck                      GET /debug/vars
+
+--------------------------------------------------------------------------------
+REMOVED FROM RENTALS-API IN 3i-b (now 404 here; platform-api serves the same job)
+--------------------------------------------------------------------------------
+  POST /v1/managers, PUT /v1/managers/activated, PUT /v1/managers/password,
+  POST /v1/tokens/activation, POST /v1/tokens/password-reset,
+  POST|GET|DELETE /v1/sessions, POST /v1/admin/sessions,
+  GET|PATCH /v1/account, PUT /v1/account/password,
+  GET /v1/billing/{plans,subscription,invoices,invoices/:id/pdf}, POST /v1/billing/subscription/renew,
+  POST /v1/webhooks/payhero/subscriptions,
+  GET /v1/admin/managers[/:id], POST /v1/admin/managers/:id/{suspend,reinstate},
+  GET /v1/admin/subscriptions, and the /v1/admin/plans routes.
+  (cmd/rentals-api/routes_test.go TestRetiredIdentityRoutesAreGone pins them as 404.)
