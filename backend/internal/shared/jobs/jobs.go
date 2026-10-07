@@ -10,25 +10,25 @@ import (
 	"sync"
 )
 
-// Group tracks a set of background goroutines. The zero value is usable;
-// Logger may be set to have a recovered panic logged (nil silently drops
-// it, matching the case where no logger is available yet).
+// Group tracks a set of background goroutines. The zero value is usable and
+// Run is safe to call from many goroutines at once (a webhook handler does).
 type Group struct {
-	Logger *slog.Logger
-
 	wg sync.WaitGroup
 }
 
-// Run runs fn in a goroutine tracked by the group, recovering any panic.
-func (g *Group) Run(fn func()) {
+// Run runs fn in a goroutine tracked by the group, recovering any panic. A
+// recovered panic is logged to logger; nil silently drops it. The logger is
+// an argument, not a field, so concurrent callers never write shared state
+// that the goroutines they started are reading.
+func (g *Group) Run(logger *slog.Logger, fn func()) {
 	g.wg.Add(1)
 
 	go func() {
 		defer g.wg.Done()
 
 		defer func() {
-			if err := recover(); err != nil && g.Logger != nil {
-				g.Logger.Error(fmt.Sprintf("%v", err))
+			if err := recover(); err != nil && logger != nil {
+				logger.Error(fmt.Sprintf("%v", err))
 			}
 		}()
 

@@ -56,6 +56,5 @@ func (app *application) readInt(qs url.Values, key string, defaultValue int, v *
 // any panic so a failure in a background job (email, SMS, PDF render) never
 // crashes the process.
 func (app *application) background(fn func()) {
-	app.wg.Logger = app.logger
-	app.wg.Run(fn)
+	app.wg.Run(app.logger, fn)
 }
