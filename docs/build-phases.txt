@@ -1,0 +1,1663 @@
+================================================================================
+WILLCOLL — BUILD PHASES
+From today (Phase 1 done) to Platform + Rentals + Estates + Waste live.
+Rules: docs/system-design.txt. Paths: docs/project-structure.txt.
+
+PLAN CHANGE (this revision): there is no staging server and no live
+production data — a laptop is "staging" until one VPS can be afforded for
+production. Phase 3 now finishes entirely against local databases (3i
+included); Phase 4 is local-only CI + a local-staging Docker Compose
+stack, not a real deploy; Phases 5-8 are built and verified against that
+local stack; the actual VPS, deploy workflows and first real customer move
+to a new Phase 9 ("Go live"), done once, at the end.
+================================================================================
+
+THE LOOP (every sub-step)
+  1. Paste the phase's AGENT PROMPT (with the sub-step id) into Claude Code.
+  2. Agent does ONE sub-step, runs the GATE, leaves files for you, reports
+     in 3-4 lines, STOPS.
+  3. You: git status, commit that sub-step, push, check CI.
+  4. Reply "continue".
+
+  GATE  backend: go build ./... · make audit · make test RACE= ·
+                 make test/integration
+        frontend: pnpm lint · pnpm typecheck · pnpm test · pnpm build
+                  (for every app that extends a changed layer)
+
+  STANDING RULES (in CLAUDE.md)
+    - Never git commit or push; the user does.
+    - One sub-step at a time; stop after each.
+    - No behaviour change unless the sub-step says so.
+    - Follow system-design.txt; if a decision is missing, stop and ask.
+    - Ledger rules: append-only, storno, SERIALIZABLE + retry, zero-sum,
+      SET LOCAL tenant_id + RLS. Money never through float.
+
+  STATUS
+    Phase 0  Housekeeping ................................ [ ]
+    Phase 1  Shared extraction ........................... [x]
+    Phase 2  Rename cmd/api -> cmd/rentals-api ........... [x]
+    Phase 3  Platform: DB, platform-api, entitlements,
+             frontend platform + base layer .............. [~] 3a-3g done; 3i-a/b/c done (3h moved to Phase 5)
+    Phase 4  Local staging + CI .......................... [ ]
+    Phase 5  Rentals sellable ............................ [ ]  GATE A
+    Phase 6  Estates P0 .................................. [ ]  GATE B
+    Phase 7  Waste ....................................... [ ]  GATE C
+    Phase 8  Estates P1, handoffs, add-ons ............... [ ]
+    Phase 9  Go live (one VPS, first real customer) ...... [ ]
+
+
+================================================================================
+PHASE 0 — HOUSEKEEPING (you, no agent)
+================================================================================
+  [ ] .gitattributes (* text=auto eol=lf; png/ico binary);
+      git add --renormalize .
+  [ ] Delete the empty workflow stubs; delete backend/api.exe; add *.exe.
+  [ ] git ls-files | grep -Ei "creds|\.env$" shows only *.example.
+  [ ] Docs moves per project-structure.txt C (Phase 0 rows); update
+      CLAUDE.md paths; add docs/waste/waste-scope.txt (copy system-design
+      Part D).
+  DONE: CI green, clean tree.
+
+
+================================================================================
+PHASE 1 — SHARED EXTRACTION  [x] done
+================================================================================
+  1a-1i complete. Deferred on purpose to 6-pre: generic tx orchestration
+  (ledgerkit) and pay-link OTP/HMAC (auth). Zero-sum and storno stay in
+  each product (no separable type-free core).
+
+
+================================================================================
+PHASE 2 — RENAME cmd/api -> cmd/rentals-api   [x] done (this session, before
+                                               this doc's rewrite — verified
+                                               against 2a's wording below,
+                                               matches exactly)
+================================================================================
+  2a [x] Folder rename; Makefile run/rentals-api, build/rentals-api (+
+         deprecated run/api, build/api aliases); Dockerfile ARG SERVICE
+         (default rentals-api) building ./cmd/${SERVICE}; test.yml;
+         CLAUDE.md.
+  PROMPT: "Phase 2a from docs/build-phases.txt. Mechanical rename only.
+           Run the gate, report, stop."
+  DONE: docker build --build-arg SERVICE=rentals-api works; binary runs.
+
+
+================================================================================
+PHASE 3 — PLATFORM (the risky phase; small steps)   [x] done
+================================================================================
+  Backend
+  3a [x] ADR-0006 (platform DB split: FK drop, backup, cut-over,
+         rollback) and ADR-0007 (platform-api + cookie on .willcoll.co.ke).
+         scripts/backup_before_split.sh (dump + restore test) — verified
+         against the real dev database, row counts matched.
+  3b [x] internal/platform/{data,db} + migrations/platform: admins,
+         managers, staff, sessions, tokens, audit_log, system_metadata,
+         plans (+ product, features[], included_seats), subscriptions
+         (+ product), subscription_invoices, manager_modules,
+         manager_addons, sms_wallets/sms_ledger, payment_channels,
+         payment_inbox, service_links, handoff_invoices. RLS + grants.
+         sqlc entry. Verified against a real throwaway Postgres DB: all 13
+         up migrations apply, all 13 down migrations round-trip cleanly,
+         RLS isolation smoke-tested (manager A cannot see manager B's
+         staff row). data/db scope: identity core only (Admins, Managers,
+         Tokens) — staff/subscriptions/modules/etc. get their own models
+         when the handlers that need them move here (3c, 3e-3h).
+         KNOWN GAP: handoff_invoices' RLS policy only covers the collector
+         side; the target manager's read/write path isn't resolvable from
+         this schema alone — flagged in the migration, must be revisited
+         before Phase 8 builds on it.
+  3c [~] cmd/platform-api: move auth, signup/activation, sessions,
+         account, billing + subscription webhook, admin, plans from
+         rentals into it (same request/response shapes). Shared session
+         cookie Domain from config. Split into ordered sub-steps once the
+         scale and a cross-database blocker in billing became clear:
+    3c-i   [x] Scaffold cmd/platform-api (main/config/server/routes/
+           middleware/helpers/errors/context, healthcheck only) —
+           connects to willcoll_platform, no behaviour change to
+           rentals-api.
+    3c-ii  [x] Move signup/activate/sessions/tokens/account (identity
+           core from 3b: Admins/Managers/Tokens). showSessionHandler and
+           showAccountHandler drop the old "access" (trial/paywall) key
+           until 3c-iv — BillingModel hasn't moved. Activation still
+           starts the trial on managers.trial_ends_at (see 3f's
+           per-product-trial gap, below). rentals-api's own copies of
+           these handlers are NOT removed yet — that is the deploy
+           cut-over after Phase 4, not this sub-step. Verified against a
+           real throwaway willcoll_platform: full signup -> activate ->
+           login -> session -> account -> admin-login -> logout over
+           HTTP. Caught and fixed a real bug: 3b had given `tokens` RLS,
+           but TokenModel (matching Rentals' own precedent) never runs
+           inside ExecTenantTx, so app.tenant_id was never set and every
+           write 500'd. Removed RLS from platform.tokens in migration
+           000012 to match Rentals' precedent (a token is looked up by
+           hash, never listed per-tenant).
+    3c-iii [x] Moved plan CRUD only (list/create/update/archive/restore)
+           into internal/platform/data.PlanModel (runs on
+           willcoll_platform_admin — subscription_plans revokes
+           app-role writes) + cmd/platform-api/admin_plans.go. Plan/
+           PlanInput gained Product (rentals|estates|waste). Verified
+           live: create/list/archive/restore all round-tripped over
+           HTTP against a real throwaway database.
+           BLOCKED from moving further: StartRenewal, Plans (the
+           manager-facing plan picker) and SetPlanForDev all call
+           CountManagerUnits — a query against willcoll_rentals'
+           units/properties tables. That's not just a Rentals detail,
+           it's a hard cross-database-query impossibility once billing
+           runs against willcoll_platform. See A.7's DECISION
+           (docs/system-design.txt) and 3c-iv below for the fix
+           (module_usage) before touching StartRenewal or the
+           subscription webhook.
+    Fixed order for the rest of billing (a real cross-database-query
+    blocker forced this, not a preference — see 3c-iii's note above):
+    3c-iv-a -> 3d -> 3e -> 3c-iv-b. 3d and 3e are UNCHANGED in scope from
+    before this reorder, just gained one extra bullet each (marked below)
+    so 3c-iv-b has what it needs.
+    3c-iv-a [now]  platform.module_usage table (manager_id, product,
+           billable_count, reported_at, PK manager_id+product) +
+           platform pricing functions that read it. No handlers move
+           yet — this is schema + pure pricing logic only, unit tested
+           against the fallback rules below. Nothing calls it yet.
+    (3d, next — see below, gains: also seeds module_usage)
+    (3e — see below, gains: the usage reporter)
+    3c-iv-b [split into b1/b2/b3 once underway — see below] Move
+           StartRenewal, Plans, SetPlanForDev and the subscription webhook
+           into platform-api, pricing from module_usage instead of
+           CountManagerUnits — never a live query into a product database,
+           never a call to a product API. Test: after a unit import, the
+           price shown for the next renewal changes.
+      3c-iv-b1 [x] Ported Plans/Current/StartRenewal/FailInvoice/Invoices/
+           InvoiceForPDF/ExpireForDev/SetPlanForDev/DeleteForDev/
+           ProcessSubscriptionPayment into internal/platform/data/
+           billing.go, product-scoped (subscriptions/subscription_invoices
+           are one table shared by every product now). Pricing via
+           Usage.Get + PriceFlatOrUsage, never CountManagerUnits: a
+           per_unit plan with no module_usage row is ErrUsageUnavailable
+           (503), never the plan minimum. ExpireForDev/SetPlanForDev/
+           DeleteForDev check ENV themselves now (ErrNotDevelopment) —
+           stronger than Rentals' originals, which relied only on
+           cmd/devtools' own process-level guard. New SQL: internal/
+           platform/db/query/billing.sql. cmd/platform-api gained
+           billing.go (routes: GET/POST /v1/billing/:product/{plans,
+           subscription,subscription/renew,invoices,invoices/:id/pdf})
+           and webhooks_payhero.go (POST /v1/webhooks/payhero/
+           subscriptions), with a PayHero STK client wired into main.go.
+           internal/shared/pdf gained subscription_invoice.go (moved out
+           of internal/rentals/pdf — the renderer was product-agnostic but
+           lived in a product package platform-api couldn't import).
+           Verified live end to end against a throwaway willcoll_platform:
+           a per_unit plan with no module_usage row -> 503; a usage row ->
+           correct computed_price; renew -> pending invoice at that price
+           (STK push itself fails without real PayHero creds, as
+           expected, and correctly fails the invoice); the same webhook
+           payload sent twice -> one activation, second is a no-op
+           duplicate (subscription version unchanged).
+      3c-iv-b2 [x] rentals-api: every billing handler (GET plans,
+           GET subscription, POST renew, GET invoices, invoice PDF, the
+           subscription webhook) now delegates to app.platform.Billing —
+           cmd/rentals-api/billing.go and webhooks_payhero.go no longer
+           call internal/rentals/data's BillingModel at all. requireSub-
+           scription() and the "access" key (access.go's new
+           accessForManager helper) now also read from
+           willcoll_platform's subscriptions via app.platform, not
+           Rentals' own subscriptions table, so a manager who renews is
+           unlocked at once — this promotes what was requirePlatform-
+           Subscription's shadow computation to the live gate. Falls back
+           to the old local computation only when app.platform is nil
+           (no PLATFORM_DB_DSN — development only). Billing handlers
+           themselves have no such fallback: they answer 503 without a
+           platform connection, per rule 3's "no writes to the old
+           database" (never silently reading/writing the old table
+           instead). cmd/devtools' set-plan now opens PLATFORM_DSN and
+           looks the manager/plan up in willcoll_platform too — KNOWN GAP:
+           dev/test-plan still seeds its TEST plan into the OLD rentals
+           catalog (not named in this sub-step), so a plan named for
+           set-plan must exist in the platform catalog (via POST
+           /v1/admin/plans against platform-api) — folding test-plan into
+           the same path is deferred to 3i. rentals-api now reads and
+           writes no subscription rows in willcoll_rentals; internal/
+           rentals/data/billing.go is unreferenced dead code except from
+           cmd/devtools' still-unmoved expire-trial/reset-trial (also a
+           3i cleanup item). Full gate green (build/vet/staticcheck/
+           test/test-integration, including the existing trial/paywall
+           end-to-end integration test, updated to expect a platform-
+           backed 503 rather than a stale 200 from a test harness with no
+           platform connection wired — the "billing routes are exempt from
+           the paywall" assertion itself is unchanged and still passes).
+      3c-iv-b3 [x] backfillSubscriptions/backfillInvoices now UPSERT
+           (cmd/devtools/backfill_platform.go): subscriptions' newer row
+           wins by version (bumped on every ActivateSubscription);
+           subscription_invoices' by COALESCE(paid_at, created_at). Both
+           verified live: seeded a subscription at version 1, backfilled,
+           bumped it to version 2 with a longer period in the source,
+           re-ran -> platform picked up version 2; a third re-run with no
+           source change reported 0 copied / 1 already present (no
+           spurious overwrite); an invoice's pending -> paid transition in
+           the source was likewise picked up on re-run. identity rows
+           (admins/managers/subscription_plans) are still ON CONFLICT DO
+           NOTHING, unchanged. Tests already covered by 3c-iv-b1/b2: plan
+           switch at renewal activates the chosen plan
+           (TestSubscriptionsWebhook), the TEST plan stays gated to
+           development (TestRenewSubscriptionHandler, TestBillingModel_
+           StartRenewal_RefusesTestPlanOutsideDevelopment). The shadow
+           gate's zero-mismatches check needs a real backfilled manager on
+           staging and is a deploy-time verification, not a unit test —
+           left for the actual cutover.
+           Cutover checklist: re-run backfill-platform -> deploy
+           platform-api and rentals-api -> point the PayHero billing
+           channel's callback URL at platform-api's
+           /v1/webhooks/payhero/subscriptions (rentals-api's own copy of
+           that route keeps working as a fallback until removed) -> smoke
+           test a renewal end to end -> once GATE_MODE=enforce shows zero
+           shadow mismatches, remove rentals-api's billing routes and
+           webhook route and internal/rentals/data/billing.go (3i).
+  3d [x] Backfill tool (devtools): copy platform-owned rows from willcoll
+         to willcoll_platform; idempotent; row-count report. ALSO seeds
+         module_usage for every existing manager (product='rentals',
+         count = active units in the old DB, same query as
+         CountManagerUnits) — the report includes usage rows.
+         cmd/devtools backfill-platform (SOURCE_DSN, PLATFORM_DSN;
+         make db/backfill-platform). NOT gated by ENV, unlike every other
+         devtools subcommand — it's meant to run in staging/production for
+         the real cutover. Copies admins, managers, subscription_plans
+         (+product='rentals'), subscriptions (+product), subscription_
+         invoices, system_metadata — all ON CONFLICT (id) DO NOTHING, so
+         a re-run never overwrites platform state a manager might have
+         already changed. Tokens/sessions deliberately NOT copied (short-
+         lived, ambient — everyone just signs in again after cutover).
+         module_usage is always upserted (never skipped), matching its
+         own stale-is-fine design (A.7). Verified live end to end: built
+         a throwaway rentals-schema source DB + throwaway platform-schema
+         destination DB, seeded managers/units/a subscription, ran the
+         tool (correct row counts, correct product tags, correct unit
+         counts per manager), re-ran it (0 copied / all-present, proving
+         idempotency), added a unit and re-ran (module_usage count went
+         2 -> 3, proving the re-count path). CAUTION for future runs: the
+         tool's own manual smoke-testing rotated the shared willcoll_app/
+         willcoll_admin cluster role passwords via scripts/db_roles.sql
+         against throwaway databases — those roles are cluster-wide, not
+         per-database, so this touched the real dev roles too. Caught and
+         fixed immediately (restored from .env's DB_APP_PASSWORD/
+         DB_ADMIN_PASSWORD) and re-verified with make test/integration.
+         Do not run scripts/db_roles*.sql against a shared cluster without
+         re-applying the real passwords afterward.
+  3e [~] rentals-api: second pool (PLATFORM_DB_DSN); verifies sessions
+         via shared/auth; gates requireSubscription("rentals"),
+         requireModule("rentals"), requireRole; seed manager_modules
+         (every existing manager: rentals active). ALSO: usage reporter
+         — upsert module_usage on unit create, archive and import, plus
+         a daily re-count job. Test: import units -> row updated.
+         Split into a safe/additive half (done now) and a gating half
+         (deferred) — the gating half changes what a real, currently-
+         working request is allowed to do, so it gets its own careful
+         step rather than riding along with the additive plumbing.
+    3e-a [x] PLATFORM_DB_DSN pool: optional in development only (missing
+         or unreachable disables the reporter with a log line, never
+         fails startup there); REQUIRED outside development — a missing
+         DSN or a failed connection fails startup with a clear message
+         in staging/production, so billing usage can never silently go
+         unreported (added as part of the "before 3e-b" prep, alongside
+         the Super Admin health page's new "usage_reporting":
+         {"enabled", "last_report_at"} field, tracked by a small
+         usageStatusTracker updated on every successful report).
+         internal/rentals/data gained UnitModel.CountForManager (same
+         query as BillingModel.CountManagerUnits, exposed outside a
+         billing context) and ManagerModel.ListAllIDs. cmd/rentals-api/
+         usage.go: reportUsage (fire-and-forget via app.background —
+         never slows or fails the request that triggered it) and
+         startUsageRecountJob (a 24h ticker, started from serve() and
+         stopped via context cancellation on shutdown). Wired into
+         createUnitHandler, deletePropertyHandler, importUnitsHandler and
+         onboardingImportHandler (both import handlers skip it on
+         dry_run=true, since nothing was actually created). Verified
+         live end to end: a real throwaway rentals-schema DB + a real
+         throwaway platform-schema DB, signed in, created a unit ->
+         module_usage went to 1, deleted the property -> module_usage
+         went to 0. make test/rentals-api and the full integration suite
+         both green with app.platform left nil (every existing test
+         harness that only sets app.logger keeps working unchanged, same
+         pattern as the httpx/jobs extraction in Phase 1).
+    3e-b [x] Done in the ordered sub-steps below, so nobody gets locked
+         out. requireRole is NOT built: Willcoll has no staff/role
+         concept live today (system-design.txt A.1's staff model is
+         Phase 3f, not built) — writing a role gate ahead of any staff
+         data to check would exercise nothing. It lands with 3f.
+      a. [x] Seeding lives in the 3d backfill tool (cmd/devtools/
+         backfill_platform.go): backfillManagerModules seeds
+         manager_modules (rentals, active) for every existing manager,
+         activated_at copied from their own activated_at. ON CONFLICT
+         (manager_id, product) DO NOTHING — a re-run never resets a
+         module an admin already changed in platform. (Subscriptions
+         with product='rentals' were already copied by 3d's
+         backfillSubscriptions — no new work needed there.)
+      b. [x] internal/platform/data gained ModuleModel (Get for
+         manager_modules) and GetSubscription (per-product subscription
+         read) + the sqlc queries behind them. cmd/rentals-api/gates.go:
+         requireModule("rentals") and requirePlatformSubscription
+         ("rentals") behind GATE_MODE=shadow|enforce (config.go, default
+         shadow). Both fail OPEN on no platform connection, a platform
+         read error, or (requireModule only) a missing manager_modules
+         row — a gate that ADDS a restriction must never turn a
+         transient platform hiccup into a false 403. Wired into the
+         live manager route group in routes.go (shadow mode ships with
+         zero risk: it only logs, never blocks). requirePlatformSubscription
+         calls the SAME data.ComputeAccess function requireSubscription
+         does — only the data source differs (platform vs Rentals'
+         own tables) — and logs a "MISMATCH" warning whenever the two
+         disagree.
+      c. [x] Parity test (cmd/rentals-api/gates_test.go,
+         TestRequirePlatformSubscriptionParity): 8 fixtures — trialing,
+         trial expired, active, subscription-itself-trialing, past_due,
+         cancelled, an active subscription past its own period end, and
+         active-on-a-test-plan-in-development (documented as
+         indistinguishable from "active" for this gate — plan.IsTest is
+         gated at renewal time, not here) — all pass, both against
+         today's logic and the platform-shadow path, proving the
+         platform-to-Rentals type conversion preserves the decision.
+         "suspended" from the original fixture list is the MANAGER's
+         account status, gated by requireActivatedManager, not this
+         gate — noted in the test doc comment rather than faked.
+         Module-gated 403 verified LIVE, not just unit-tested: real
+         throwaway rentals+platform DBs, GATE_MODE=shadow logged
+         "requireModule: would return 403" for a suspended module while
+         the request still succeeded (200) — then GATE_MODE=enforce
+         actually returned 403 for the identical setup — then
+         re-activating the module restored 200 immediately, proving data
+         stayed intact through the whole cycle. An officer-gets-403 test
+         is blocked on 3f (no staff exist to log in as yet).
+      d. [ ] No staging server exists to show "zero mismatches" on, so
+         this step is redefined: run GATE_MODE=shadow through the local
+         rehearsal script (3i, below) and read its own shadow-mismatch log
+         for a full rehearsal pass (fresh DB -> migrations -> backfill ->
+         every test). Zero mismatches there -> the user flips the default
+         to GATE_MODE=enforce in config.go (still never silently, and
+         still a config change the user makes, not an automatic one) and
+         re-runs the rehearsal once more to confirm enforce mode itself
+         behaves correctly end to end. The real "staging" re-verification
+         this step originally meant happens for real once Phase 9
+         provisions a VPS — this local pass is the gate before that, not
+         a replacement for it.
+  3f [x] Staff + roles + module_access; audit_log writes on every
+         mutation (platform and rentals). Split into ordered sub-steps
+         (user's call): staff+roles first, in two stops (3f-1, 3f-2), then
+         per-product trials (3f-3), then the audit log (3f-4, records
+         staff_id from the session).
+    3f-1 [x] Staff accounts. Migration 000015: staff.status gains
+         invited/disabled (was active/suspended only — the CHECK the
+         table shipped with in 3b predated the invite flow's design).
+         Migration 000016: GRANT UPDATE ON staff TO willcoll_platform_admin
+         (caught live — activation/login resolution run cross-tenant, on
+         the admin/BYPASSRLS pool, before a session exists; 000013 had
+         only granted it UPDATE on managers/subscriptions/manager_modules).
+         internal/platform/data gained StaffModel (Invite/Get/List/Update
+         tenant-scoped via ExecTenantTx — staff carries RLS, unlike
+         managers/tokens; FindActiveByEmail/GetForToken/GetByID/Activate
+         cross-tenant on AdminStore, mirroring ManagerModel's token/email
+         lookups) and RoleAtLeast (viewer < officer < accountant < owner;
+         an unknown role meets no minimum — fails closed). tokens.go's
+         Token gained StaffID alongside ManagerID (the schema already had
+         the column and said this was coming — see its old doc comment).
+         cmd/platform-api: POST/GET /v1/staff, PATCH /v1/staff/:id,
+         PUT /v1/staff/activated (mirrors managers/activated), all owner-
+         gated by the new requireOwner() (manager's own login is always
+         the implicit owner; a staff principal needs Role == owner) —
+         also applied to the existing /v1/billing/* routes, per
+         system-design.txt A.1 ("only owners can manage staff, billing,
+         modules and plans"). POST /v1/sessions now tries a manager by
+         email first, then an active staff row (ambiguous — two different
+         managers' staff sharing an email — is treated as not-found,
+         never guessing which account); authenticate() resolves a staff
+         session to BOTH the staff row (new contextGetStaff) and their
+         manager (contextSetManager, same as a manager-principal session)
+         so every existing tenant/RLS/activation check keeps working
+         unchanged for staff — only requireOwner and (3f-2's) requireRole
+         read contextGetStaff. Disabling a staff member revokes their
+         sessions synchronously (revokeStaffSessions, mirrors
+         revokeManagerSessions). New template: staff_invite.tmpl.
+         Verified live end to end against a throwaway willcoll_platform:
+         invite -> activate -> login as staff -> GET /v1/account resolves
+         the owner's tenant data correctly; POST /v1/staff and GET
+         /v1/billing/* both 403 for the staff principal (officer role);
+         a second manager's GET /v1/staff is empty and PATCHing the first
+         manager's staff id by its raw UUID is a 404 (RLS isolation, not
+         just an application-layer check); disabling the staff member
+         made their existing session 401 on the next request. Tests:
+         internal/platform/data/staff_test.go (RoleAtLeast, invite ->
+         activate, ambiguous-email and no-match FindActiveByEmail, Get's
+         tenant-scoped call shape).
+    3f-2 [x] requireRole in rentals-api (cmd/rentals-api/roles.go):
+         routeMinRole, one method+path -> minimum-role table (unlisted
+         routes default by method — GET/HEAD viewer, anything else
+         owner), platformdata.RoleAtLeast for the comparison. The
+         manager's own login always bypasses it (implicit owner);
+         requireStaffModuleAccess("rentals") gates a staff principal
+         lacking "rentals" in module_access, independent of role.
+         Blocker found and fixed first: rentals-api verifies its own
+         manager/admin sessions against its OWN local DB, never
+         willcoll_platform, so a staff principal (only in platform since
+         3f-1) had no way to reach it. Fixed by teaching authenticate() a
+         second, READ-ONLY path (tryStaffSession): when there is no local
+         principal, it checks for willcoll_platform's own session cookie
+         (renamed rentals-api's own local cookie to
+         "willcoll_rentals_session" so the two can never collide) and, if
+         present, resolves it against a second scs.SessionManager bound
+         to willcoll_platform — Load only, never RenewToken/Commit/
+         Destroy (only platform-api may create, renew or delete a
+         platform session, ADR-0007). A resolved staff principal maps to
+         THIS binary's own rentals-local Manager row by the same id (3d's
+         backfill preserved it), via contextSetManager exactly as a
+         manager login would — every existing tenant/RLS/activation/
+         subscription check then applies unchanged; only requireRole and
+         requireStaffModuleAccess read the new contextGetStaff. A local
+         manager/admin session is never overridden by a staff cookie, and
+         a platform read failure only 503s a request that actually
+         presented one.
+         Second blocker found and fixed live: app.platform's AdminStore
+         (the cross-tenant, BYPASSRLS read tryStaffSession and the
+         subscription webhook's ResolveSubscriptionInvoice both need) was
+         wired to rentals-api's willcoll_platform_app connection, which
+         has no BYPASSRLS and isn't inside a tenant transaction for these
+         two calls — "unrecognized configuration parameter app.tenant_id"
+         at runtime. This was a latent bug from 3c-iv-b1/b2, only surfaced
+         by actually exercising a staff login live. Fixed with a real
+         second platform connection: config gained PLATFORM_DB_ADMIN_DSN
+         (derived from PLATFORM_DB_DSN + PLATFORM_DB_ADMIN_PASSWORD, same
+         pattern as the existing local DB_ADMIN_DSN), required whenever
+         PLATFORM_DB_DSN is set outside development; main.go wires it
+         into platform.Staff.AdminStore and platform.Billing.AdminStore
+         specifically (Usage/Modules/the rest of Billing stay on the
+         tenant-scoped app-role connection — RLS defense-in-depth
+         unchanged for everything that already has a known tenant).
+         Verified live end to end across two throwaway databases (rentals
+         + platform): an officer staff member logged in via platform-api
+         reached rentals-api's /v1/account (manager data resolved
+         correctly), could record a cash payment (POST rent/payments,
+         404 past every gate on a dummy id) but got 403 on a reversal and
+         403 creating a property (accountant-level); removing "rentals"
+         from module_access -> 403; disabling the staff row -> 401 on the
+         next request. Tests: cmd/rentals-api/roles_test.go
+         (minRoleFor's table lookup and method-default fallback,
+         requireRole for officer/viewer, requireStaffModuleAccess,
+         tryStaffSession for a disabled staff row and a platform read
+         error, and that a manager-principal request never touches the
+         platform mock at all).
+         KNOWN GAP: the route -> role table (roles.go) is this session's
+         best-effort mapping of system-design.txt A.1's two-line role
+         description onto the ~50 actual routes — reasonable, not
+         reviewed against real usage yet. features-functionalities.txt
+         notes the table lives in code rather than duplicating every row.
+    3f-3 [x] Per-product trials. Migration 000017: manager_modules gains
+         trial_ends_at; backfills every existing "rentals" module row from
+         managers.trial_ends_at (nobody's current trial changed). New
+         internal/platform/data ModuleModel.StartTrial(tenantID, product,
+         days): INSERT ... ON CONFLICT (manager_id, product) DO NOTHING
+         (a trial starts once — a retry/duplicate call reads back the
+         existing row via GetManagerModule instead of extending it, same
+         "activating again never restarts the trial" rule managers
+         already had). cmd/platform-api's activateManagerHandler no
+         longer sets manager.TrialEndsAt at all; it calls
+         Modules.StartTrial(ProductRentals) instead — activation still
+         starts a trial, just on the module row now. cmd/rentals-api's
+         accessForManager (access.go) and requirePlatformSubscription
+         (gates.go) both now read the "rentals" module's trial_ends_at
+         (app.platform.Modules.Get), not the platform manager's — a
+         missing module row (a backfill gap) just means no trial to fall
+         back on, same as no subscription always has, not a 403 (that's
+         requireModule's separate job). The old local fallback (app.platform
+         nil, development only) is unchanged: rentals-api's own
+         managers.trial_ends_at, since there's no per-product concept in
+         Rentals' own database to fall back to instead. managers.
+         trial_ends_at itself is left in place, un-written by activation,
+         dropped in a later migration once nothing reads it.
+         Verified live: registering + activating a manager left
+         managers.trial_ends_at null and created a manager_modules
+         (rentals, trialing) row with a 7-day trial_ends_at. Tests:
+         internal/platform/data/manager_modules_test.go (a fresh trial;
+         the headline case — an expired Rentals trial doesn't affect or
+         block a fresh, independent Estates trial; a retried StartTrial
+         never extends an existing trial) plus gates_test.go/access.go's
+         existing parity and enforce-mode tests updated for the new
+         module-read call shape (still all green, including the real-DB
+         trial/paywall integration test, which exercises the untouched
+         local-fallback path).
+    3f-4 [x] audit_log sweep, made enforceable rather than best-effort.
+         Migration 000018: audit_log gains actor_type
+         (manager|staff|admin|system) + actor_id — staff_id alone left
+         the manager's own action reading as blank; staff_id is kept
+         alongside (set only when actor_type=staff) for joins, backfilled
+         from the existing rows. internal/platform/data.AuditModel.Log
+         and AuditEntry updated to the actor_type/actor_id shape.
+         cmd/platform-api and cmd/rentals-api each gained app.audit(c,
+         ...) (auto-detects manager vs staff from the request context —
+         the manager's own login is never blank) and app.auditAdmin(c,
+         targetTenantID, ...) (a Super Admin action on a specific
+         manager's data — the admin isn't a tenant, so the target must be
+         named explicitly); both fire in the background, additive, and
+         count a write failure (auditFailureTracker, a trailing-24h
+         in-memory counter) — surfaced as "audit_failures_24h" on
+         rentals-api's GET /v1/admin/system/health (the one Super Admin
+         health page that exists today; platform-api has no health page
+         yet, so its own tracker isn't surfaced anywhere, kept ready for
+         when one exists).
+         Coverage test (cmd/{rentals,platform}-api/audit_coverage_test.go):
+         walks every registered route via gin's router.Routes(), and for
+         every POST/PUT/PATCH/DELETE route requires an entry in a
+         maintained auditCoverage map — "audited" (and the test greps the
+         handler's own source, located by declaration rather than
+         runtime/reflect since an unexported bound method's PC has no
+         real file/line, to confirm it actually calls app.audit/
+         app.auditAdmin — not just that someone claimed it does) or
+         "exempt: <reason>" (identity lifecycle, logins, OTP send/verify,
+         webhooks logged elsewhere, the global plan catalog with no
+         manager tenant to scope a row to, and one POST that only streams
+         an already-confirmed PDF). A route present in neither set fails
+         the test — Estates and Waste inherit this file-per-binary
+         pattern once they exist. Verified the check itself works
+         (temporarily commented out one app.audit call — test failed
+         with the expected message; restored it).
+         Every rentals-api write route is now either audited or exempt:
+         account/password, landlords, properties (+garbage/electricity/
+         print-theme/payment-channel), units (+import), onboarding
+         import, leases (+payers, QR rotate/bulk), rent (schedule/
+         generate/payment/charge/reversal), payment allocate/confirm,
+         subscription renewal, water (readings/generate), garbage
+         generate, plot-meter, report confirm, arrears commitments, and
+         admin manager suspend/reinstate (via auditAdmin, since the
+         target manager — not the signed-in admin — is the tenant).
+         Same for platform-api: account/password, staff invite/update,
+         subscription renewal. Verified live: a rentals-api-triggered
+         property/landlord mutation wrote a real audit_log row with
+         actor_type=manager and actor_id = the manager's own id (never
+         blank) — the exact gap this rule set out to close. Tests:
+         internal/platform/data/audit_test.go (staff/manager/admin actor
+         shapes) plus the two coverage tests.
+    3f-5 [x] timezone bug fixed: one business calendar, Africa/Nairobi.
+         Root cause (confirmed live): a Postgres DATE column scans into a
+         time.Time at midnight UTC, not Nairobi midnight. Code computing
+         a day-boundary ("valid through the end of that day") from one of
+         these and comparing it against time.Now() at the server's own
+         zone silently shifted the real cutoff by Nairobi's +3 offset
+         around every midnight — up to ~3 hours of wrongly-open or
+         wrongly-closed access. Reproduced at 01:09 EAT on 2026-10-01: a
+         subscription whose current_period_end was "yesterday" still
+         granted access.
+         Added pkg/moneyfmt/clock.go: Now() (the business "now", in
+         Africa/Nairobi; absolute instant unchanged, only the Location
+         differs — safe wherever an instant used to be recorded via a
+         bare time.Now()) and Today() (midnight, Nairobi); NowFunc is
+         reassignable so tests can pin the clock. AtNairobiMidnight(t)
+         re-anchors any time's Y/M/D onto Nairobi midnight — specifically
+         for re-interpreting a DATE-scanned value before day-boundary
+         arithmetic/comparison, which is the one thing that actually
+         needed fixing (not the zone of the comparison itself, since
+         time.Time comparison is instant-based regardless of Location).
+         Fixed: internal/rentals/data.ComputeAccess + AccessFor,
+         cmd/rentals-api's accessForManager/requirePlatformSubscription,
+         both internal/{rentals,platform}/data/billing.go's today()/
+         BillingModel.now(), internal/platform/data.ModuleModel.StartTrial,
+         RentModel.now()/PayAccessModel.now() fallbacks, the water/plot-
+         meter reading-date defaults (water.go, report_confirmation.go),
+         cmd/rentals-api's "current month" defaults (properties.go,
+         rent.go x2) and onboarding_import.go's importAsAt (which had its
+         own ad-hoc FixedZone("EAT", 3*3600) reconstruction — replaced
+         with AtNairobiMidnight so there is exactly one definition of the
+         business calendar), cmd/rentals-api/managers.go's activation
+         timestamp, and cmd/devtools' expireTrial/resetTrial. Left alone,
+         deliberately: pkg/moneyfmt.Period.FirstDay() (still UTC — this is
+         a DATE-column *write* path, a different, unconfirmed risk
+         surface from the proven *read-side* comparison bug) and every
+         time.Now() that is pure elapsed-duration/instant bookkeeping
+         (token/OTP/session TTLs, payment-received timestamps, rate
+         limiting, log/expvar timestamps) — zone-agnostic, not this bug
+         class.
+         Tests: pkg/moneyfmt/clock_test.go pins NowFunc to 00:30 EAT on
+         the 1st and 23:30 EAT on the last day of the month (each
+         expressed as the UTC instant a UTC-zoned server's own time.Now()
+         would've produced) and asserts Today()/NewPeriod(Now()) land on
+         the correct Nairobi calendar day either way, plus a test that
+         AtNairobiMidnight re-anchors a UTC-midnight-scanned DATE value to
+         an earlier, Nairobi-midnight instant without shifting the day.
+         Passes under both TZ=UTC and TZ=Africa/Nairobi (Now()/Today()
+         convert to Nairobi explicitly rather than trusting time.Local,
+         so the server's own zone cannot matter). Gate: go build/vet
+         clean; make test RACE= green; make test/integration green under
+         both TZ=UTC and TZ=Africa/Nairobi, including
+         TestTrialAndPaywallEndToEnd (the originally-reported failure —
+         GET /v1/properties after the paid period ended returning 200
+         instead of 402 — no longer reproduces at any hour).
+         3f-5 quick check (before 3g): confirmed every Period used for a
+         report/receipt/charge period is derived either from
+         moneyfmt.Now()/Today() (the "current month" defaults, already
+         fixed above) or from a real event's own timestamp converted to
+         Nairobi BEFORE NewPeriod/FirstDay is called (payment allocation's
+         periodOfPayment, receipt issuance, onboarding's asAt) — never a
+         raw, unconverted time.Time. internal/rentals/data/allocation.go
+         had its own private `nairobi` *time.Location (identical value,
+         loaded independently) instead of using moneyfmt.Nairobi — spliced
+         to alias moneyfmt.Nairobi so there is exactly one definition of
+         the business calendar, no behavior change. Test added:
+         TestPaymentJustAfterMidnightNairobiFallsInNewMonth
+         (receipts_integration_test.go) posts a payment at 00:30 EAT on
+         the 1st (21:30 UTC the previous day) and asserts its receipt
+         lands in the NEW month's Receipts.Generate and is absent from the
+         old month's. Gate green (build/vet/staticcheck baseline/
+         test RACE=/test/integration under both TZ=UTC and
+         TZ=Africa/Nairobi) before continuing to 3g.
+  3g [x] payment_channels + the inbox claim/post/sweep flow, in 3 stops.
+    3g-1 [x] payment_channels: registration + backfill.
+         migrations/platform 000010 already had the table (channel_id
+         PK — system-design.txt A.6's one-owner-per-channel rule is the
+         database's own primary key, not application logic); this step
+         adds the sqlc layer nothing had used yet.
+         internal/platform/db/query/payment_channels.sql +
+         ChannelModel (internal/platform/data/payment_channels.go):
+         Register (plain INSERT, no ON CONFLICT — a PK collision is a
+         real refusal, mapped to ErrChannelAlreadyRegistered), GetByOwner
+         (backfill idempotency), Get (resolves a webhook's channel_id,
+         for 3g-2). Wired into platform data.Models as .Channels.
+         cmd/rentals-api/payment_channel.go's registerPaymentChannelHandler
+         now claims the channel in platform.payment_channels BEFORE
+         saving it on the local property row (the "safe order": a
+         platform refusal must never leave the property pointing at a
+         channel platform disagrees it owns) — ErrChannelAlreadyRegistered
+         -> 409 with a clear message; any other platform error -> 500,
+         logged; app.platform == nil (dev, no PLATFORM_DB_DSN) skips the
+         platform claim entirely, same fail-open convention as every
+         other platform-backed check in this codebase.
+         cmd/devtools/backfill_platform.go gained backfillPaymentChannels:
+         every property with a non-null payhero_channel_id is registered
+         (product=rentals, owner_id=property id, manager_id=tenant_id),
+         ON CONFLICT (channel_id) DO NOTHING; idempotent on a re-run
+         against the SAME property (counted "skipped," expected), and a
+         conflict against a DIFFERENT property's owner_id is read back and
+         listed by name in the report as a duplicate needing a human
+         decision, never silently resolved either way. callback_url is
+         built from PAYHERO_CALLBACK_BASE_URL (the same webhook every
+         rentals channel posts to) since the tool has no running app to
+         ask; missing env skips the whole step with a log line rather than
+         writing a bad callback_url.
+         Regenerated internal/platform/db/sqlc (sqlc generate) and hand-
+         added the three new Querier methods to both
+         internal/platform/db/mock/{querier,store}.go (this environment's
+         mockgen binary is golang/mock v1.6.0, incompatible with the
+         project's go.uber.org/mock-generated files, and go.uber.org/mock's
+         reflect-mode mockgen needs go.sum entries this sandbox can't add
+         without changing go.mod — the hand-added methods are byte-for-byte
+         the same shape mockgen itself emits for every neighboring method).
+         Test: TestRegisterPaymentChannelHandler's new subtest registers a
+         channel whose platform claim comes back as a primary-key conflict
+         (mocked) and asserts 409 with a clear message AND that
+         UpdateProperty is never called — the local property is left
+         completely untouched by a refused claim.
+         Gate green (build/vet/staticcheck baseline/test RACE=/
+         test/integration under both TZ=UTC and TZ=Africa/Nairobi).
+    3g-2 [x] inbox claim/post flow in the collections webhook.
+         internal/platform/db/query/payment_inbox.sql + InboxModel
+         (internal/platform/data/payment_inbox.go): Claim (INSERT ... ON
+         CONFLICT (mpesa_receipt) DO NOTHING — a conflict surfaces as
+         sql.ErrNoRows, NOT a pgconn unique-violation error, since ON
+         CONFLICT DO NOTHING suppresses the actual constraint error; this
+         tripped up the first draft of this sub-step's own tests, caught
+         before the gate), MarkPosted. No RLS on payment_inbox (no tenant
+         column — a webhook arrives with no tenant context), so both run
+         on the Store directly, same precedent as TokenModel.
+         cmd/rentals-api/webhooks_payhero.go's processCollections now:
+         skips the inbox entirely for a failed/cancelled push (no receipt
+         to dedupe) or when app.platform is nil (dev); otherwise claims
+         the receipt BEFORE any local routing. Claim outcomes: nil ->
+         proceed to post locally (postCollectionsLocally, the exact
+         pre-3g-2 pipeline, extracted unchanged into its own function)
+         then mark posted; ErrAlreadyPosted -> ack, never reprocess;
+         ErrWrongProduct -> ALERT-logged, never posted locally; any other
+         error (platform unreachable) -> logged as a warning, counted
+         (app.inboxFallbacks, a second auditFailureTracker instance) and
+         falls back to posting locally exactly as before 3g-2 existed —
+         collections must never stop for a platform outage. Surfaced on
+         the Super Admin health page as inbox_fallbacks_24h, next to
+         audit_failures_24h. An unroutable payment (unknown channel) is
+         UNCHANGED by this sub-step: local channel/tenant resolution still
+         runs exactly as before and still just logs for manual recovery —
+         the claim still succeeds and the row is simply left 'claimed'
+         (not posted), visible in payment_inbox for that manual recovery
+         rather than only in logs.
+         Mocks: internal/platform/db/mock/{querier,store}.go got the same
+         hand-added-method treatment as 3g-1 (ClaimPaymentInbox,
+         GetPaymentInboxByReceipt, MarkPaymentInboxPosted) for the same
+         mockgen-version reason.
+         Tests (cmd/rentals-api/webhooks_payhero_test.go): already-posted
+         acks without reprocessing; wrong-product is rejected and never
+         posted; platform-down falls back to local-only AND increments
+         inboxFallbacks; a successful claim is marked posted after local
+         success. Every pre-existing collections webhook test needed its
+         own explicit inbox-claim expectation added (gomock matches
+         expectations in registration order, so a shared "default" set up
+         once in the test harness would always have shadowed any test
+         that tried to override it with a different outcome — discovered
+         while writing these tests, fixed by giving each test its own
+         expectation via a small expectInboxClaimed helper instead of a
+         harness-wide default).
+         Gate green (build/vet/staticcheck baseline/test RACE=) under
+         both TZ=UTC and TZ=Africa/Nairobi, with one caveat: at this
+         sandbox's default `go test ./...` package parallelism,
+         cmd/rentals-api's TestOnboardingImportEndToEnd now fails
+         consistently (not the earlier occasional flake) — confirmed NOT
+         a regression from this sub-step: passes standalone
+         (`go test ./cmd/rentals-api/...`) and passes at `-p 2` across the
+         whole module, in both TZs. Root cause is this sandbox's local
+         Postgres connection/resource ceiling under full default
+         parallelism (the same class of limit TestReceiptNumberingConcurrency's
+         own comment already documents), made more likely to trip by this
+         sub-step simply adding more integration tests to the same
+         package. `make test/integration` on a real CI machine or a
+         less-constrained Postgres is expected to be unaffected; on this
+         sandbox, append `-p 2` (e.g. `sh scripts/test_integration.sh ./... -p 2`)
+         if the gate needs to be re-verified green end to end.
+    3g-3 [x] sweeper job + concurrency/crash/cross-DB-down tests. 3g done.
+         cmd/rentals-api/webhooks_payhero.go gained startInboxSweeperJob
+         (wired into server.go next to startUsageRecountJob, same ticker/
+         ctx.Done() shutdown pattern, a no-op with no platform connection)
+         and sweepStaleInbox: every minute, InboxModel.ListStale (new
+         query, served by payment_inbox's existing claimed_at partial
+         index) finds every rentals row still 'claimed' more than 5
+         minutes old, re-parses its stored raw_payload back into a
+         CollectionsWebhookPayload (payhero.ParseCollectionsPayload),
+         overwrites ChannelID with the row's own (the channel actually
+         resolved at claim time — there is no HTTP request to re-read a
+         query param or config default from here), and re-drives it
+         through the SAME processCollections function a fresh webhook
+         delivery uses. This is deliberate, not a parallel code path:
+         Claim re-reads a still-'claimed' row and returns nil exactly as
+         it would for a live redelivery, so one function handles "first
+         delivery," "PayHero's own retry," and "the sweeper, minutes
+         later" identically, and the local pipeline's own mpesa_receipt
+         uniqueness (CreatePayment's ON CONFLICT) is the one guard that
+         has to be correct no matter which of those three drove it. A row
+         whose stored payload can no longer be parsed (a schema change) is
+         logged and left 'claimed' rather than guessed at or dropped —
+         picked up and re-logged every sweep until a human intervenes.
+         Tests (cmd/rentals-api/webhooks_payhero_sweep_test.go):
+         sweepStaleInbox posts and marks a simulated crashed claim; an
+         unparsable stale payload is logged and touches nothing else; an
+         empty stale list is a no-op; two goroutines POSTing the identical
+         receipt concurrently (the task's literal "same receipt fired
+         twice concurrently") post exactly once, the second seeing the
+         local pipeline's own dedupe. Cross-DB-down (platform unreachable)
+         and wrong-product rejection were already covered by 3g-2's own
+         tests, re-run here as part of the same gate rather than
+         duplicated. The pre-existing data-layer concurrency test
+         (internal/rentals/data/collections_integration_test.go's four
+         concurrent deliveries of one receipt, which runs beneath the
+         inbox layer entirely and was never touched) stayed green.
+         Gate green (build/vet/staticcheck baseline/test RACE=) under
+         both TZ=UTC and TZ=Africa/Nairobi, run at `-p 2` per 3g-2's
+         already-documented sandbox parallelism caveat (confirmed not a
+         regression, same as 3g-2 — see that entry).
+  3h MOVED to Phase 5 (next to 5b — SMS wallet is Rentals-only and has no
+         reason to block the platform-cutover work below). See Phase 5.
+  3i [~] willcoll_rentals migration + retiring rentals-api's own duplicate
+         identity/billing, in 3 stops (split once running the schema
+         migration against a real scratch DB revealed the full scope: the
+         schema change alone leaves ~13 live rentals-api routes and one
+         major end-to-end test pointing at tables that no longer exist —
+         not a rehearsal-script detail, a real design decision).
+    3i-a [x] Schema migration + directory move; mechanical test fixes.
+         migrations/rentals/000045_platform_split_drop_local_identity.up.sql:
+         drops every FK referencing managers, found generically via
+         pg_constraint (WHERE confrelid = 'managers'::regclass) rather than
+         hand-listing the ~30 auto-generated constraint names across ~20
+         tables — hand-listing is exactly the kind of thing that silently
+         goes stale the next time a table's FK is recreated under a
+         different name. Then drops subscription_invoices, subscriptions,
+         subscription_plans, tokens, admins, managers (ADR-0006's exact
+         table list), in FK-safe order. .down.sql deliberately RAISEs
+         (ADR-0006 Decision 3: the only real rollback is restoring the
+         pre-cutover pg_dump from scripts/backup_before_split.sh — a down
+         migration that LOOKED like it undid this without actually
+         restoring the dropped data would be worse than no down at all).
+         Verified directly against a scratch database (not just a rehearsal
+         script, which comes in 3i-c): applies clean on top of all 44
+         existing migrations, leaves every other table intact with
+         tenant_id as a plain uuid (ADR-0006 Decision 1) and zero
+         remaining FK references to managers.
+         migrations/ renamed to migrations/rentals/ (git mv, all 90 files,
+         VERSION NUMBERS UNCHANGED — a judgment call, not the literal
+         "renumber" instruction: golang-migrate's schema_migrations table
+         on every real environment already has versions 1-44 recorded, and
+         renumbering the files would desync that table for zero benefit;
+         the "old->new mapping" that actually matters is the path change
+         (migrations/NNNNN -> migrations/rentals/NNNNN), documented here
+         rather than as a separate mapping file). sqlc.yaml, Makefile
+         (db/migrations/new|up|down), scripts/test_integration.sh updated
+         to the new path.
+         Running the full test suite against a scratch DB with 000045
+         applied (before any other change) surfaced two different kinds of
+         break, not one:
+           (1) mechanical — seedTenant (internal/rentals/data/
+           properties_integration_test.go) and two more copies of the same
+           pattern (cmd/rentals-api/pay_flow_integration_test.go,
+           test/ledger_concurrency_test.go) each INSERT INTO managers
+           purely to satisfy the old FK before using a fresh uuid as
+           tenant_id. With no FK left to satisfy, that insert is simply
+           unnecessary now — fixed by deleting it and using uuid.New()
+           directly, no behavior change to what's actually under test.
+           Also fixed: internal/rentals/data/schema_rules_test.go's glob
+           path (../../../migrations -> .../migrations/rentals).
+           (2) NOT mechanical — ~13 live rentals-api routes
+           (registerManagerHandler, activateManagerHandler,
+           createSessionHandler/showSessionHandler/deleteSessionHandler,
+           createAdminSessionHandler, createPasswordResetTokenHandler,
+           updateManagerPasswordHandler, showAccountHandler/
+           updateAccountHandler/changePasswordHandler, the four
+           admin-manager routes) still do their own local registration/
+           login/account/admin-manager-management against the now-dropped
+           tables, and TestTrialAndPaywallEndToEnd specifically exercises
+           that local path end to end. This is 3i-b's job, not a fixture
+           tweak — surfaced to the user mid-sub-step (AskUserQuestion)
+           rather than either guessing on a large removal or declaring the
+           schema change "done" while quietly leaving ~13 routes and a
+           flagship test broken. User's answer is exactly 3i-b/3i-c below.
+         Gate after the mechanical fixes only: go build/vet clean;
+         staticcheck shows only the pre-existing baseline findings;
+         make test RACE= green; make test/integration shows EXACTLY the 8
+         failures named above and nothing else (TestOnboardingImportEndToEnd,
+         TestTrialAndPaywallEndToEnd, TestUnitQRCodesEndToEnd in
+         cmd/rentals-api; TestAuthIntegration, TestPlatformIntegration,
+         TestSubscriptionIntegration, TestSubscriptionPlanSwitchIntegration,
+         TestPlanManagementIntegration in internal/rentals/data) — all of
+         them exactly the local-identity tests 3i-b retires, confirmed by
+         re-running the same check twice for reproducibility. This is the
+         expected, documented state of the gate until 3i-b lands; it is
+         not a flake and not left accidentally broken.
+    3i-b [x] Retire rentals-api's local identity (scope per the user's
+         own breakdown): remove its registration, activation, login,
+         password, account, billing and admin-manager routes, handlers and
+         queries (they live in platform-api now); authenticate() resolves
+         BOTH managers and staff from the platform session (promoting
+         3f-2's tryStaffSession mechanism to the only path, not just
+         staff's); managers and admins stay implicit owners. Remove the
+         old local ComputeAccess path — the platform gates
+         (requireModule/requirePlatformSubscription) are the only gates
+         left, so GATE_MODE's default flips to enforce and the shadow code
+         is deleted (this IS 3e-b-d's human decision, made concrete: no
+         separate staging rehearsal to wait on, since there is no staging
+         server — the zero-mismatch evidence this whole sub-step produces
+         IS the evidence). Rewrite TestTrialAndPaywallEndToEnd to log in
+         through platform-api and hit rentals-api, same assertions (trial,
+         expiry -> 402, renewal -> access). Update the audit coverage map
+         and features-functionalities.txt (the endpoint index moves those
+         routes to platform).
+         DONE. What landed, and the judgment calls in it:
+         (1) platform-api gained the Super Admin oversight the old rentals
+         routes gave, reading willcoll_platform ONLY (never a product DB):
+           GET  /v1/admin/managers, /v1/admin/managers/:id - firm,
+             modules, per-product subscriptions (plan name, status,
+             period), staff_count, and the usage rows each product
+             reported into module_usage. The old response shape is kept
+             where it overlaps (subscription = latest across products,
+             unit_count = Rentals' reported billable count). property_count
+             is GONE: properties live in the Rentals database, which this
+             model must not read; the admin frontend's optional
+             property_count already shows 0 (3i-c can drop the column).
+           POST /v1/admin/managers/:id/suspend | /reinstate - suspending
+             deletes EVERY session of the manager and of all their staff
+             in the shared sessions table (one pass, any status of staff),
+             answers sessions_revoked, and both moves write audit_log with
+             actor_type=admin (auditAdmin, scoped to the firm). Suspending
+             again is a no-op that also sweeps any session that slipped
+             in. Reinstating a never-activated firm returns it to pending,
+             as before.
+           GET  /v1/admin/subscriptions - filter by product and status.
+         All behind requireAdmin, on a new internal/platform/data
+         OversightModel bound to the willcoll_platform_admin pool
+         (migration 000013 already grants it UPDATE on managers); queries
+         in internal/platform/db/query/oversight.sql.
+         A latent gap closed on the way: a staff member of a SUSPENDED firm
+         could still POST /v1/sessions and receive a session (every API then
+         refused it on status, but the row existed). platform-api's login
+         now answers 403 account-suspended for them, same as the manager.
+         (2) rentals-api's identity is gone: registration, activation,
+         login/logout, password reset, tokens, account, billing (plans,
+         subscription, renew, invoices, invoice PDF), the subscription
+         webhook (platform-api's own copy is the only one), and the admin
+         manager/subscription/plan routes - handlers, tests, sqlc queries,
+         and internal/rentals/data's managers/tokens/admins/billing/
+         admin_plans/access models. What remains of the old PlatformModel
+         is health-only (database health, last backup, review-queue depth)
+         plus ListTenantIDs for the usage recount (rentals has no managers
+         table any more, 3i-a). rentals-api no longer has its own session
+         manager, flash messages, trial-days or Super Admin config.
+         (3) authenticate() resolves a manager, a staff member or the Super
+         Admin from the willcoll_platform session, read-only (never
+         RenewToken/Commit/Destroy - ADR-0007), reading the manager/staff
+         status from platform on EVERY request, so a suspension bites on the
+         next call even for a session that survived revocation. A platform
+         read failure is a 503, never an anonymous pass-through. Contexts
+         now carry internal/platform/data's Manager/Admin. PLATFORM_DB_DSN
+         (and its admin DSN) are REQUIRED in every environment: with no
+         identity of its own there is nothing to authenticate against
+         without it, so startup fails instead of answering 401 to everyone.
+         (4) The platform gates always enforce; GATE_MODE, the shadow code
+         and the old-vs-new parity check are deleted. 3e-b-d's human flip is
+         therefore made by this sub-step, as the plan above said it would
+         be: a missing manager_modules row is a 403, a platform read error
+         a 503, a lapsed trial/subscription a 402. ComputeAccess/Access
+         moved to internal/platform/data/access.go (typed on
+         PlatformSubscription), so every product API shares one paywall
+         function. /v1/account and /v1/billing no longer exist here, so the
+         old paywall exemption for them is gone.
+         (5) cmd/devtools (test-plan, expire-trial, reset-trial, set-plan)
+         and cmd/seed now work against willcoll_platform via PLATFORM_DSN
+         (new ModuleModel.SetTrialEndForDev); seed -reset also needs
+         PLATFORM_MIGRATE_DSN and a superuser MIGRATE_DSN (rentals has no FK
+         back to managers to cascade a delete through any more). This
+         closes the "dev/test-plan still seeds the OLD catalog" item.
+         (6) Tests. Admin: cmd/platform-api/admin_managers_test.go -
+         non-admin (anonymous 401, manager 403, staff 403) on every new
+         route, the full suspend -> manager+staff+second-device sessions
+         gone (401) -> a surviving session refused 403 -> neither can sign
+         in -> reinstate -> both sign in and work flow, audit rows,
+         list/show shapes and filter validation. The product-API half
+         (cmd/rentals-api TestSuspendedFirmIsRefused): manager AND staff
+         get 401 on a revoked session and 403 on a loadable one of a
+         suspended firm, 503 on a platform failure, and are accepted
+         again after reinstatement. Because package main can't be imported
+         across binaries, those two tests share a SESSION SHAPE rather than
+         one process: platform-api's test proves the sessions are
+         destroyed, rentals-api's proves a destroyed/suspended principal is
+         refused. The subscription-webhook tests moved to platform-api.
+         TestTrialAndPaywallEndToEnd was rewritten against the real Rentals
+         database with willcoll_platform stood in by an in-memory stub
+         (cmd/rentals-api/platform_stub_test.go) and a platform session
+         minted exactly as platform-api's login leaves it, NOT by driving
+         platform-api's HTTP login: there is no platform scratch database
+         in scripts/test_integration.sh (no willcoll_platform roles/DSNs in
+         .env), so the real-Postgres end-to-end across BOTH binaries is
+         3i-c's rehearsal script. The trial -> expiry (402) -> renewal ->
+         expiry -> renewal -> suspended module (403) -> suspended firm
+         (403) -> reinstated sequence is asserted. TestOnboardingImportEndToEnd
+         and TestUnitQRCodesEndToEnd use the same stub.
+         (7) Audit coverage: rentals' map lost its identity/billing/admin
+         rows, platform's gained suspend/reinstate, and rentals' test now
+         also fails on a stale entry for a route that no longer exists.
+         Not done here, on purpose: features-functionalities.txt does not
+         exist in this repository (only referenced by docs), so there was no
+         endpoint index to move; the frontend still calls the old rentals
+         paths (3i-c).
+         Gate: go build/vet clean; make audit's tools show only the
+         pre-existing baseline (see CLAUDE.md Known issues - plus the
+         platform-api unused helpers that predate this); make test green;
+         make test/integration green - the 8 failures 3i-a documented are
+         gone.
+    3i-c [x] Keep the Rentals frontend usable locally: auth, account,
+         billing and admin calls go to the platform API base URL (new
+         runtime config apiPlatformBase); everything else stays on the
+         rentals API. Login -> dashboard -> pay page work in the browser
+         against both APIs. pnpm lint/typecheck/test/build green. Then
+         scripts/rehearse_cutover.sh (or similar — agent's call on exact
+         name/location): a single script that, from nothing, proves the
+         whole platform-split story end to end on disk — fresh pre-split-
+         shaped database -> every migration in order -> backfill-platform
+         -> 3i-a's drop migration -> rename to willcoll_rentals -> the full
+         gate (go build, make audit, make test RACE=, make test/
+         integration), all green, against databases that exist only for
+         the run (same disposable-scratch convention as
+         scripts/test_integration.sh's willcoll_verify — never touches the
+         real dev database). This script is what stands in for a staging
+         rehearsal until Phase 9's VPS exists; keep it working as later
+         phases add migrations, since Phase 9 runs it for real before the
+         first production cutover.
+         DONE (with fixes carried over from 3i-b). What landed:
+         (1) Integration tests now really run. scripts/test_integration.sh
+         creates BOTH scratch databases (willcoll_verify and
+         willcoll_platform_verify), migrates both, exports all four DSNs
+         (WILLCOLL_TEST_DB_DSN, _ADMIN_DB_DSN, _PLATFORM_DB_DSN,
+         _PLATFORM_ADMIN_DB_DSN) and INTEGRATION=1, then prints a per-package
+         table of tests run / passed / failed / skipped (cmd/testsummary, fed by
+         `go test -json`). internal/testenv.Require is the one place a test
+         asks for its DSN: with INTEGRATION=1 a missing DSN FAILS the test,
+         without it the test skips so a plain `go test ./...` needs no
+         Postgres. The Makefile's test/integration sets INTEGRATION=1.
+         New: internal/platform/data/oversight_integration_test.go runs the
+         Super Admin oversight SQL (oversight.sql - which 3i-b had only
+         mocked) against a real willcoll_platform: cross-tenant reads on the
+         admin pool, the RLS wall the app pool keeps, suspend/reinstate.
+         The platform roles are cluster-wide and none existed on this machine
+         (no PLATFORM_* in .env), so scripts/lib_testdb.sh creates
+         willcoll_platform_app / _admin with throwaway test passwords when
+         they are absent, reuses them on later runs, and REFUSES to guess when
+         they exist with a password it doesn't know (set PLATFORM_DB_APP_PASSWORD
+         / PLATFORM_DB_ADMIN_PASSWORD in backend/.env). It never rewrites an
+         existing role's password.
+         (2) Mocks. scripts/generate_sqlc.sh already ran
+         `go run go.uber.org/mock/mockgen@v0.6.0` (== go.mod) - the "global
+         mockgen v1.6.0 can't run" caveat in 3g/3i-b was about calling the
+         global binary by hand. Regenerated both packages: the only diff from
+         3i-b's hand-synced mocks is method ORDER (mockgen is alphabetical;
+         the method sets are identical), and a second run changes nothing.
+         (3) features-functionalities.txt does not exist in this repository
+         (git ls-files, the index and history were all searched). Rather than
+         pretend to move it, docs/rentals/features-functionalities.txt is a NEW
+         file: the endpoint index generated from both routers, grouped by
+         binary, with the 3i-b removals listed. It says so at the top.
+         (4) Frontend repoint (frontend/rentals): app/utils/apiTarget.ts is the
+         one list of platform paths (sessions, managers, tokens, account,
+         billing, staff, admin/{sessions,managers,subscriptions,plans}); useApi
+         routes by it. New runtime config apiPlatformBase (public, default
+         /_platform - a same-origin Nuxt proxy to platform-api, so the one
+         platform session cookie is first-party and rentals-api receives it
+         through its own proxy; NUXT_PUBLIC_API_PLATFORM_BASE for a separate
+         origin in staging/production) and apiPlatformInternalBase. Billing is
+         per product on platform-api, so /billing/x becomes /billing/rentals/x.
+         Rentals' own admin health pages (/admin/system/health, /admin/backups)
+         stay on rentals-api. Two platform-api additions the move needed:
+         GET /v1/sessions?product=rentals returns the firm's paywall standing
+         ("access", which left the session response in 3c) for the trial
+         banner, and GET /v1/billing/:product/plans returns unit_count for the
+         plan picker. A staff member signs in at the same endpoint; the auth
+         store treats them as the firm's dashboard and keeps `staff`.
+         The admin managers table drops property_count for staff_count.
+         There was no `pnpm lint`: added eslint (flat config, the stock
+         eslint / typescript-eslint / eslint-plugin-vue recommended sets,
+         no-undef off because Nuxt auto-imports) and fixed the five findings it
+         raised in existing code (two unused bindings, a let that should be
+         const, a shadowed template variable, an inline type cast the Vue
+         filter rule misparsed). pnpm lint / typecheck / test / build green.
+         (5) scripts/rehearse_cutover.sh (make rehearse/cutover; --with-gate
+         runs build/vet/test/integration first; --keep leaves the databases
+         for inspection). From nothing it: creates a pre-split database with
+         migrations 1-44 and seeds a customer (manager + bcrypt password,
+         plan, subscription, property); creates and migrates willcoll_platform;
+         runs devtools backfill-platform; applies 000045 and checks the
+         identity tables are gone and the data intact; renames the database
+         (willcoll -> willcoll_rentals style); starts the REAL platform-api and
+         rentals-api binaries with local fakes for Africa's Talking and PayHero
+         (cmd/rehearse fakes - rentals-api gained AFRICASTALKING_BASE_URL so the
+         OTP can be read); and runs cmd/rehearse smoke, 65 numbered HTTP steps:
+         the backfilled customer signs in on platform and is served by rentals;
+         signup/activate/login; a pending firm is closed on rentals (403);
+         landlord, property, channel registration, unit, lease, rent run (and
+         its re-run bills nothing twice); module_usage reaches platform; the
+         tenant's pay-page OTP, STK push and webhook, the webhook replayed and
+         still posting once, the inbox claim recorded once; staff invite,
+         activation and role gating (officer can read, 403 on an accountant
+         write); admin oversight (list/detail/filters, admin session working on
+         rentals' own admin routes but not as a manager); suspend -> manager
+         AND staff get 401 on BOTH APIs, cannot sign in, public pay page still
+         works, audit row as admin; reinstate. All databases are dropped on
+         exit, also on failure.
+         Findings the rehearsal made (each is a real thing, not a test quirk):
+         - devtools backfill-platform needs the willcoll_platform OWNER DSN as
+           PLATFORM_DSN: willcoll_platform_admin only holds SELECT/UPDATE
+           (000013) and cannot insert. Its doc comment said admin; the cutover
+           runbook must use the owner. (The script does.)
+         - A property's payhero_channel_id typed in by hand (POST/PATCH
+           /properties) is NOT claimed in platform's payment_channels, so that
+           property's collections fall back to local-only posting
+           (payment_inbox FK failure, counted on the health page). Registering
+           the channel through POST /properties/:id/payment-channel claims it.
+           Left as is - closing it means claiming on create/update (a decision
+           about conflict handling on create) - but the smoke test registers
+           through the API on purpose, and this is the next fix to make.
+           FIXED in 3i-d below.
+         - The first rehearsal failures were the script's own: an inline
+           `DB_DSN=... cmd` assignment changes the variable the DSN helpers
+           derive from for the rest of that command line. DSNs are now
+           computed before any command line (commented in the script).
+  3i-d [x] Channel gap fix: a payhero_channel_id typed by hand on a
+         property is claimed in platform.payment_channels
+         (product=rentals, owner=the property) in the same request.
+         - POST /properties and PATCH /properties/:id claim BEFORE the
+           property is saved (claimPropertyChannel,
+           cmd/rentals-api/payment_channel.go). Create therefore chooses the
+           property's id itself: PropertyModel.Insert honours a pre-assigned
+           property.ID (CreateProperty takes an optional id,
+           COALESCE(narg, gen_random_uuid())).
+         - Channel owned by another property OR another product -> 409, the
+           property is not saved with it. A claim this same property already
+           holds is accepted (idempotent retry after a failed save).
+         - Platform unreachable (or any non-conflict claim error) -> 503,
+           the channel is never saved unclaimed.
+         - Changing or clearing the channel releases the old claim after the
+           property save succeeds; a failed save releases the claim it just
+           made (never the old one). Release is best effort (logged, never
+           surfaced: the property is already saved) via the new
+           ChannelModel.Release / ReleasePaymentChannel query, scoped to
+           (manager, product, owner).
+           JUDGMENT CALL: payment_inbox.channel_id has a FK to
+           payment_channels, so a channel that already has recorded receipts
+           cannot be deleted. Release returns ErrChannelHasPayments, the claim
+           is KEPT (logged at info), and the property save still succeeds. The
+           channel stays attributable to that manager/property and cannot be
+           claimed by anyone else; the alternative (dropping the FK or
+           soft-deleting) was a schema decision not taken here.
+         - devtools backfill-platform already claimed every property's channel
+           id; it now also treats a claim held under another product, or with
+           a NULL owner, as a reported conflict (it used to scan owner_id into
+           a non-null uuid). It skips the channel pass without
+           PAYHERO_CALLBACK_BASE_URL, so the rehearsal now sets it.
+         - Rehearsal (scripts/rehearse_cutover.sh, cmd/rehearse): the pre-split
+           property carries a hand-typed channel the backfill must claim;
+           the smoke test creates a property with a hand-typed id, checks the
+           claim, 409s a duplicate on create and on PATCH, changes it (old
+           claim released), POSTs a paybill webhook through the inbox (a
+           payment_inbox row exists, which the local fallback never writes),
+           then clears it and sees the claim kept because it has payments.
+           76 smoke steps, 0 failed.
+         - Tests: cmd/rentals-api/property_channel_claim_test.go (create and
+           update: claim order, 409 other owner/other product, idempotent
+           own claim, 503, no calls when unchanged, release on change/clear,
+           rollback on failed save, kept-with-payments), and
+           TestChannelReleaseIntegration (real Postgres: non-owner no-op,
+           release, re-claim, FK-pinned claim). make test/integration 645/645.
+         CUT-OVER RUNBOOK: devtools backfill-platform runs with the
+         willcoll_platform OWNER DSN as PLATFORM_DSN (willcoll_platform_admin
+         only holds SELECT/UPDATE, 000013, and cannot insert claims), and with
+         PAYHERO_CALLBACK_BASE_URL set; read its report for
+         "DUPLICATE channel id(s)" and resolve each by hand before deploying.
+  3j [x] Tests (system-design E.5): RLS isolation, module 403, role 403,
+         claimed once, crash between claim and post, wrong-product
+         channel, shared session across hosts.
+         E.5 audit, line by line (paths under backend/). "NEW" = written in 3j.
+         ---------------------------------------------------------------------
+         1 RLS isolation, per database
+             rentals:  internal/rentals/data/properties_integration_test.go
+                       TestPropertyModelIntegration (tenant B cannot Get/List/
+                       Delete A's property); platform_integration_test.go
+                       TestPlatformIntegration (app pool sees no tenants)
+             platform: internal/platform/data/oversight_integration_test.go
+                       TestOversightIntegration (app pool, no scope: RLS wall);
+                       staff_test.go TestStaffModel_Get_ScopedToTenant
+             PRESENT
+         2 Module-gated 403, data intact on re-enable
+             403:       cmd/rentals-api/gates_test.go TestRequireModule
+             re-enable: cmd/rentals-api/gates_test.go
+                        TestRequireModule_ReEnableRestoresAccess  NEW
+                        (suspended 403 twice, active 200; the mock allows only
+                        the manager_modules read, so any delete/write fails it)
+             + rehearsal steps 74-76 (reinstate, data intact) end to end
+             PRESENT (re-enable half NEW)
+         3 Role-gated 403 (officer cannot reverse)
+             cmd/rentals-api/roles_test.go TestRequireRole_StaffOfficer
+             ("forbidden: a reversal needs accountant")      PRESENT
+         4 Payment claimed once (concurrent duplicate webhooks)
+             cmd/rentals-api/webhooks_payhero_sweep_test.go
+               TestCollectionsWebhookSameReceiptFiredTwiceConcurrentlyPostsOnce
+             test/ledger_concurrency_test.go TestDuplicateWebhooksPostOnce
+             internal/platform/data/payment_inbox_integration_test.go
+               TestInboxClaimIntegration  NEW (20 concurrent Claims against
+               real Postgres -> one payment_inbox row, no errors)
+             PRESENT (inbox-SQL level NEW)
+         5 Crash between claim and post (retry/sweeper posts exactly once)
+             cmd/rentals-api/webhooks_payhero_sweep_test.go
+               TestSweepStaleInboxPostsAndMarksACrashedClaim
+               (+ ...UnparsablePayloadIsLoggedNotLost, ...EmptyListIsANoop)
+             TestInboxClaimIntegration also covers retry-of-a-claimed-row
+             proceeding and post-then-ack-without-reprocessing  PRESENT
+         6 Wrong-product channel rejected
+             cmd/rentals-api/webhooks_payhero_test.go
+               TestCollectionsWebhookWrongProductIsRejectedNotPosted
+             TestInboxClaimIntegration (Estates presenting a Rentals receipt
+             -> ErrWrongProduct)  PRESENT
+         7 Duplicate handoff rejected                 N/A today (Estates/Waste
+                                                      handoff does not exist)
+         8 Handoff clearing lag "paid (unconfirmed)"  N/A today (same)
+         9 Revoked consent blocks new handoffs, keeps posted entries
+                                                      N/A today (same)
+        10 Session shared across app hosts, logout signs out everywhere
+             internal/shared/auth/session_shared_integration_test.go
+               TestSessionSharedAcrossHostsIntegration  NEW
+               (two independent session managers, one platform sessions table:
+               login on one is honoured by the other; one logout revokes both)
+             Not covered: the real cookie Domain spanning hosts (browser/DNS;
+             Phase 9). MISSING before 3j, now covered at the store level.
+        11 shared never imports products (depguard)
+             internal/shared/depguard_test.go TestSharedDoesNotImportRentals;
+             internal/platform/depguard_test.go TestPlatformOnlyImportsShared
+             + .golangci.yml depguard rules                  PRESENT
+         Rows 7-9 are written with their products (Estates handoff, 5x).
+         Also fixed in 3j: scripts/rehearse_cutover.sh now blanks SMTP_HOST.
+         The smoke test reads activation tokens from platform-api's log
+         (LogMailer); with the real Mailtrap SMTP_HOST from .env the mail went
+         to Mailtrap instead and step 9 failed.
+         Gate: make test/integration 648/648 pass, 0 skip; make rehearse/cutover
+         76 steps, 0 failed.
+  Frontend
+  3k [x] pnpm workspace; frontend/layers/base extracted from rentals
+         (ui/, composables, LedgerTable, SpreadsheetTable, OtpChallenge,
+         PayIntentForm, AppShell + product switcher, useSession,
+         useModules, guards). Rentals extends it; no visual change.
+  3k-b [x] Pay-flow fixes from manual testing, and the system health move.
+         (1) The fake PayHero (cmd/rehearse fakes) now answers an STK push the
+         way PayHero does: ~3s later it POSTs a success callback to the push's
+         own callback_url (token included); last digit of the amount picks the
+         outcome (1 cancelled, 2 insufficient funds, 3 no callback); `make
+         dev/payhero result=<success|cancelled|insufficient|failed> [id=<ref>]`
+         answers one by hand. make dev/up turns auto-callback on; the rehearsal
+         fakes leave it off and the smoke drives the same /_complete endpoint.
+         docs/dev-setup.md documents it. (2) Pay page: spacing under "Paying"
+         (display size had no line-height), failed/expired show a titled alert
+         and Try again. (3) Verifying the success path end to end found a real
+         bug: PayHero's STK callback names no channel, so the webhook fell back
+         to the configured default collections channel, the payment_inbox claim
+         failed its channel foreign key, and the payment was posted locally but
+         never claimed/marked 'posted' in platform (it only logged "claim
+         unavailable; falling back"). The STK push's callback_url now carries
+         ?channel_id= (the intent's channel). The smoke asserts receipt on the
+         pay page, rent ledger change, property rent_collected +1,000, inbox
+         'posted', and a cancelled push -> failed with reason. (4) System health
+         moved to platform-api: GET /v1/admin/system/health checks willcoll_platform
+         directly and asks rentals-api for its own report (admin cookie
+         forwarded), in parallel, each under HEALTH_TIMEOUT (5s); partial
+         results (one dead service never blanks the page), 503 only when
+         platform's own database is down. New internal/shared/dbhealth;
+         RENTALS_API_URL on platform-api; the frontend page and apiTarget
+         follow (/admin/system is a platform prefix; /admin/backups stays
+         on rentals-api).
+  3k-c [x] Fixes from manual testing (unclaimed channels, health, usage).
+         (1) The dev seed never claimed channels, so every demo payment fell
+         back to local-only posting. New ChannelModel.Claim (platform data:
+         Register made idempotent for the same owner, ErrChannelAlreadyRegistered
+         otherwise) is now THE claim path: rentals-api's claimPropertyChannel
+         (3i-d) calls it, and cmd/seed claims both demo properties right after
+         inserting them. `devtools claim-channels` (new, ENV=development) claims
+         every property channel and then VERIFIES by an independent read of
+         payment_channels; any property without a matching claim is listed by
+         name and channel and the command exits 1. make dev/setup runs it
+         after seeding on every run, so an existing dev database is repaired in
+         place (no reset): the real PH-CH-RUNDA-DEMO and PH-CH-KIWI-DEMO claims
+         were both missing and are now made. seed -reset also clears the firm's
+         payment_inbox rows first (its FK has no cascade).
+         (2) Unclaimed-channel alarm: InboxModel.Claim maps the inbox's channel
+         FK failure (23503) to ErrChannelUnclaimed. processCollections still
+         posts locally and still counts the inbox fallback, but now also logs
+         at ERROR ("ALERT ... no platform claim") with the channel id, receipt,
+         and property id/name (new ResolveChannelProperties query, used only for
+         the alarm), and records it in an in-memory 24h tracker. rentals-api's
+         health report gains unclaimed_channels [{channel_id, property_id,
+         property_name, count, last_seen_at}]; the System page shows an
+         "Unclaimed channels" tile and an alert listing them. (In memory: a
+         restart clears the list, the next payment on the channel re-raises it.)
+         (3) rentals-api's health checks (DatabaseHealth, LastBackup) use
+         HEALTH_TIMEOUT (new in its config, default 5s) via
+         PlatformModel.HealthTimeout instead of the 3s DB_QUERY_TIMEOUT, so the
+         first cold check no longer 503s. (4) startUsageRecountJob now runs one
+         recount at startup, so usage_reporting.last_report_at is set right
+         after a restart.
+         Re-test: live on make dev/up, a pay-page payment (Runda G1, OTP, STK
+         push answered by the fake PayHero) completed with receipt FAKE...,
+         payment_inbox row status 'posted' on PH-CH-RUNDA-DEMO, no fallback or
+         ALERT line in rentals-api.log; module_usage.reported_at was set at
+         startup. Tests: unclaimed_channels_test.go (tracker, webhook posts
+         locally + alarms with property, health lists unclaimed channels,
+         HEALTH_TIMEOUT applied), TestInboxClaimIntegration (unclaimed channel
+         -> ErrChannelUnclaimed), frontend tests/systemHealth.test.ts.
+  3k-d [x] Sliding sessions. Finding: SCS IdleTimeout > 0 already marks every
+         loaded session Modified, i.e. it rewrote the row on EVERY request
+         (not once per idle/4), and a read-only product API cannot take part in
+         it. So SCS IdleTimeout is now 0 (Lifetime = the absolute cap stays) and
+         internal/shared/auth/sliding.go enforces the policy from two Unix-second
+         session values: created_at (login; the cap, never moved by renewal) and
+         touched_at (renewed by platform-api's authenticate at most every
+         idle/4, only for a principal that resolved and whose firm is not
+         suspended). Stored as int64, not time.Time: SCS's gob codec cannot
+         encode a time.Time without gob.Register (caught by a test). Idle or
+         over-age sessions are destroyed by platform-api's loadSession; rentals-
+         api's resolvePlatformPrincipal treats them as anonymous (check only,
+         never writes). Sessions issued before this change carry no timestamps:
+         bounded by SCS's deadline, stamped on their first touch. Decision on
+         rentals traffic: rentals-api requests do NOT touch the session (only
+         platform-api writes it, ADR-0007); the frontend base layer's
+         plugins/sessionKeepAlive.client.ts pings GET /v1/sessions (platform
+         base) at most every 4 min on pointer/key/scroll/wheel/touch/visibility
+         activity, never while hidden or signed out (utils/activityPing.ts).
+         No new config: SESSION_IDLE_TIMEOUT (2h) and SESSION_LIFETIME (12h).
+         Tests: cmd/platform-api/sliding_session_test.go, cmd/rentals-api/
+         sliding_session_test.go, internal/shared/auth/sliding_test.go,
+         frontend/layers/base/tests/activityPing.test.ts.
+  3l [x] frontend/platform: the account and admin app (app.willcoll.co.ke
+         in production). Product apps (rentals now, estates/waste later)
+         contain only product pages. FULL SPEC (replaces the old one-line
+         entry; the SMS wallet and audit-log pages it once listed are NOT
+         part of 3l):
+
+         1. Workspace
+            - Add platform to frontend/pnpm-workspace.yaml; it extends
+              ../layers/base. Remove the standalone lockfiles inside
+              frontend/estates and frontend/waste (they join in their
+              phases).
+            - frontend/scripts/dev.mjs starts platform (e.g. :3001) and
+              rentals (:3000) together, each with its API proxies.
+
+         2. Pages in platform (move them from rentals where they exist;
+            same API calls, same behaviour):
+            - Auth: signup (asks which products: rentals now; estates/
+              waste shown as "coming soon"), activate, login, forgot/reset
+              password, staff invite acceptance (set password).
+            - Account: firm profile, password.
+            - Staff (owner only): list, invite, change role, module
+              access, disable/enable.
+            - Modules: active products with status and trial days left;
+              start a trial or request activation for others.
+            - Billing: per product, the plan, renewal (M-Pesa prompt),
+              invoices and PDFs.
+            - Super Admin: login, managers list/detail, suspend/
+              reinstate, subscriptions, plans (create/edit/archive/
+              restore), System health.
+            - Landing route "/": signed-in users see their products as
+              cards (open Rentals, etc.); signed-out users go to login.
+
+         3. Product switcher (AppShell in layers/base)
+            - Shows only the manager's active modules (staff: only those
+              in their module_access), plus a link to Account/Billing in
+              platform.
+            - App URLs come from runtime config (dev: localhost ports;
+              production: subdomains).
+
+         4. Rentals after the move
+            - Remove the moved pages. Any unauthenticated visit goes to
+              the platform login with ?return_to=<rentals url>; after
+              sign-in the user comes back. return_to is accepted ONLY if
+              its origin is in a configured allow-list of Willcoll app
+              origins (no open redirect).
+            - Account/Billing links in rentals point to platform.
+            - The public pay page and QR pages stay in rentals and need no
+              login.
+
+         5. Sessions: the cookie must work across both dev ports (same
+            host localhost) and, in production, across subdomains (cookie
+            domain from config). The existing sliding-session pinger runs
+            in both apps.
+
+         6. Tests and gate
+            - Unit tests for: return_to allow-list (rejects other
+              origins), switcher filtering by modules and staff
+              module_access, owner-only pages hidden from staff.
+            - pnpm lint, typecheck, test, build green for base, rentals,
+              platform.
+            - Go gate unchanged and green.
+            - Update docs/dev-setup.md (two apps, which URL is which),
+              docs/project-structure.txt and CLAUDE.md.
+
+         Don't start Estates or Waste. Leave files unstaged, stop.
+
+         Close-out (the three gaps 3l left; all done):
+          - Staff change their OWN password: PUT /v1/staff/me/password
+            {current_password, new_password} in platform-api (rate
+            limited, audited, any signed-in staff role; the firm login and
+            a Super Admin are refused). A wrong current password or a bad
+            new one is a 422 naming current_password / new_password and
+            changes nothing. On success every OTHER session of that staff
+            member is signed out and this one is re-issued. PUT
+            /v1/account/password now refuses a staff session (it checks and
+            rewrites the FIRM password). frontend/platform /account shows
+            the form to staff (utils/account.ts picks the route). Tests:
+            cmd/platform-api/staff_password_test.go, platform/tests/
+            account.test.ts, base apiTarget.test.ts.
+          - Setup-guide redirect restored: a firm with no properties is
+            sent from /properties to /onboarding once per firm per browser
+            tab (rentals/app/utils/setupRedirect.ts; the old trigger was
+            Rentals' own login page, which moved to platform). Tests:
+            rentals/tests/setupRedirect.test.ts.
+          - Phase 3 marked done.
+
+         MOVED to later phases (not Phase 3 work, nothing here depends on
+         them):
+          - SMS wallet page -> Phase 5 (5b builds the wallet backend; its
+            platform page is 5k).
+          - Audit log page (platform frontend over audit_log) -> Phase 5
+            (5k). The log itself and its coverage test are done (3f-4).
+          - "Request activation" for a product the firm has not started
+            (module status 'requested', approved by the Super Admin) ->
+            Phase 6a (Estates, the first second product) and Phase 7a
+            (Waste). Until then Estates/Waste show "Coming soon" and only
+            Rentals can start a trial.
+  PROMPT: "Phase 3 sub-step <3x> from docs/build-phases.txt. Follow
+           system-design.txt Part A exactly. pg_dump before anything
+           destructive. Do <3x> only, run the gate, report, stop."
+  CUT-OVER, local (this machine, now — no staging/production exists):
+  backup the real dev database -> platform migrations -> backfill -> 3i's
+  schema change against the real local databases -> smoke (login, rent
+  run, pay page, webhook replay) -> rehearsal script green. The real
+  staging/production cut-over (another backup, same steps, on the VPS) is
+  Phase 9's job, once there is a server to do it on.
+  DONE: every 3j test green; login on app.* lands in rentals.*; payments
+  post once; scripts/rehearse_cutover.sh runs clean from a fresh database.
+
+
+================================================================================
+PHASE 4 — LOCAL STAGING + CI
+================================================================================
+  No VPS exists yet (this doc's top-of-file plan change) — Phase 4 no
+  longer deploys anywhere. It builds two things instead: CI that runs on
+  every push for free (GitHub Actions), and a local-staging environment on
+  this machine that looks and behaves like a real deploy (Docker Compose,
+  real hostnames, every service running together) without needing a
+  server. Phases 5-8 are each verified against this local stack. The
+  actual deploy workflows are written here but stay disabled
+  (workflow_dispatch only) until Phase 9 provisions a VPS to point them at
+  — writing them now, correctly, means Phase 9 is "flip them on," not
+  "write them from scratch under pressure."
+  4a [ ] test.yml: paths-filter, jobs per service/app, single test-gate.
+         GitHub Actions only (free for a public or small private repo) —
+         no deploy step, this is CI alone. Every PR and push to any branch
+         runs it; branch protection (require test-gate) can land in this
+         sub-step too since it costs nothing without a deploy target yet.
+  4b [ ] deploy/: caddy (all hosts), postgres (4 DBs + roles), platform +
+         rentals compose files — written for the eventual VPS shape
+         (staging, production) even though neither runs yet, so Phase 9
+         isn't designing them from zero.
+         ALSO this sub-step: deploy/local/docker-compose.yml, a genuinely
+         usable local-staging stack — Caddy, Postgres (all 4 databases:
+         willcoll_platform, willcoll_rentals, +estates/waste once they
+         exist), every API and every frontend app, each on its own
+         *.localhost hostname (e.g. app.localhost, api.localhost,
+         rentals.localhost) via Caddy's automatic local TLS/host routing —
+         so cookies, CORS and cross-subdomain session behavior are
+         exercised exactly as they will be on the real domain, not
+         approximated with ports on one host. One Makefile target starts
+         the whole thing: `make staging/up` (and `staging/down`,
+         `staging/logs`). This is what "verified on local staging" means
+         for every sub-step from Phase 5 onward.
+  4c [ ] _deploy.yml (inputs: service, environment): test -> build api +
+         web images by SHA -> push -> pg_dump (prod) -> migrate platform
+         and the service DB -> SSH compose pull/up. Written and validated
+         (YAML lints, a dry run against the local-staging compose files
+         stands in for "does this even reference real paths/services"),
+         but its trigger is `workflow_dispatch` ONLY — no push/PR trigger,
+         no schedule — so it cannot accidentally fire with no server to
+         receive it. platform-* and rentals-* callers (4d, folded in here
+         since there's no production approval gate to separate them from
+         yet) are written the same way: present, dormant, waiting for
+         Phase 9 to add the real SSH target and flip their trigger.
+  4d [ ] Dockerfiles for every frontend app (needed for 4b's compose
+         either way, local or real); remove the deprecated run/api,
+         build/api Makefile aliases now that both binaries have had their
+         real names for a full phase.
+  PROMPT: "Phase 4 sub-step <4x> from docs/build-phases.txt. Secrets by
+           name only even in a workflow that never fires yet. Validate
+           YAML. Do <4x> only, run the gate, report, stop."
+  DONE: `make staging/up` brings up every service on *.localhost with one
+  command; test.yml is green on every push; _deploy.yml and its callers
+  exist, pass a YAML lint, and cannot fire except by hand.
+
+
+================================================================================
+PHASE 5 — RENTALS SELLABLE (system-design B.4)
+================================================================================
+  Verified against Phase 4's local-staging stack (`make staging/up`), not
+  just `go test` — a sellable product has to actually come up end to end
+  on something that looks like the real deploy.
+  5a [ ] Landlord expenses + remittances + remittance statement PDF.
+  5b [ ] SMS wallet: balance, top-up via billing channel, debit on
+         reminders/bulk (OTP + confirmations stay free). MOVED here from
+         Phase 3 step 3h — Rentals-only, and 5c immediately needs it, so
+         it belongs next to its first real consumer, not blocking the
+         platform-cutover work Phase 3 was actually about.
+  5c [ ] Arrears ageing (portfolio) + bulk SMS reminders (wallet, from 5b).
+  5d [ ] Tenant statement PDF.
+  5e [ ] Move-out + deposit refund workflow.
+  5f [ ] CSV/XLSX export on every list/report (shared/exportx writers).
+  5g [ ] Portfolio dashboard.
+  5h [ ] Role rules on Rentals routes (officer vs accountant).
+  5i [ ] Optional late penalties per property.
+  5j [ ] Frontend for 5a-5i.
+  5k [ ] frontend/platform pages MOVED here from Phase 3 (3l): SMS wallet
+         (balance, top-up, ledger; over 5b) and the audit log page
+         (owner-only, filterable view of audit_log).
+  PROMPT: "Phase 5 sub-step <5x> from docs/build-phases.txt, scope
+           system-design B.4. Do <5x> only (frontend only in 5j), run the
+           gate, report, stop."
+  ── BUSINESS GATE A ─────────────────────────────────────────────────────
+  Dad's portfolio live for one billing month; first 1-2 paying firms
+  signed before Phase 6 goes deep. "Live" here means on local staging
+  until Phase 9 provisions a VPS — the business gate is about the product
+  being ready and a real firm using it, not about where it's hosted.
+
+
+================================================================================
+PHASE 6 — ESTATES P0 (system-design Part C.3)
+================================================================================
+  Verified against local staging (`make staging/up`), same as Phase 5 —
+  Estates gets its own compose service and *.localhost host added to
+  deploy/local/docker-compose.yml in 6a, not a separate environment.
+  6-pre [ ] shared/ledgerkit ExecTx[Q] (tenant SET LOCAL, 40001 retry,
+            advisory-lock variant); Rentals store.go becomes a thin
+            wrapper (concurrency tests green). Pay-link OTP/HMAC into
+            shared/auth with generic claims; Rentals keeps its own claims
+            type.
+  6a [ ] Scaffold: cmd/estates-api, migrations/estates, internal/estates,
+         configs, sqlc entry, requireModule("estates"); frontend/estates
+         on layers/base; compose + workflows; add Estates plans.
+         Also the "request activation" flow MOVED here from Phase 3 (3l):
+         an owner requests a product from platform's Modules page
+         (manager_modules status 'requested'), the Super Admin approves,
+         the trial starts. platform-api has no such endpoint today.
+  6b [ ] Estates, blocks, units, owners, ownership history; CSV import;
+         opening balances (units + funds).
+  6c [ ] apportion (4 bases, largest remainder, fuzz sum == budget);
+         budget lines, preview, approve, overrides.
+  6d [ ] Scheduled SC + reserve runs, levies, optional water, optional
+         penalties; invoice PDF.
+  6e [ ] Pay link, collections webhook via inbox, paybill matching +
+         Estates waterfall, bank CSV import, review queue, receipts.
+  6f [ ] Reminders (schedule + bulk, logged), ageing, owner statement,
+         demand letter.
+  6g [ ] shared/storage; expenses with receipt photos; funds and
+         balances; reserve spend needs resolution ref.
+  6h [ ] Reports: I&E, budget vs actual, fund movements, collections,
+         forecast, AGM pack; exports.
+  6i [ ] Frontend for 6b-6h.
+  6j [ ] Estates up on local staging end to end (compose + host added in
+         6a already does the mechanical part — this is the verification
+         sub-step, not new infrastructure). Real staging/production
+         deploy is Phase 9.
+  PROMPT: "Phase 6 sub-step <6x> from docs/build-phases.txt, scope
+           system-design Part C.3, tables per docs/estates/service-charge-
+           design.txt (own database). Do <6x> only, run the gate, report,
+           stop."
+  ── BUSINESS GATE B ─────────────────────────────────────────────────────
+  One pilot estate runs a full month on local staging: budget -> invoices
+  -> payments -> reminders -> expenses -> AGM-ready report that
+  reconciles.
+
+
+================================================================================
+PHASE 7 — WASTE (system-design Part D)
+================================================================================
+  Verified against local staging, same as Phases 5-6 — Waste gets its own
+  compose service and *.localhost host in 7a.
+  7a [ ] Scaffold: cmd/waste-api, migrations/waste, internal/waste,
+         requireModule("waste"), frontend/waste, compose + workflows,
+         Waste plans (free tier). Enable Waste in the "request
+         activation" flow built in 6a.
+  7b [ ] Zones, customers (codes), fee plans; CSV import.
+  7c [ ] Scheduled monthly billing (SERVICE_FEE); invoices.
+  7d [ ] Paybill by customer code, review queue, oldest-invoice-first,
+         receipts, pay link.
+  7e [ ] Reminders, arrears, collection logs.
+  7f [ ] Route/pickup PDF, bank-ready statement, exports.
+  7g [ ] Frontend; Waste up on local staging end to end. Real
+         staging/production deploy is Phase 9.
+  PROMPT: "Phase 7 sub-step <7x> from docs/build-phases.txt, scope
+           system-design Part D only; one ledger type. Do <7x> only, run
+           the gate, report, stop."
+  ── BUSINESS GATE C ─────────────────────────────────────────────────────
+  One collector bills a zone for a month on local staging; >= 90% of
+  payments auto-match.
+
+
+================================================================================
+PHASE 8 — ESTATES P1, CROSS-PRODUCT HANDOFFS, ADD-ONS
+================================================================================
+  Verified against local staging, same as Phases 5-7.
+  8a [ ] Owner/committee portal.       8b [ ] Maintenance requests.
+  8c [ ] Notices + vendor register.    8d [ ] Committee approvals.
+  8e [ ] Clearance certificate + transfer gate.
+  8f [ ] service_links with consent (Waste -> estate / rentals property).
+  8g [ ] handoff_invoices: Waste bulk invoice -> Estates expense queue /
+         Rentals landlord expenses; "paid (unconfirmed)" until money lands.
+  8h [ ] Rentals add-ons: landlord portal, maintenance requests,
+         branding, custom sender ID (manager_addons).
+  8i [ ] Tests: duplicate handoff, clearing lag, revoked consent + rerun
+         every isolation test.
+  PROMPT: "Phase 8 sub-step <8x> from docs/build-phases.txt, scope
+           system-design C.4, B.5 and Part E. Cross-product data only via
+           platform service_links/handoff_invoices. Do <8x> only, run the
+           gate, report, stop."
+
+
+================================================================================
+PHASE 9 — GO LIVE (one VPS, first real customer)
+================================================================================
+  Everything up to here ran on this laptop. Phase 9 is the one-time move
+  off it, done once real money and a real customer are actually ready to
+  depend on it — not before.
+  9a [ ] Provision one VPS (sizing/provider is the user's call, not an
+         agent's — this is a cost and account decision). Install Docker,
+         Caddy's host prerequisites, firewall; DNS for the real domains
+         (app., api., rentals.* etc., mirroring the *.localhost layout
+         Phase 4 already proved).
+  9b [ ] Enable the deploy workflows Phase 4 wrote but left dormant:
+         _deploy.yml and the platform-*/rentals-* callers get their real
+         SSH target and secrets (named, in GitHub Environments, approval
+         required on production per the original Phase 4 design); flip
+         their trigger on (push to the deploy branch, or workflow_dispatch
+         with a real target now that one exists).
+  9c [ ] Production compose on the VPS (deploy/'s staging/production
+         files from 4b, pointed at real volumes); backups to off-site
+         storage (not just the VPS's own disk — a backup that lives next
+         to what it backs up protects against nothing) — scripts/
+         backup_before_split.sh's approach (dump + restore test) extended
+         into a scheduled job, verified by an actual restore rehearsal on
+         the VPS before it's trusted.
+  9d [ ] Real PayHero and SMS credentials (replacing every dev/sandbox
+         key), wired the same way config.go already expects them — this
+         sub-step is credentials and verification, not code.
+  9e [ ] The real cut-over this whole plan deferred: backup -> platform +
+         product migrations -> backfill-platform (willcoll_platform OWNER
+         DSN as PLATFORM_DSN, PAYHERO_CALLBACK_BASE_URL set; resolve any
+         reported duplicate channel ids) -> deploy platform-api +
+         every product API -> smoke test (login, a real rent run, the pay
+         page, a webhook replay) on the VPS itself, following the same
+         steps scripts/rehearse_cutover.sh (3i) already proved locally.
+  9f [ ] Onboard the first real customer: real firm, real units, real
+         tenants, a real billing month, real money moving through PayHero
+         into a real bank account.
+  PROMPT: "Phase 9 sub-step <9x> from docs/build-phases.txt. This touches
+           real infrastructure, real credentials and (9e onward) real
+           money — confirm the exact target and secrets with the user
+           before running anything, even though the workflow itself was
+           already written and reviewed in Phase 4. Do <9x> only, report,
+           stop."
+  DONE: the first real customer's first real billing month closes
+  correctly on the production VPS.
+
+
+================================================================================
+IF SOMETHING GOES WRONG
+================================================================================
+  Gate fails and needs a logic change: drop the attempt
+  (git restore --staged . && git checkout -- .) and rethink.
+  Pushed commit breaks CI: git revert <sha>; never force-push shared
+  branches. Production data issue: restore that database's pre-deploy
+  pg_dump, investigate on staging.
+================================================================================

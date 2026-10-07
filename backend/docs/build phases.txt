@@ -1,0 +1,313 @@
+================================================================================
+WILLCOLL — BUILD PHASES
+From today (Rentals only, step 1 half done) to Rentals + Estates + Waste live.
+Lives in docs/. Follows docs/project-structure.txt Part D and
+docs/system-design.txt. Where this file and those two disagree, those two win.
+================================================================================
+
+HOW EVERY PHASE RUNS (the loop)
+--------------------------------------------------------------------------------
+  1. Paste the phase's AGENT PROMPT into Claude Code (repo root).
+  2. The agent does ONE sub-step, runs the GATE, stages the files, reports in
+     3-4 lines, and STOPS.
+  3. You: `cd ~/Desktop/willcoll && git status`, then commit that sub-step
+     yourself, then push, then check that CI is green.
+  4. Reply "continue". Repeat until the phase is DONE.
+  5. At a phase's end, tick it in the STATUS table below.
+
+  GATE (every sub-step, no exceptions):
+    go build ./...  ·  make audit  ·  make test RACE=  ·  make test/integration
+    frontend sub-steps also: pnpm lint · pnpm typecheck · pnpm test · pnpm build
+
+  STANDING RULES (paste once per session, already saved in CLAUDE.md):
+    - Never git commit, never git push. Stage only; the user commits.
+    - One sub-step at a time; stop after each with a short report.
+    - No behaviour change unless the sub-step says so.
+    - internal/shared never imports a product package.
+    - Ledger rules: append-only, storno, SERIALIZABLE + retry, zero-sum,
+      SET LOCAL tenant_id + RLS.
+    - If a step needs a design decision not in docs/, stop and ask.
+
+  STATUS
+    Phase 0  Housekeeping ........................ [ ]
+    Phase 1  Shared extraction ................... [~] 1a done
+    Phase 2  Rename cmd/api ...................... [ ]
+    Phase 3  Platform database + entitlements .... [ ]
+    Phase 4  CI/CD + Rentals deploy .............. [ ]   BUSINESS GATE A
+    Phase 5  Estates P0 .......................... [ ]   BUSINESS GATE B
+    Phase 6  Waste ............................... [ ]   BUSINESS GATE C
+    Phase 7  Estates P1 + cross-product handoff .. [ ]
+
+
+================================================================================
+PHASE 0 — HOUSEKEEPING (you, ~1 hour, no agent needed)
+================================================================================
+  [ ] .gitattributes with `* text=auto eol=lf` (+ binary for png/ico),
+      then `git add --renormalize .` and commit.
+  [ ] Delete the empty workflow stubs (deploy.yml, rentals-*/estates-*.yml);
+      Phase 4 recreates them. Empty YAML fails GitHub Actions.
+  [ ] Confirm no secrets are tracked:
+      `git ls-files | grep -Ei "creds|\.env$"` returns only *.example files.
+  [ ] Move docs: backend/docs/adr -> docs/adr, backend/docs/erd.dbml ->
+      docs/platform/erd.dbml, delete backend/docs/*.txt, put this file in
+      docs/. Update CLAUDE.md paths.
+  DONE WHEN: CI is green, `git status` is clean.
+
+
+================================================================================
+PHASE 1 — SHARED EXTRACTION (project-structure Part D step 1)
+================================================================================
+  Goal: internal/shared/ holds product-agnostic code; internal/rentals/ holds
+  the rest. Pure move, zero behaviour change.
+
+  1a [x] vcs, jsonlog, validator, sms, mailer, payhero, reconcile
+  1b [ ] pdf split: pdf.go primitives -> shared/pdf; builders -> rentals/pdf
+  1c [ ] internal/data -> rentals/data, internal/db -> rentals/db
+         (+ sqlc.yaml, generate_sqlc.sh, mockgen; regenerated diff =
+         import paths only)
+  1d [ ] shared/httpx  (envelope, read/writeJSON, error responders,
+         product-agnostic middleware)
+  1e [ ] shared/ledgerkit (tx + 40001 retry, zero-sum, storno builder)
+  1f [ ] shared/auth (SCS wiring, token hashing; tables stay put)
+  1g [ ] shared/jobs (background() + WaitGroup)
+  1h [ ] shared/exportx (CSV import primitive)
+  1i [ ] depguard rule or Go test: internal/shared may not import
+         internal/rentals; CLAUDE.md paths updated
+
+  AGENT PROMPT: "continue" (the step 1 prompt is already loaded). If you
+  start a new session, paste the step 1 prompt again, then add:
+  "1a is committed; start at 1b."
+
+  DONE WHEN: all of 1a-1i are committed and green, and `go list ./...`
+  shows no internal/data, internal/db or internal/pdf at the top level.
+
+
+================================================================================
+PHASE 2 — RENAME cmd/api -> cmd/rentals-api
+================================================================================
+  2a [ ] Move the folder; update Makefile (run/rentals-api, build/rentals-api;
+         keep run/api and build/api as deprecated aliases), Dockerfile
+         (ARG SERVICE=rentals-api, builds ./cmd/${SERVICE}), test.yml, and
+         CLAUDE.md.
+
+  AGENT PROMPT:
+    "Phase 2 from docs/build-phases.txt: rename backend/cmd/api to
+     backend/cmd/rentals-api. Mechanical only. Update Makefile (new targets
+     plus deprecated run/api and build/api aliases), build/Dockerfile to use
+     ARG SERVICE (default rentals-api), .github/workflows/test.yml, and
+     CLAUDE.md. Run the gate, stage, report, stop."
+
+  DONE WHEN: `docker build --build-arg SERVICE=rentals-api backend -f
+  backend/build/Dockerfile` succeeds and the binary starts locally.
+
+
+================================================================================
+PHASE 3 — PLATFORM DATABASE + MODULE ENTITLEMENTS (the risky one)
+================================================================================
+  Goal: willcoll_platform holds identity, billing, entitlements and the
+  payment inbox; willcoll (renamed willcoll_rentals) keeps only Rentals
+  business data. Every product binary connects to TWO databases.
+
+  3a [ ] ADR-0006 platform-database-split.md written (FK drop, backup,
+         cut-over, rollback plan). scripts/backup_before_split.sh
+         (pg_dump + restore test).
+  3b [ ] internal/platform/{data,db} + migrations/platform/000001+:
+         admins, managers, staff, tokens, sessions, subscription_plans,
+         subscriptions, subscription_invoices, manager_modules,
+         payment_channels, payment_inbox (status claimed|posted,
+         claimed_at), service_links, handoff_invoices. RLS + role grants.
+         sqlc entry for platform.
+  3c [ ] Config: PLATFORM_DB_DSN + DB_DSN in rentals config; app opens both
+         pools. No reads switched yet.
+  3d [ ] Backfill tool (cmd/devtools subcommand): copy managers, admins,
+         tokens, plans, subscriptions and invoices from willcoll into
+         willcoll_platform; idempotent; verify row counts.
+  3e [ ] Switch auth, sessions, account, billing and admin handlers to the
+         platform pool. Rentals queries keep tenant_id from the platform
+         session.
+  3f [ ] Seed manager_modules (every existing manager gets 'rentals'
+         active); add requireModule("rentals") to every tenant route.
+  3g [ ] Staff users + roles (owner, accountant, caretaker, viewer) at
+         platform level; role check helper in shared/auth.
+  3h [ ] payment_channels: register existing property channels under
+         product=rentals. Rentals webhook uses the claim -> post -> mark
+         'posted' flow against platform.payment_inbox; a shared/jobs
+         sweeper handles rows stuck in 'claimed' for 5 minutes.
+  3i [ ] Rentals migration: drop tenant_id FKs to managers (plain uuid),
+         then drop the platform tables/columns from willcoll_rentals.
+         Rename the database to willcoll_rentals. Renumber into
+         migrations/rentals/ with a note mapping old -> new numbers.
+  3j [ ] Tests: RLS isolation (manager A cannot read manager B), module 403,
+         payment claimed once, crash between claim and post,
+         wrong-product channel.
+
+  AGENT PROMPT:
+    "Phase 3 from docs/build-phases.txt, sub-step <3x>. Follow
+     docs/system-design.txt Part A and project-structure Part D step 3
+     exactly. Take a pg_dump backup before any destructive migration. Do
+     sub-step <3x> only, run the gate, stage, report, stop."
+
+  CUT-OVER ON STAGING/PRODUCTION (you, after Phase 4 exists):
+    backup -> run platform migrations -> backfill -> deploy the new binary
+    -> smoke test login, pay and webhook -> only then run 3i's drops.
+
+  DONE WHEN: every 3j test is green, and a login, a rent run, a pay-page
+  payment and a webhook replay all work locally against the two databases.
+
+
+================================================================================
+PHASE 4 — CI/CD + RENTALS DEPLOY
+================================================================================
+  4a [ ] test.yml: paths-filter job + per-product matrix + a single
+         `test-gate` job (the only required check).
+  4b [ ] deploy/: caddy (Caddyfile + compose), postgres (compose + init
+         creating willcoll_platform, willcoll_rentals, willcoll_estates,
+         willcoll_waste + roles), rentals compose staging/production.
+  4c [ ] _deploy.yml reusable (inputs: product, environment): test ->
+         build api + web images tagged by SHA -> push -> pg_dump
+         (production only) -> migrate platform + product -> SSH compose
+         pull/up.
+  4d [ ] rentals-staging.yml and rentals-production.yml callers; GitHub
+         Environments (rentals-staging, rentals-production) with their own
+         secrets; approval required on production; concurrency groups.
+  4e [ ] frontend/rentals/Dockerfile. Create the `staging` branch; branch
+         protection on staging and main (require test-gate).
+  4f [ ] Remove the run/api and build/api aliases.
+
+  AGENT PROMPT:
+    "Phase 4 from docs/build-phases.txt, sub-step <4x>. Follow
+     project-structure Part B (deploy/, workflows). Secrets are referenced
+     by name only, never written. Do <4x> only, validate YAML (actionlint
+     if available), stage, report, stop."
+
+  DONE WHEN: a merge development -> staging deploys Rentals to
+  staging.rentals.<domain>, and a merge staging -> main deploys production
+  after approval.
+
+  ── BUSINESS GATE A ──────────────────────────────────────────────────────
+  Run your dad's portfolio on production Rentals for at least one billing
+  month. Fix what hurts. Sign the first 1-2 paying firms before Phase 5 gets
+  deep. Rentals pays the bills; do not starve it.
+
+
+================================================================================
+PHASE 5 — ESTATES P0 (system-design Part C.1)
+================================================================================
+  5a [ ] Scaffold: cmd/estates-api (healthcheck, shared auth/httpx,
+         requireModule("estates")), migrations/estates/000001 (RLS
+         baseline), internal/estates/{data,db,pdf}, sqlc entry,
+         configs/estates, frontend/estates shell (login via platform,
+         module switcher), estates compose + workflows.
+  5b [ ] Estates, blocks, units (type, floor, area, share %), owners,
+         co-owners, ownership history; CSV import (dry-run, row errors);
+         opening balances (runs once).
+  5c [ ] internal/estates/apportion (pure): 4 bases, largest-remainder
+         rounding, variance; fuzz test sum == budget. Budget lines,
+         preview, approve (freezes assessments), overrides.
+  5d [ ] Billing: recurring SC + reserve runs via shared/jobs (monthly or
+         quarterly), levies, optional water (reuse the Rentals draft-grid
+         pattern), optional penalties; invoice PDF.
+  5e [ ] Payments: OTP pay link, webhook through the platform inbox
+         (claim/post), paybill matching via shared/reconcile with the
+         Estates waterfall, bank statement CSV import, review queue,
+         receipts.
+  5f [ ] Reminders (SMS/email schedule + bulk, logged), arrears ageing
+         (internal/estates/ageing), owner statement PDF, demand letter.
+  5g [ ] Expenses + receipt photo (add internal/shared/storage,
+         S3-compatible; record it in docs), funds OPERATING/RESERVE/LEVY
+         with balances; reserve spend needs a resolution ref.
+  5h [ ] Reports: I&E, budget vs actual, fund movements, collections,
+         cash-flow forecast (internal/estates/forecast), AGM pack;
+         CSV/XLSX via shared/exportx.
+  5i [ ] Frontend pages for 5b-5h (estates list, estate tabs, unit page,
+         pay page, review queue).
+  5j [ ] Deploy estates staging, then production; add the Estates plans.
+
+  AGENT PROMPT:
+    "Phase 5 from docs/build-phases.txt, sub-step <5x>. Scope is
+     docs/system-design.txt Part C.1; data details are in
+     docs/estates/service-charge-design.txt (tables live in
+     willcoll_estates, nothing shared with Rentals). Reuse internal/shared;
+     if shared code needs a new parameter, add it without changing Rentals
+     behaviour. Do <5x> only (backend + tests; frontend only in 5i), run
+     the gate, stage, report, stop."
+
+  DONE WHEN: one real estate completes a full month end to end: budget ->
+  invoices -> M-Pesa payments -> reminders -> expenses -> an AGM-ready
+  report that reconciles.
+
+  ── BUSINESS GATE B ──────────────────────────────────────────────────────
+  One pilot estate (ask your dad for a managing agent of an owner-occupied
+  block). Charge from month two.
+
+
+================================================================================
+PHASE 6 — WILLCOLL WASTE (system-design Part D)
+================================================================================
+  6a [ ] Scaffold: cmd/waste-api, migrations/waste/000001,
+         internal/waste/{data,db,pdf}, requireModule("waste"),
+         frontend/waste shell, compose + workflows.
+  6b [ ] Zones, customers (customer code), fee_plans; CSV import.
+  6c [ ] Monthly billing runs (SERVICE_FEE only) via shared/jobs; invoices.
+  6d [ ] Paybill with customer code as the account number -> direct match;
+         unknown code -> review queue; allocation oldest invoice first;
+         receipts; OTP pay link.
+  6e [ ] SMS reminders, arrears list, collection_logs (pickup done/missed).
+  6f [ ] Route/pickup list PDF, bank-ready statement PDF, exports.
+  6g [ ] Frontend pages (lean: customers, billing, payments, arrears,
+         route list); deploy staging then production; Waste plans with a
+         free tier for small collectors.
+
+  AGENT PROMPT:
+    "Phase 6 from docs/build-phases.txt, sub-step <6x>. Scope is
+     docs/system-design.txt Part D and nothing more. Exactly one ledger
+     type, SERVICE_FEE. Reuse internal/shared. Do <6x> only, run the gate,
+     stage, report, stop."
+
+  DONE WHEN: one collector bills a zone for a month, and customers pay by
+  customer code with at least 90% auto-matched.
+
+  ── BUSINESS GATE C ──────────────────────────────────────────────────────
+  One pilot collector (the garbage company serving your dad's buildings).
+
+
+================================================================================
+PHASE 7 — ESTATES P1 + CROSS-PRODUCT HANDOFF
+================================================================================
+  7a [ ] Owner/committee portal (OTP, statements, estate accounts,
+         notices).
+  7b [ ] Maintenance requests (photo, assign, status SMS; closing one
+         posts an expense).
+  7c [ ] Notices (+ SMS broadcast), vendors register.
+  7d [ ] Committee approvals (budget, expenses above threshold, reserve
+         spend, levies).
+  7e [ ] Clearance certificate + ownership transfer gate.
+  7f [ ] service_links with consent (Waste -> estate / rentals property).
+  7g [ ] handoff_invoices: Waste bulk invoice -> Estates expense queue /
+         Rentals landlord expenses; "paid (unconfirmed)" until money lands
+         on the collector's channel.
+  7h [ ] Tests from system-design E.4: duplicate handoff, clearing lag,
+         revoked consent (plus re-running every earlier isolation test).
+
+  AGENT PROMPT:
+    "Phase 7 from docs/build-phases.txt, sub-step <7x>. Scope is
+     docs/system-design.txt Part C.2 and Part E. Cross-product data
+     crosses ONLY through platform service_links / handoff_invoices. Do
+     <7x> only, run the gate, stage, report, stop."
+
+  DONE WHEN: a collector invoices a linked estate, the committee approves
+  it, the estate pays, and both products' books agree, with every E.4 test
+  green.
+
+
+================================================================================
+IF SOMETHING GOES WRONG
+================================================================================
+  - A gate fails and the agent can't fix it without a logic change: stop,
+    `git restore --staged . && git checkout -- .` to drop the attempt, and
+    rethink the sub-step.
+  - A pushed commit breaks CI: `git revert <sha>` (never force-push shared
+    branches).
+  - Production data issue after a deploy: restore from the pre-deploy
+    pg_dump that _deploy.yml takes, then investigate on staging.
+================================================================================

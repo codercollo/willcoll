@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
 import type { Lease, Unit } from '~/types/api'
 
 definePageMeta({ title: 'Unit' })
@@ -84,6 +84,7 @@ function normalise(p: string) {
 }
 
 const tab = ref('lease')
+type LedgerKind = 'rent' | 'water' | 'garbage' | 'electricity_deposit'
 const tabs = [{ key: 'lease', label: 'Lease' }, { key: 'rent', label: 'Rent ledger' }, { key: 'water', label: 'Water ledger' }, { key: 'garbage', label: 'Garbage ledger' }, { key: 'electricity_deposit', label: 'Electricity deposit ledger' }]
 const visibleTabs = computed(() => tabs.filter(t =>
   (t.key !== 'garbage' || props_.current?.garbage_enabled !== false)
@@ -119,7 +120,7 @@ const visibleTabs = computed(() => tabs.filter(t =>
               <h2>{{ active.tenant_name }}</h2>
               <p class="tnum text-gray-700">{{ active.primary_phone }}</p>
             </div>
-            <div class="flex gap-3">
+            <div class="flex flex-wrap gap-3">
               <UiButton variant="secondary" @click="editLease">Edit lease</UiButton>
               <UiButton variant="destructive" @click="terminating = true">Terminate lease</UiButton>
             </div>
@@ -176,7 +177,7 @@ const visibleTabs = computed(() => tabs.filter(t =>
         </UiCard>
       </template>
 
-      <LedgerPanel v-else :key="tab" :unit-id="unitId" :kind="tab as 'rent' | 'water' | 'garbage' | 'electricity_deposit'" />
+      <LedgerPanel v-else :key="tab" :unit-id="unitId" :kind="tab as LedgerKind" />
 
       <PropertyLeaseFormModal v-model="leaseModal" :unit-id="unitId" :lease="leaseEditing" :electricity-enabled="props_.current?.electricity_enabled" :electricity-deposit-default="props_.current?.electricity_deposit_amount" @saved="load" />
 

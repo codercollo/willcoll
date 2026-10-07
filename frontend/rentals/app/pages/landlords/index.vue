@@ -27,7 +27,7 @@ function edit(l: Landlord | null) { editing.value = l; open.value = true }
     <UiCard v-else :padded="false">
       <UiEmptyState v-if="!store.landlords.length" title="No landlords yet" text="A landlord owns one or more properties you manage." icon="lucide:users" />
       <div v-else class="overflow-x-auto">
-        <table class="w-full text-left">
+        <table class="stack-table w-full text-left">
           <thead>
             <tr class="h-10 border-b border-border-default bg-gray-50">
               <th class="th-text px-5 font-medium">Name</th><th class="th-text px-5 font-medium">Phone</th>
@@ -36,10 +36,10 @@ function edit(l: Landlord | null) { editing.value = l; open.value = true }
           </thead>
           <tbody>
             <tr v-for="l in store.landlords" :key="l.id" class="h-12 border-b border-border-subtle hover:bg-blue-50">
-              <td class="px-5 font-semibold">{{ l.name }}</td>
-              <td class="tnum px-5">{{ l.phone }}</td>
-              <td class="px-5 text-gray-700">{{ l.email || '—' }}</td>
-              <td class="px-5 text-gray-700">{{ l.bank_name ? `${l.bank_name} · ${l.bank_account_number ?? ''}` : '—' }}</td>
+              <td class="px-5 font-semibold" data-label="Name" data-wide>{{ l.name }}</td>
+              <td class="tnum px-5" data-label="Phone">{{ l.phone }}</td>
+              <td class="px-5 text-gray-700" data-label="Email">{{ l.email || '—' }}</td>
+              <td class="px-5 text-gray-700" data-label="Bank" data-wide>{{ l.bank_name ? `${l.bank_name} · ${l.bank_account_number ?? ''}` : '—' }}</td>
               <td class="px-3"><UiButton variant="icon" :label="`Edit ${l.name}`" @click="edit(l)"><Icon name="lucide:pencil" class="size-5" /></UiButton></td>
             </tr>
           </tbody>

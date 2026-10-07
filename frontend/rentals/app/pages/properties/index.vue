@@ -2,6 +2,7 @@
 definePageMeta({ title: 'Properties' })
 
 const store = useProperties()
+const auth = useAuthStore()
 const toast = useToast()
 const loading = ref(true)
 const error = ref('')
@@ -12,6 +13,11 @@ async function load() {
   loading.value = true
   error.value = ''
   try { await store.fetchList(period) } catch (e) { error.value = e instanceof Error ? e.message : 'Could not load properties.' } finally { loading.value = false }
+  // A firm with no properties starts in the setup guide, once per sign-in.
+  if (!error.value && shouldSendToSetup(store.list.length, auth.manager?.id, readSetupRedirected())) {
+    markSetupRedirected(auth.manager!.id)
+    await navigateTo('/onboarding')
+  }
 }
 onMounted(load)
 
@@ -33,7 +39,7 @@ async function created(p: { id: string }) {
   <div class="flex flex-col gap-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <p class="text-gray-500">{{ periodLabel(period) }}</p>
-      <div class="flex gap-3">
+      <div class="flex flex-wrap gap-3">
         <UiButton variant="secondary" to="/landlords"><Icon name="lucide:users" class="size-4" />Landlords</UiButton>
         <UiButton @click="creating = true"><Icon name="lucide:plus" class="size-4" />New property</UiButton>
       </div>

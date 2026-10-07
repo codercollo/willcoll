@@ -3,3 +3,7 @@
 api.exe
 
 .exe
+
+# scripts/backup_before_split.sh output — pg_dump files of the dev
+# database, never committed.
+backups/

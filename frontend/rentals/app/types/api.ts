@@ -1,6 +1,6 @@
 // Shapes returned by the API (features-functionalities.txt section 4).
 // Money and meter readings are decimal strings; periods are "YYYY-MM".
-import type { PageMeta } from '~/components/ui/Pagination.vue'
+import type { PageMeta } from '#base/components/ui/Pagination.vue'
 
 export type { PageMeta }
 

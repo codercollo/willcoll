@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Lease } from '~/types/api'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 // Create a lease (with deposits and payers) or edit one (name, phone, rent).
 // Deposits and start date are on the ledger, so they cannot be edited.

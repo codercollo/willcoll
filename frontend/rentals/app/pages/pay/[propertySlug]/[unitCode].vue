@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
+import { isDepositType, payLabel } from '~/utils/pay'
 import type { PayBalance, PayIntent, PayReceipt, PayUnit } from '~/types/pay'
 
 // The one screen a tenant ever sees (design-tokens 7.8): a single 480px card.
@@ -102,12 +103,22 @@ function notYou() { pay.forget(); notice.value = ''; step.value = 'otp' }
         <p class="text-gray-500">Unit <span class="tnum font-semibold text-gray-900">{{ unit?.unit_code }}</span></p>
       </header>
 
-      <PayOtpChallenge v-if="step === 'otp'" :notice="notice" @verified="loadBalances" />
+      <OtpChallenge
+        v-if="step === 'otp'"
+        :notice="notice"
+        :request-code="pay.requestCode"
+        :verify-code="pay.verify"
+        intro="To pay, confirm your phone number. We will text you a code."
+        phone-help="The number on your lease, or one added as a co-payer."
+        @verified="loadBalances"
+      >
+        <template #sent="{ phone }">If <strong class="tnum">{{ phone }}</strong> is on this unit, a code is on its way. It lasts a few minutes and works once.</template>
+      </OtpChallenge>
 
       <template v-else-if="step === 'pay'">
         <UiFormAlert v-if="loadError" class="mb-5">{{ loadError }} <button type="button" class="font-semibold text-accent-text" @click="loadBalances">Retry</button></UiFormAlert>
         <UiSkeleton v-if="loadingBalances" :lines="4" />
-        <PayIntentForm v-else :balances="balances" :phone="pay.session?.phone ?? ''" :busy="submit.loading.value" :error="submit.message.value" @submit="startPayment" />
+        <PayIntentForm v-else :balances="balances" :label-for="payLabel" :no-advance="isDepositType" :phone="pay.session?.phone ?? ''" :busy="submit.loading.value" :error="submit.message.value" @submit="startPayment" />
         <p class="mt-6 text-center text-gray-500"><button type="button" class="font-semibold text-accent-text" @click="notYou">Not you? Use a different number</button></p>
       </template>
 

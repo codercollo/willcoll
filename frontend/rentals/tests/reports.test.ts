@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { reportColumns } from '~/utils/reportColumns'
-import { formatDay } from '~/utils/date'
+import { formatDay } from '#base/utils/date'
 
 describe('reportColumns', () => {
   it('matches the printed schedule with garbage on', () => {

@@ -46,8 +46,8 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(timer) })
 <template>
   <div class="flex flex-col gap-6 text-center" role="status" aria-live="polite">
     <div>
-      <p class="text-gray-500">Paying</p>
-      <p class="money text-[length:var(--text-display)] font-bold">Ksh {{ cur.format(amount) }}</p>
+      <p class="mb-1 text-gray-500">Paying</p>
+      <p class="money text-[length:var(--text-display)] leading-[var(--text-display--line-height)] font-bold">Ksh {{ cur.format(amount) }}</p>
     </div>
 
     <UiStepper :steps="['Sent to your phone', 'Waiting for PIN', 'Confirmed']" :current="current" :failed="failed" />
@@ -56,7 +56,10 @@ onBeforeUnmount(() => { stopped = true; clearTimeout(timer) })
     <p v-if="slow" class="text-gray-500">This is taking longer than usual. If you have already paid, your payment will still be applied and you can close this page.</p>
 
     <template v-if="failed">
-      <UiFormAlert>{{ state === 'expired' ? 'The request timed out before a PIN was entered.' : (reason || 'The payment was not completed.') }} You have not been charged.</UiFormAlert>
+      <UiFormAlert>
+        <strong class="block">{{ state === 'expired' ? 'The request timed out' : 'Payment not completed' }}</strong>
+        {{ state === 'expired' ? 'No PIN was entered in time.' : (reason || 'The payment was not completed.') }} You have not been charged.
+      </UiFormAlert>
       <UiButton block large @click="emit('retry')">Try again</UiButton>
     </template>
   </div>

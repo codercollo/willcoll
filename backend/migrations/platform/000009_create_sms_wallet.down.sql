@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS sms_ledger;
+DROP TABLE IF EXISTS sms_wallets;

@@ -1,72 +1,112 @@
-# Runs on every push and pull request: the same checks as `make audit`, plus
-# the whole suite against a real PostgreSQL (make test/integration), because
-# the ledger's guarantees (row-level security, serializable transactions,
-# advisory locks, append-only grants) can only be tested against Postgres.
+# CI for every pull request and every push to main. No deploy step: this is
+# checks only (build-phases.txt Phase 4a). The deploy workflows come later.
+#
+# Shape: a "changes" job decides which areas a change touches, one job per
+# area runs only when needed, and "test-gate" is the single check branch
+# protection requires. A skipped job counts as a pass there, so a docs-only
+# change is green without running anything.
+#
+# Everything here also runs on a laptop: `make audit`, `make test/integration`
+# and the pnpm scripts are the same commands, no CI-only logic.
 name: test
 
 on:
-  push:
-    branches: [main, development]
   pull_request:
+  push:
+    branches: [main]
 
+# pull-requests: read lets paths-filter list a PR's changed files.
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: test-${{ github.ref }}
-  cancel-in-progress: true
-
-defaults:
-  run:
-    working-directory: backend
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  audit:
-    name: audit (fmt, vet, staticcheck, golangci-lint)
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shared: ${{ steps.filter.outputs.shared }}
+      platform: ${{ steps.filter.outputs.platform }}
+      rentals: ${{ steps.filter.outputs.rentals }}
+      estates: ${{ steps.filter.outputs.estates }}
+      waste: ${{ steps.filter.outputs.waste }}
+      fe_base: ${{ steps.filter.outputs.fe_base }}
+      fe_platform: ${{ steps.filter.outputs.fe_platform }}
+      fe_rentals: ${{ steps.filter.outputs.fe_rentals }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: dorny/paths-filter@v4.0.3
+        id: filter
         with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
+          filters: |
+            shared:
+              - 'backend/internal/shared/**'
+              - 'backend/pkg/**'
+              - 'backend/go.mod'
+              - 'backend/go.sum'
+              - 'backend/Makefile'
+              - 'backend/sqlc.yaml'
+              # Also compiled and tested by `go test ./...`, so a change to
+              # any of these must run the backend job:
+              - 'backend/.golangci.yml'
+              - 'backend/scripts/**'
+              - 'backend/test/**'
+              - 'backend/internal/testenv/**'
+              - 'backend/cmd/devtools/**'
+              - 'backend/cmd/rehearse/**'
+              - 'backend/cmd/seed/**'
+              - 'backend/cmd/testsummary/**'
+              # An edit to this workflow is tested by running everything.
+              - '.github/workflows/test.yml'
+            platform:
+              - 'backend/cmd/platform-api/**'
+              - 'backend/internal/platform/**'
+              - 'backend/migrations/platform/**'
+            rentals:
+              - 'backend/cmd/rentals-api/**'
+              - 'backend/internal/rentals/**'
+              - 'backend/migrations/rentals/**'
+            # Estates and Waste do not exist yet (Phases 6 and 7). Their
+            # filters are here so those phases only fill in the paths and the
+            # job bodies below.
+            estates:
+              - 'backend/cmd/estates-api/**'
+              - 'backend/internal/estates/**'
+              - 'backend/migrations/estates/**'
+              - 'frontend/estates/**'
+            waste:
+              - 'backend/cmd/waste-api/**'
+              - 'backend/internal/waste/**'
+              - 'backend/migrations/waste/**'
+              - 'frontend/waste/**'
+            fe_base:
+              - 'frontend/layers/base/**'
+              - 'frontend/pnpm-lock.yaml'
+              - 'frontend/package.json'
+              - 'frontend/pnpm-workspace.yaml'
+              - '.github/workflows/test.yml'
+            fe_platform:
+              - 'frontend/platform/**'
+            fe_rentals:
+              - 'frontend/rentals/**'
 
-      - name: go.mod is tidy and modules verify
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
-          go mod verify
-
-      - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "these files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: latest
-          working-directory: backend
-
-  test:
-    name: test (unit + integration, race detector)
+  backend:
+    name: backend (audit, race tests, integration)
+    needs: changes
+    if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.platform == 'true' || needs.changes.outputs.rentals == 'true'
     runs-on: ubuntu-latest
-    needs: audit
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17 # same major as the development machine
         env:
           POSTGRES_USER: willcoll
           POSTGRES_PASSWORD: ci-owner-password
@@ -80,36 +120,136 @@ jobs:
           --health-retries 10
 
     env:
-      # The owner/superuser role runs roles and migrations; the API and admin
-      # roles are created below. These are throwaway CI-only credentials for a
-      # database that lives for the length of the job.
+      # Read by the Makefile and scripts/lib_testdb.sh. The owner role runs
+      # roles and migrations; the API and admin roles are created below.
+      # Throwaway CI-only values for a database that lives as long as the job.
       MIGRATE_DSN: postgres://willcoll:ci-owner-password@localhost:5432/willcoll?sslmode=disable
       DB_DSN: postgres://willcoll_app:ci-app-password@localhost:5432/willcoll?sslmode=disable
-      DB_ADMIN_PASSWORD: ci-admin-password
       DB_APP_PASSWORD: ci-app-password
+      DB_ADMIN_PASSWORD: ci-admin-password
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Install golang-migrate
+      # `make audit` needs staticcheck and golangci-lint on the PATH; the
+      # integration script prefers golang-migrate over its psql fallback.
+      # Versions are pinned to what the project is developed with.
+      - name: Install staticcheck and golang-migrate
         run: |
-          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.1
+          install-only: true
+
+      # The runner image ships psql; this only matters if that changes.
+      - name: Ensure psql
+        run: command -v psql || { sudo apt-get update && sudo apt-get install -y postgresql-client; }
+
+      # format, tidy, vet, staticcheck, golangci-lint, then `make test` with
+      # the race detector (RACE defaults to -race; the runner has a C compiler).
+      # That is the race-detector run, so there is no separate `make test` step.
+      - name: make audit
+        run: make audit
+
+      # audit's `go fmt` and `go mod tidy` rewrite files instead of failing,
+      # so a forgotten format or tidy would pass silently without this.
+      - name: Formatting and go.mod are clean
+        run: git diff --exit-code -- .
+
       - name: Create the API and admin database roles
-        run: |
-          psql "$MIGRATE_DSN" \
-            -v app_password="$DB_APP_PASSWORD" -v admin_password="$DB_ADMIN_PASSWORD" \
-            -f scripts/db_roles.sql
+        run: make db/roles
 
-      - name: Unit tests with the race detector
-        # Integration tests skip themselves here: no WILLCOLL_TEST_DB_DSN yet.
-        run: go test -race -vet=off ./...
-
-      - name: Integration and concurrency tests on a throwaway database
+      # INTEGRATION=1: a test whose database DSN is missing FAILS rather than
+      # skips, so green means the database tests ran. The script builds and
+      # drops its own scratch databases beside willcoll.
+      - name: Integration and concurrency tests
+        env:
+          INTEGRATION: "1"
         run: sh scripts/test_integration.sh
+
+  frontend:
+    name: frontend (lint, typecheck, test, build)
+    needs: changes
+    if: needs.changes.outputs.fe_base == 'true' || needs.changes.outputs.fe_platform == 'true' || needs.changes.outputs.fe_rentals == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The pnpm version comes from "packageManager" in frontend/package.json.
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          package_json_file: frontend/package.json
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Workspace-wide, so a change to the shared base layer is checked in
+      # every app that uses it.
+      - run: pnpm -r lint
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+
+      # A change to the base layer rebuilds every app.
+      - name: Build platform
+        if: needs.changes.outputs.fe_base == 'true' || needs.changes.outputs.fe_platform == 'true'
+        run: pnpm --filter platform build
+      - name: Build rentals
+        if: needs.changes.outputs.fe_base == 'true' || needs.changes.outputs.fe_rentals == 'true'
+        run: pnpm --filter rentals build
+
+  # Placeholders until Phases 6 (Estates) and 7 (Waste): they do nothing but
+  # report green, so test-gate already waits on them and those phases only
+  # have to replace the steps.
+  estates:
+    needs: changes
+    if: needs.changes.outputs.estates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Estates has no CI yet (Phase 6)."
+
+  waste:
+    needs: changes
+    if: needs.changes.outputs.waste == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Waste has no CI yet (Phase 7)."
+
+  # The one required check. Skipped jobs pass; failed or cancelled ones fail.
+  # "changes" is in the list because when it fails every other job is skipped,
+  # which would otherwise look like a pass.
+  test-gate:
+    if: always()
+    needs: [changes, backend, frontend, estates, waste]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All needed jobs passed or were skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "a job finished as '$r'"; exit 1 ;;
+            esac
+          done

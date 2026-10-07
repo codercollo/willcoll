@@ -1,0 +1,10 @@
+# ONE workspace, one lockfile (build-phases.txt 3k). platform joined in 3l;
+# estates and waste join this list in their own phases and keep their
+# stand-alone scaffolds (no lockfile of their own) until then.
+packages:
+  - layers/*
+  - platform
+  - rentals
+
+allowBuilds:
+  esbuild: false

@@ -1,0 +1,13 @@
+{
+  "name": "willcoll-frontend",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.5.2",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "lint": "pnpm -r --workspace-concurrency=1 --if-present run lint",
+    "typecheck": "pnpm -r --workspace-concurrency=1 --if-present run typecheck",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present run test",
+    "build": "pnpm -r --workspace-concurrency=1 --if-present run build"
+  }
+}

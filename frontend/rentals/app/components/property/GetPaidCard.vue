@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { Property } from '~/types/api'
-import { isValidMoneyInput } from '~/utils/money'
 
 const props = defineProps<{ property: Property }>()
 const emit = defineEmits<{ reload: [] }>()

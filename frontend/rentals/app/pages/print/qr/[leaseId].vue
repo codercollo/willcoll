@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
 import type { Lease, Property, Unit } from '~/types/api'
 import type { UnitQr } from '~/stores/qr'
 

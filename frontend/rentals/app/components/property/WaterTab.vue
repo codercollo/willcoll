@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { WaterGrid, WaterReadingInput, WaterRow } from '~/types/billing'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 const props = defineProps<{ propertyId: string }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -119,7 +119,7 @@ async function bills() {
     <UiSkeleton v-if="loading" block />
 
     <template v-else-if="grid">
-      <PropertySpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: WaterRow) => r.unit_id" :locked="(r: WaterRow) => r.locked" :footer="rows.length ? footer : undefined" empty="No occupied units to read.">
+      <SpreadsheetTable :columns="columns" :rows="rows" :row-key="(r: WaterRow) => r.unit_id" :locked="(r: WaterRow) => r.locked" :footer="rows.length ? footer : undefined" empty="No occupied units to read.">
         <template #cell-unit_code="{ row }"><NuxtLink :to="`/properties/${propertyId}/units/${row.unit_id}`" class="tnum font-semibold text-accent-text">{{ row.unit_code }}</NuxtLink></template>
         <template #cell-previous_reading="{ row }">
           <template v-if="row.locked">{{ cur.format(row.previous_reading) }}</template>
@@ -137,7 +137,7 @@ async function bills() {
         <template #cell-amount="{ row }"><span class="text-gray-700">{{ row.has_reading ? cur.format(row.amount) : '—' }}</span></template>
         <template #cell-prior_balance="{ row }"><span :class="cur.isZero(row.prior_balance) ? 'text-gray-700' : 'font-semibold text-arrears-text'">{{ cur.format(row.prior_balance) }}</span></template>
         <template #cell-total_due="{ row }"><span class="font-bold">{{ row.has_reading ? cur.format(row.total_due) : '—' }}</span></template>
-      </PropertySpreadsheetTable>
+      </SpreadsheetTable>
       <p class="text-gray-500">Units, amount and totals are calculated by the system when you save. Default rate: Ksh {{ cur.format(grid.default_rate) }} per unit.</p>
     </template>
 

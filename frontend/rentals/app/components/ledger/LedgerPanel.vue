@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { LedgerEntry, LedgerPage, LedgerType } from '~/types/billing'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 // One tab of a unit's ledgers. Rent shows rent AND its deposit, water shows
 // water AND its deposit; deposits have no tab of their own (features section 10).
@@ -94,7 +94,7 @@ async function reverse() {
           :class="['h-8 rounded-sm px-4 font-semibold transition-colors duration-(--duration-fast)', type === t.key ? 'bg-accent-primary-tint text-accent-text' : 'text-gray-500 hover:text-gray-900']" @click="type = t.key">{{ t.label }}</button>
       </div>
       <span v-else />
-      <div class="flex gap-3">
+      <div class="flex flex-wrap gap-3">
         <UiButton variant="secondary" @click="openCharge"><Icon name="lucide:plus" class="size-4" />Add charge</UiButton>
         <UiButton @click="openPay"><Icon name="lucide:banknote" class="size-4" />Record payment</UiButton>
       </div>

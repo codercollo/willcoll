@@ -799,3 +799,213 @@ CI (as extended in step 7 above) — summary table
   (`on.push.paths`) if build minutes become a real cost once both products
   are large.
 ================================================================================
+
+================================================================================
+WILLCOLL — PROJECT STRUCTURE
+Where everything lives: the repo TODAY (after Phase 1) and the TARGET for
+one platform + three products. Rules live in docs/system-design.txt; build
+order lives in docs/build-phases.txt.
+================================================================================
+
+
+================================================================================
+A. CURRENT (after Phase 1 — shared extraction, Phase 2 — cmd/api rename,
+   and Phase 3 sub-step 3a-3b — platform ADRs + platform schema — all done;
+   the platform database is not yet wired into rentals-api or backfilled —
+   that's 3c-3i)
+================================================================================
+willcoll/
+├── .github/workflows/test.yml            # only real workflow (empty stubs
+│                                          # to be deleted in Phase 0)
+├── backend/
+│   ├── api/{rentals,estates}/openapi.yaml  # empty
+│   ├── build/Dockerfile                    # ARG SERVICE=rentals-api,
+│   │                                        # builds ./cmd/${SERVICE}
+│   ├── cmd/
+│   │   ├── rentals-api/                    # Rentals + auth + billing + admin
+│   │   │                                   # (platform-owned handlers move
+│   │   │                                   # out in Phase 3c; still the
+│   │   │                                   # ONLY thing actually running)
+│   │   ├── devtools/  seed/
+│   ├── internal/
+│   │   ├── shared/    auth exportx httpx jobs jsonlog ledgerkit(partial)
+│   │   │              mailer payhero pdf reconcile sms validator vcs
+│   │   │              depguard_test.go
+│   │   ├── platform/  data/ (Admins, Managers, Tokens only — 3b) db/
+│   │   │              (store.go + sqlc; own retry orchestration, not yet
+│   │   │              generified — see 6-pre) depguard_test.go. Not
+│   │   │              imported by any binary yet — schema/package exist,
+│   │   │              wiring into rentals-api is 3c/3e.
+│   │   └── rentals/   data/ db/ pdf/
+│   ├── migrations/            # rentals: one sequence 000001-000044
+│   │   └── platform/          # NEW (3b): 000001-000013, own database
+│   │                          # (willcoll_platform), not yet created on
+│   │                          # any real environment — schema only so far
+│   ├── pkg/moneyfmt/  scripts/  test/  configs/  docs/ (to retire)
+│   │   scripts/ also gained: backup_before_split.sh, db_roles_platform.sql
+│   ├── go.mod  sqlc.yaml (2 entries: rentals, platform)  Makefile
+│   │   .golangci.yml (depguard: shared + platform rules)  Caddyfile
+├── frontend/
+│   ├── rentals/                            # the only real Nuxt app
+│   └── estates/                            # Nuxt scaffold, empty
+├── docs/  examples/  CLAUDE.md  README.md
+└── (root) features-functionalities.txt, design-tokens.txt, design-inspo.png
+
+
+================================================================================
+B. TARGET
+================================================================================
+willcoll/
+├── .github/workflows/
+│   ├── test.yml                 # paths-filter -> jobs per changed area
+│   │                            # (shared, platform, rentals, estates,
+│   │                            # waste, frontend/*) -> single test-gate
+│   ├── _deploy.yml              # reusable: (service, environment)
+│   ├── platform-staging.yml     platform-production.yml
+│   ├── rentals-staging.yml      rentals-production.yml
+│   ├── estates-staging.yml      estates-production.yml
+│   └── waste-staging.yml        waste-production.yml
+│
+├── backend/                     # ONE Go module
+│   ├── cmd/
+│   │   ├── platform-api/        # auth, signup, sessions, account, staff,
+│   │   │                        # modules, plans/billing + subscription
+│   │   │                        # webhook, SMS wallet, audit, super admin
+│   │   ├── rentals-api/         # Rentals routes + collections webhook
+│   │   ├── estates-api/         # Estates routes + collections webhook
+│   │   ├── waste-api/           # Waste routes + collections webhook
+│   │   ├── devtools/            # backfill, trial/plan tools (dev only)
+│   │   └── seed/                # seeds per product
+│   ├── internal/
+│   │   ├── shared/              # product-agnostic; never imports below
+│   │   │   ├── auth/            # SCS, tokens, session verify, roles,
+│   │   │   │                    # pay-link OTP/HMAC (generic claims)
+│   │   │   ├── plans/           # pricing, requireSubscription/Module/
+│   │   │   │                    # Feature helpers
+│   │   │   ├── ledgerkit/       # ExecTx[Q], retry, advisory lock,
+│   │   │   │                    # serialization helpers
+│   │   │   ├── reconcile/       # matcher, subset-sum, waterfall
+│   │   │   ├── httpx/           # envelope, JSON, errors, middleware,
+│   │   │   │                    # rate limit
+│   │   │   ├── jobs/            # background + DB-backed scheduler,
+│   │   │   │                    # inbox sweeper
+│   │   │   ├── exportx/         # CSV parse, CSV/XLSX writers
+│   │   │   ├── storage/         # S3-compatible uploads
+│   │   │   ├── pdf/             # maroto primitives
+│   │   │   ├── payhero/ sms/ mailer/ validator/ jsonlog/ vcs/
+│   │   ├── platform/            # data/ db/ pdf/ (subscription invoice)
+│   │   ├── rentals/             # data/ db/ pdf/
+│   │   ├── estates/             # data/ db/ pdf/ apportion/ ageing/
+│   │   │                        # forecast/ billing/
+│   │   └── waste/               # data/ db/ pdf/
+│   ├── migrations/
+│   │   ├── platform/            # 000001+  (willcoll_platform)
+│   │   ├── rentals/             # 000001+  (willcoll_rentals; mapping
+│   │   │                        # note from old 000001-000044)
+│   │   ├── estates/             # 000001+  (willcoll_estates)
+│   │   └── waste/               # 000001+  (willcoll_waste)
+│   ├── configs/{platform,rentals,estates,waste}/config.example.env
+│   │                            # product APIs: PLATFORM_DB_DSN + DB_DSN
+│   ├── api/{platform,rentals,estates,waste}/openapi.yaml
+│   ├── test/{shared,platform,rentals,estates,waste}/   # integration
+│   ├── build/Dockerfile         # ARG SERVICE=platform-api|rentals-api|
+│   │                            # estates-api|waste-api
+│   ├── scripts/                 # generate_sqlc.sh (all 4), test_
+│   │                            # integration.sh (4 throwaway DBs),
+│   │                            # db_roles.sql (roles per DB),
+│   │                            # backup_before_split.sh
+│   ├── pkg/moneyfmt/
+│   ├── go.mod  sqlc.yaml (4 entries)  .golangci.yml
+│   └── Makefile                 # run/<svc>, build/<svc>, test/<svc>,
+│                                # db/migrate/<db>, sqlc/generate, audit
+│
+├── frontend/                    # ONE pnpm workspace
+│   ├── pnpm-workspace.yaml  package.json
+│   ├── layers/base/             # shared Nuxt layer: design system (ui/),
+│   │                            # LedgerTable, SpreadsheetTable,
+│   │                            # OtpChallenge, PayIntentForm, AppShell +
+│   │                            # product switcher, useApi, useCurrency,
+│   │                            # usePeriod, useSubmit, useToast,
+│   │                            # useSession, useModules, guards
+│   ├── platform/                # app.willcoll.co.ke — auth, account,
+│   │                            # staff, modules, billing, SMS wallet,
+│   │                            # audit, admin
+│   ├── rentals/                 # rentals.willcoll.co.ke (+ /pay)
+│   ├── estates/                 # estates.willcoll.co.ke (+ /pay, /portal)
+│   └── waste/                   # waste.willcoll.co.ke (+ /pay)
+│       (each app: app/ public/ tests/ nuxt.config.ts extends ../layers/
+│        base, Dockerfile, .env.example)
+│
+├── deploy/
+│   ├── caddy/                   # Caddyfile (all hosts) + compose
+│   ├── postgres/                # compose + init.sql: 4 databases,
+│   │                            # app/admin role per database
+│   ├── platform/  rentals/  estates/  waste/
+│   │                            # docker-compose.{staging,production}.yml
+│   │                            # project willcoll-<svc>-<env>: api + web
+│   └── README.md                # server layout, manual infra steps
+│
+├── docs/
+│   ├── system-design.txt  project-structure.txt  build-phases.txt
+│   ├── adr/                     # 0001-0005 + 0006-platform-database-split
+│   │                            # + 0007-platform-api-and-shared-session
+│   ├── platform/erd.dbml
+│   ├── rentals/features-functionalities.txt
+│   ├── estates/estates-scope.txt  service-charge-design.txt
+│   ├── waste/waste-scope.txt
+│   └── shared/design-tokens.txt  design-inspo.png  product-roadmap.txt
+│
+├── examples/payhero-webhook-payloads/
+├── .gitattributes  .gitignore  CLAUDE.md  README.md
+
+
+================================================================================
+C. CURRENT PATH -> TARGET PATH
+================================================================================
+  backend/cmd/rentals-api (auth, sessions,
+    tokens, managers, account, billing,
+    admin, admin_plans, access,
+    subscription webhook)             -> backend/cmd/platform-api   (Phase 3)
+  backend/cmd/api                     -> backend/cmd/rentals-api    (Phase 2,
+                                         DONE)
+  internal/rentals/data {admins,
+    managers, tokens, billing,
+    admin_plans, access}              -> internal/platform/data     (Phase 3)
+  internal/rentals/db query {admins,
+    managers, tokens, billing,
+    admin_plans, admin_metrics}.sql   -> internal/platform/db/query (Phase 3)
+  internal/rentals/pdf/
+    subscription_invoice.go           -> internal/platform/pdf      (Phase 3)
+  cmd/api paytoken.go HMAC/OTP        -> internal/shared/auth       (6-pre)
+  internal/rentals/db store.go tx
+    orchestration                     -> internal/shared/ledgerkit  (6-pre)
+  backend/migrations (platform-owned
+    tables)                           -> migrations/platform        (Phase 3)
+  backend/migrations (rest)           -> migrations/rentals         (Phase 3)
+  backend/configs/*.env               -> configs/{platform,rentals} (Phase 3)
+  backend/Caddyfile                   -> deploy/caddy/Caddyfile     (Phase 4)
+  backend/docs/adr, erd.dbml          -> docs/adr, docs/platform    (Phase 0)
+  backend/docs/*.txt                  -> deleted                    (Phase 0)
+  root features-functionalities.txt   -> docs/rentals/              (Phase 0)
+  root design-tokens.txt, png         -> docs/shared/               (Phase 0)
+  frontend/rentals/app/components/ui,
+    composables, shared components    -> frontend/layers/base       (Phase 3)
+  frontend/rentals pages auth,
+    account, billing, admin           -> frontend/platform          (Phase 3)
+  (new)                               -> frontend/waste, internal/waste,
+                                         cmd/waste-api              (Phase 7)
+  .github/workflows empty stubs       -> deleted (Phase 0), rebuilt (Phase 4)
+
+
+================================================================================
+D. RULES THE STRUCTURE ENFORCES
+================================================================================
+  - internal/shared imports no product or platform package (depguard +
+    test). internal/platform imports shared only. Products import shared
+    and platform read helpers, never each other.
+  - One sqlc package per database; a query for one database cannot
+    compile against another's tables.
+  - Each frontend app talks only to platform-api and its own product API.
+  - A change under internal/shared or frontend/layers/base triggers the
+    tests (and deploys) of every service that depends on it.
+================================================================================

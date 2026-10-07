@@ -3,8 +3,10 @@
 // PLACE (the two documents the product digitises), three months of billing
 // history, and every kind of payment the reconciliation engine handles.
 //
-// It writes ONLY through the service layer (internal/data), the same code the
-// API runs, so ledgers, balances, receipts and reports are consistent by
+// It writes ONLY through the service layers (internal/rentals/data for the
+// firm's portfolio and ledgers, internal/platform/data for its identity,
+// plans, trial and subscription - build-phases.txt 3i-b, rentals has no
+// identity of its own), the same code the APIs run, so ledgers, balances, receipts and reports are consistent by
 // construction, not hand-inserted. Run it with `make db/seed`. It refuses to
 // run twice; `make db/seed ARGS=-reset` removes the demo firm first.
 package main
@@ -12,6 +14,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -20,7 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codercollo/willcoll/backend/internal/data"
+	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
+	platformdb "github.com/codercollo/willcoll/backend/internal/platform/db"
+	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/google/uuid"
@@ -34,7 +39,7 @@ const (
 )
 
 func main() {
-	reset := flag.Bool("reset", false, "remove the demo firm and everything under it first (needs MIGRATE_DSN)")
+	reset := flag.Bool("reset", false, "remove the demo firm and everything under it first (needs MIGRATE_DSN and PLATFORM_MIGRATE_DSN)")
 	flag.Parse()
 
 	appDSN := os.Getenv("DB_DSN")
@@ -49,22 +54,32 @@ func main() {
 		log.Fatal("set DB_ADMIN_DSN, or DB_ADMIN_PASSWORD to derive it from DB_DSN")
 	}
 
-	app, admin := mustOpen(appDSN), mustOpen(adminDSN)
-	defer app.Close()
-	defer admin.Close()
+	// willcoll_platform's willcoll_platform_admin DSN (same variable
+	// devtools uses): the demo firm's identity, plans, trial and
+	// subscription live there.
+	platformDSN := os.Getenv("PLATFORM_DSN")
+	if platformDSN == "" {
+		log.Fatal("PLATFORM_DSN is not set: willcoll_platform's willcoll_platform_admin DSN (the firm's identity lives there)")
+	}
+
+	app, admin, platformDB := mustOpen(appDSN), mustOpen(adminDSN), mustOpen(platformDSN)
+	defer func() { _ = app.Close() }()
+	defer func() { _ = admin.Close() }()
+	defer func() { _ = platformDB.Close() }()
 	models := data.NewModels(app, admin, 30*time.Second)
+	platformModels := platformdata.NewModelsFromStore(platformdb.NewStore(platformDB), 30*time.Second)
 	ctx := context.Background()
 
 	if *reset {
 		resetDemo(ctx)
 	}
-	if exists, err := demoExists(ctx, app); err != nil {
+	if exists, err := demoExists(ctx, platformDB); err != nil {
 		log.Fatal(err)
 	} else if exists {
 		log.Fatalf("the demo firm %s already exists: run `make db/seed ARGS=-reset` to replace it", demoEmail)
 	}
 
-	s := newSeeder(ctx, models)
+	s := newSeeder(ctx, models, platformModels)
 	s.run()
 	backdateLedgerTimestamps(ctx, s.tenant)
 	s.summary()
@@ -81,7 +96,7 @@ func main() {
 // month. Run once after seeding, as the owner role (MIGRATE_DSN, same as
 // resetDemo): the ledger tables' append-only REVOKE blocks UPDATE for both
 // willcoll_app and willcoll_admin, and only the owner can write here.
-// Nothing in cmd/api or internal/data reads or writes through this path,
+// Nothing in cmd/rentals-api or internal/data reads or writes through this path,
 // so production behavior is unaffected.
 func backdateLedgerTimestamps(ctx context.Context, tenantID uuid.UUID) {
 	dsn := os.Getenv("MIGRATE_DSN")
@@ -89,7 +104,7 @@ func backdateLedgerTimestamps(ctx context.Context, tenantID uuid.UUID) {
 		log.Fatal("backdating demo timestamps needs MIGRATE_DSN (the owner role)")
 	}
 	owner := mustOpen(dsn)
-	defer owner.Close()
+	defer func() { _ = owner.Close() }()
 
 	stmts := []string{
 		// Charge-sourced entries: the charge's own period, offset a day in
@@ -141,30 +156,89 @@ func deriveAdminDSN(appDSN, adminPassword string) string {
 	return u.String()
 }
 
-// demoExists checks for the demo firm by email. The managers table is not under
-// row-level security, so the API role can read it directly.
-func demoExists(ctx context.Context, db *sql.DB) (bool, error) {
+// demoExists checks for the demo firm by email in willcoll_platform, where
+// managers live. The managers table is not under row-level security.
+func demoExists(ctx context.Context, platformDB *sql.DB) (bool, error) {
 	var n int
-	err := db.QueryRowContext(ctx, `SELECT count(*) FROM managers WHERE email = $1`, demoEmail).Scan(&n)
+	err := platformDB.QueryRowContext(ctx, `SELECT count(*) FROM managers WHERE email = $1`, demoEmail).Scan(&n)
 	return n > 0, err
 }
 
-// resetDemo deletes the demo firm as the owner role: the ledger tables are
-// append-only for the API role, and removing a firm cascades through them.
+// resetDemo deletes the demo firm as the owner roles. Identity lives in
+// willcoll_platform (PLATFORM_MIGRATE_DSN); the firm's portfolio and ledgers
+// live in the Rentals database (MIGRATE_DSN) with no foreign key back to the
+// manager any more (migration 000045), so nothing cascades there: every
+// tenant-keyed row is removed explicitly, with foreign-key triggers off
+// (session_replication_role = replica, which needs a superuser owner) since
+// the ledger tables are append-only for the API roles.
 func resetDemo(ctx context.Context) {
-	dsn := os.Getenv("MIGRATE_DSN")
-	if dsn == "" {
-		log.Fatal("-reset needs MIGRATE_DSN (the owner role)")
+	rentalsDSN, platformOwnerDSN := os.Getenv("MIGRATE_DSN"), os.Getenv("PLATFORM_MIGRATE_DSN")
+	if rentalsDSN == "" || platformOwnerDSN == "" {
+		log.Fatal("-reset needs MIGRATE_DSN and PLATFORM_MIGRATE_DSN (the owner roles of willcoll and willcoll_platform)")
 	}
-	db := mustOpen(dsn)
-	defer db.Close()
-	res, err := db.ExecContext(ctx, `DELETE FROM managers WHERE email = $1`, demoEmail)
+
+	platformOwner := mustOpen(platformOwnerDSN)
+	defer func() { _ = platformOwner.Close() }()
+	var id uuid.UUID
+	err := platformOwner.QueryRowContext(ctx, `SELECT id FROM managers WHERE email = $1`, demoEmail).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		fmt.Println("reset: no demo firm to remove")
+		return
+	}
+	if err != nil {
+		log.Fatalf("reset failed: %v", err)
+	}
+
+	rentals := mustOpen(rentalsDSN)
+	defer func() { _ = rentals.Close() }()
+	conn, err := rentals.Conn(ctx)
+	if err != nil {
+		log.Fatalf("reset failed: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET session_replication_role = replica`); err != nil {
+		log.Fatalf("reset needs MIGRATE_DSN to be a superuser (to disable foreign-key triggers): %v", err)
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT table_name FROM information_schema.columns
+		WHERE table_schema = 'public' AND column_name = 'tenant_id'
+		  AND table_name IN (SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE')`)
+	if err != nil {
+		log.Fatalf("reset failed: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var tables []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			log.Fatalf("reset failed: %v", err)
+		}
+		tables = append(tables, t)
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatalf("reset failed: %v", err)
+	}
+	for _, t := range tables {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM `+quoteIdent(t)+` WHERE tenant_id = $1`, id); err != nil {
+			log.Fatalf("reset failed deleting from %s: %v", t, err)
+		}
+	}
+
+	// payment_inbox rows reference the firm's channels (no cascade), so drop
+	// them first or the manager delete below would fail on that foreign key.
+	if _, err := platformOwner.ExecContext(ctx, `DELETE FROM payment_inbox WHERE channel_id IN
+		(SELECT channel_id FROM payment_channels WHERE manager_id = $1)`, id); err != nil {
+		log.Fatalf("reset failed clearing payment_inbox: %v", err)
+	}
+	res, err := platformOwner.ExecContext(ctx, `DELETE FROM managers WHERE id = $1`, id)
 	if err != nil {
 		log.Fatalf("reset failed: %v", err)
 	}
 	n, _ := res.RowsAffected()
-	fmt.Printf("reset: removed %d demo firm(s)\n", n)
+	fmt.Printf("reset: removed %d demo firm(s) (%d rentals tables cleared)` + chr(92) + `n", n, len(tables))
 }
+
+// quoteIdent quotes a table name read from information_schema.
+func quoteIdent(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
 
 // ---------------------------------------------------------------------------
 
@@ -173,13 +247,13 @@ var eat = time.FixedZone("EAT", 3*3600)
 type seeder struct {
 	ctx    context.Context
 	m      data.Models
+	p      platformdata.Models
 	rng    *lcg
 	tenant uuid.UUID
 
 	receipts int
 	book     int
 	props    []*property
-	report   []string
 }
 
 // lcg is a tiny deterministic generator, so every seed produces the same firm.
@@ -188,8 +262,8 @@ type lcg struct{ s uint64 }
 func (r *lcg) next() uint64 { r.s = r.s*6364136223846793005 + 1442695040888963407; return r.s >> 33 }
 func (r *lcg) n(k int) int  { return int(r.next() % uint64(k)) }
 
-func newSeeder(ctx context.Context, m data.Models) *seeder {
-	return &seeder{ctx: ctx, m: m, rng: &lcg{s: 20260926}}
+func newSeeder(ctx context.Context, m data.Models, p platformdata.Models) *seeder {
+	return &seeder{ctx: ctx, m: m, p: p, rng: &lcg{s: 20260926}}
 }
 
 func (s *seeder) must(err error, what string) {
@@ -260,7 +334,7 @@ type property struct {
 func ptr(s string) *string { return &s }
 
 func (s *seeder) run() {
-	cur := moneyfmt.NewPeriod(time.Now())
+	cur := moneyfmt.NewPeriod(moneyfmt.Now())
 	periods := []moneyfmt.Period{cur.Prev().Prev(), cur.Prev(), cur}
 
 	s.setupPlatform()
@@ -277,26 +351,62 @@ func (s *seeder) run() {
 	}
 	s.confirmHistory()
 	s.reviewQueue(runda, cur)
+	s.reportUsage()
+	s.provisionAdmin()
+}
+
+// reportUsage writes the module_usage row the Rentals API's own usage
+// reporter would have written had these units been created through it (the
+// seeder goes through the data layer directly), so per-unit pricing and the
+// Super Admin's firm page have a count to read from the first request.
+func (s *seeder) reportUsage() {
+	units := 0
+	for _, pr := range s.props {
+		units += len(pr.units)
+	}
+	_, err := s.p.Usage.Upsert(s.ctx, s.tenant, platformdata.ProductRentals, int32(units))
+	s.must(err, "report rentals module usage")
+}
+
+// provisionAdmin creates (or re-keys) the Super Admin from ADMIN_NAME /
+// ADMIN_EMAIL / ADMIN_PASSWORD, exactly as platform-api does at startup, so
+// the admin login works before platform-api has ever run. Skipped, with a
+// note, when ADMIN_EMAIL is unset.
+func (s *seeder) provisionAdmin() {
+	email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD")
+	if email == "" || password == "" {
+		fmt.Println("ADMIN_EMAIL / ADMIN_PASSWORD not set: no Super Admin provisioned")
+		return
+	}
+	name := os.Getenv("ADMIN_NAME")
+	if name == "" {
+		name = "Willcoll Admin"
+	}
+	_, err := s.p.Admins.Provision(s.ctx, name, email, password)
+	s.must(err, "provision the Super Admin")
 }
 
 // ---------------------------------------------------------------------------
 // Platform and firm
 
 func (s *seeder) setupPlatform() {
-	existing, err := s.m.Platform.ListPlans(s.ctx)
+	existing, err := s.p.Plans.List(s.ctx)
 	s.must(err, "list plans")
 	have := map[string]bool{}
 	for _, p := range existing {
-		have[p.Name] = true
+		if p.Product == platformdata.ProductRentals {
+			have[p.Name] = true
+		}
 	}
-	for _, in := range []data.PlanInput{
-		{Name: "Starter", Price: money(1500), BillingInterval: "monthly", UnitCap: i32(20), PricingType: data.PricingFlat, SortOrder: 10},
-		{Name: "Growth", Price: money(3500), BillingInterval: "monthly", UnitCap: i32(60), PricingType: data.PricingFlat, SortOrder: 20},
-		{Name: "Business", Price: money(7500), BillingInterval: "monthly", UnitCap: i32(150), PricingType: data.PricingFlat, SortOrder: 30},
-		{Name: "Enterprise", BillingInterval: "monthly", PricingType: data.PricingPerUnit, PerUnitPrice: moneyPtr(45), MinPrice: moneyPtr(7500), SortOrder: 40},
+	for _, in := range []platformdata.PlanInput{
+		{Name: "Starter", Price: money(1500), UnitCap: i32(20), PricingType: platformdata.PricingFlat, SortOrder: 10},
+		{Name: "Growth", Price: money(3500), UnitCap: i32(60), PricingType: platformdata.PricingFlat, SortOrder: 20},
+		{Name: "Business", Price: money(7500), UnitCap: i32(150), PricingType: platformdata.PricingFlat, SortOrder: 30},
+		{Name: "Enterprise", PricingType: platformdata.PricingPerUnit, PerUnitPrice: moneyPtr(45), MinPrice: moneyPtr(7500), SortOrder: 40},
 	} {
+		in.Product, in.BillingInterval, in.IncludedSeats, in.Features = platformdata.ProductRentals, "monthly", 1, []string{}
 		if !have[in.Name] {
-			_, err := s.m.Platform.CreatePlan(s.ctx, in, false)
+			_, err := s.p.Plans.Create(s.ctx, in, false)
 			s.must(err, "create plan "+in.Name)
 		}
 	}
@@ -305,31 +415,39 @@ func (s *seeder) setupPlatform() {
 func i32(n int32) *int32 { return &n }
 
 func (s *seeder) setupFirm() {
-	mgr := &data.Manager{
+	mgr := &platformdata.Manager{
 		FirmName: "Kimani & Associates Property Managers", Username: demoUsername,
-		Email: demoEmail, Phone: "+254722000100", Status: data.ManagerStatusActive,
+		Email: demoEmail, Phone: "+254722000100", Status: platformdata.ManagerStatusActive,
 	}
 	s.must(mgr.Password.Set(demoPassword), "hash password")
-	s.must(s.m.Managers.Insert(s.ctx, mgr), "create manager")
+	s.must(s.p.Managers.Insert(s.ctx, mgr), "create manager")
 	now := time.Now()
 	mgr.ActivatedAt = &now
-	s.must(s.m.Managers.Update(s.ctx, mgr), "activate manager")
+	s.must(s.p.Managers.Update(s.ctx, mgr), "activate manager")
 	s.tenant = mgr.ID
 
-	// An active Professional subscription, paid the way a real one is: an
+	// The Rentals module, trialing from activation like a real signup.
+	_, err := s.p.Modules.StartTrial(s.ctx, s.tenant, platformdata.ProductRentals, platformdata.DefaultTrialDays)
+	s.must(err, "start rentals trial")
+
+	// An active Growth subscription, paid the way a real one is: an
 	// invoice, then the PayHero callback settling it.
-	plans, err := s.m.Platform.ListPlans(s.ctx)
+	plans, err := s.p.Plans.List(s.ctx)
 	s.must(err, "list plans")
-	var pro data.Plan
+	var growth *platformdata.Plan
 	for _, p := range plans {
-		if p.Name == "Professional" {
-			pro = p.Plan
+		if p.Product == platformdata.ProductRentals && p.Name == "Growth" && !p.Archived {
+			plan := p.Plan
+			growth = &plan
 		}
 	}
-	ren, err := s.m.Billing.StartRenewal(s.ctx, s.tenant, &pro.ID)
+	if growth == nil {
+		log.Fatal("seeding failed at plan lookup: no rentals plan named Growth")
+	}
+	ren, err := s.p.Billing.StartRenewal(s.ctx, s.tenant, platformdata.ProductRentals, &growth.ID)
 	s.must(err, "start subscription")
-	_, err = s.m.Billing.ProcessSubscriptionPayment(s.ctx, &payhero.SubscriptionsWebhookPayload{
-		Success: true, Reference: ren.Invoice.ID.String(), MpesaReceipt: s.mpesa(), Amount: pro.Price.String(),
+	_, err = s.p.Billing.ProcessSubscriptionPayment(s.ctx, &payhero.SubscriptionsWebhookPayload{
+		Success: true, Reference: ren.Invoice.ID.String(), MpesaReceipt: s.mpesa(), Amount: growth.Price.String(),
 	})
 	s.must(err, "settle subscription")
 }
@@ -352,6 +470,7 @@ func (s *seeder) buildRunda(l *data.Landlord) *property {
 		GarbageEnabled: true, GarbageFee: money(300), WaterRatePerUnit: money(150), ManagementFeePercent: 5,
 		PayheroChannelID: ptr("PH-CH-RUNDA-DEMO")}
 	s.must(s.m.Properties.Insert(s.ctx, s.tenant, p), "property runda")
+	s.claimChannel(p)
 	s.must(s.m.Properties.SetPrintTheme(s.ctx, p, &data.PrintTheme{
 		HeaderText: "THE RUNDA'S ARCADE", AddressLines: []string{"P.O. Box 12345-00621, Nairobi"},
 		Phone: "+254733100200", AccentColor: "#1F4E79"}), "runda theme")
@@ -376,6 +495,7 @@ func (s *seeder) buildKiwi(l *data.Landlord) *property {
 	p := &data.Property{LandlordID: l.ID, Name: "KIWI PLACE", Location: "Kiwi Road, Kasarani, Nairobi", Slug: "kiwi-place",
 		GarbageEnabled: false, WaterRatePerUnit: money(120), ManagementFeePercent: 5, PayheroChannelID: ptr("PH-CH-KIWI-DEMO")}
 	s.must(s.m.Properties.Insert(s.ctx, s.tenant, p), "property kiwi")
+	s.claimChannel(p)
 	s.must(s.m.Properties.SetPrintTheme(s.ctx, p, &data.PrintTheme{
 		HeaderText: "KIWI PLACE", AddressLines: []string{"P.O. Box 4471-00100, Nairobi"}, Phone: "+254711300400", AccentColor: "#8B1E3F"}), "kiwi theme")
 
@@ -391,9 +511,27 @@ func (s *seeder) buildKiwi(l *data.Landlord) *property {
 	return s.buildProperty(p, "KP", specs, []string{"B4"}, false)
 }
 
+// claimChannel claims the property's PayHero channel in
+// willcoll_platform.payment_channels exactly as rentals-api does when a
+// channel is typed onto a property (ChannelModel.Claim, build-phases.txt
+// 3i-d): without the claim, every collections webhook for the channel fails
+// payment_inbox's foreign key and falls back to local-only posting.
+// PAYHERO_CALLBACK_BASE_URL (optional) is the same variable rentals-api uses.
+func (s *seeder) claimChannel(p *data.Property) {
+	if p.PayheroChannelID == nil || *p.PayheroChannelID == "" {
+		return
+	}
+	callback := ""
+	if base := strings.TrimRight(strings.TrimSpace(os.Getenv("PAYHERO_CALLBACK_BASE_URL")), "/"); base != "" {
+		callback = base + "/v1/webhooks/payhero/collections"
+	}
+	_, err := s.p.Channels.Claim(s.ctx, s.tenant, platformdata.ProductRentals, *p.PayheroChannelID, p.ID, callback)
+	s.must(err, "claim payment channel "+*p.PayheroChannelID)
+}
+
 func (s *seeder) buildProperty(p *data.Property, meterPrefix string, specs []tenantSpec, vacant []string, garbage bool) *property {
 	pr := &property{p: p, slug: p.Slug, channel: *p.PayheroChannelID, vacant: vacant, garbage: garbage}
-	cur := moneyfmt.NewPeriod(time.Now())
+	cur := moneyfmt.NewPeriod(moneyfmt.Now())
 
 	for i, sp := range specs {
 		u := &data.Unit{PropertyID: p.ID, UnitCode: sp.unit, MeterNumber: ptr(fmt.Sprintf("%s-W-%03d", meterPrefix, i+1)), Status: data.UnitStatusVacant}
@@ -543,11 +681,11 @@ func (s *seeder) payMonth(pr *property, u *unitState, p moneyfmt.Period, index i
 		}
 
 	case "advance": // pays three months up front in August: by September he is in credit
-		switch {
-		case index == 0:
+		switch index {
+		case 0:
 			s.organic(pr, u, at(p, 4, 9), rent, spec.phone, spec.name)
 			s.byIntent(pr, u, at(p, 5, 12), data.LedgerTypeWater, data.LedgerTypeGarbage)
-		case index == 1:
+		case 1:
 			s.organic(pr, u, at(p, 4, 9), money(spec.rent*3), spec.phone, spec.name)
 			s.byIntent(pr, u, at(p, 5, 12), data.LedgerTypeWater, data.LedgerTypeGarbage)
 		}
@@ -633,7 +771,7 @@ func (s *seeder) reverseLatest(u *unitState, ledger, reason string) {
 func (s *seeder) confirmHistory() {
 	queue, _, err := s.m.Payments.ListForReview(s.ctx, s.tenant, data.Filters{Page: 1, PageSize: 100, Sort: "-received_at", SortSafelist: []string{"-received_at"}})
 	s.must(err, "list review queue")
-	start := moneyfmt.NewPeriod(time.Now()).FirstDay()
+	start := moneyfmt.NewPeriod(moneyfmt.Now()).FirstDay()
 	for _, p := range queue {
 		if p.AutoAppliedUnconfirmed && p.ReceivedAt.Before(start) {
 			s.must(s.m.Payments.Confirm(s.ctx, s.tenant, p.ID), "confirm "+p.MpesaReceipt)
@@ -671,7 +809,7 @@ func (s *seeder) reviewQueue(pr *property, cur moneyfmt.Period) {
 // ---------------------------------------------------------------------------
 
 func (s *seeder) summary() {
-	cur := moneyfmt.NewPeriod(time.Now())
+	cur := moneyfmt.NewPeriod(moneyfmt.Now())
 	fmt.Println()
 	fmt.Println("================================================================")
 	fmt.Println(" Willcoll demo data is ready")

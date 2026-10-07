@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { ref } from 'vue'
-import { moneyRatio, sumMoney } from '~/utils/money'
+import { moneyRatio, sumMoney } from '#base/utils/money'
 import { slugify } from '~/utils/slug'
-import { parseApiError } from '~/utils/apiError'
+import { parseApiError } from '#base/utils/apiError'
 
 describe('money helpers', () => {
   it('sums exactly with no float drift', () => {
@@ -108,7 +108,7 @@ describe('units + properties stores', () => {
   })
 })
 
-import { cmpMoney, fromCents, subMoney } from '~/utils/money'
+import { cmpMoney, fromCents, subMoney } from '#base/utils/money'
 
 describe('exact money arithmetic for the allocation split', () => {
   it('subtracts without float drift', () => {

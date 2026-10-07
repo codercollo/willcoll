@@ -2,7 +2,7 @@
 import type { Unit } from '~/types/api'
 import type { LedgerType } from '~/types/billing'
 import type { ReviewPayment } from '~/types/payments'
-import { cmpMoney, isValidMoneyInput, subMoney, sumMoney } from '~/utils/money'
+import { cmpMoney, isValidMoneyInput, subMoney, sumMoney } from '#base/utils/money'
 
 // Place an unallocated payment on one unit, split across its ledgers. The
 // split must add up to EXACTLY the payment (the API refuses anything else).

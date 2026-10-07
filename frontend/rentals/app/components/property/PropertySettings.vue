@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Property, PrintTheme } from '~/types/api'
-import { isValidMoneyInput } from '~/utils/money'
+import { isValidMoneyInput } from '#base/utils/money'
 
 const props = defineProps<{ property: Property }>()
 const emit = defineEmits<{ reload: [] }>()
@@ -166,7 +166,7 @@ async function archive() {
             <input id="t-accent" v-model="t.accent_color" type="color" class="h-11 w-24 cursor-pointer rounded-sm border border-border-default bg-white p-1">
           </UiField>
           <UiField label="Reconnection note" for="t-note" optional :error="theme.fields.value.reconnection_note"><UiInput id="t-note" v-model="t.reconnection_note" /></UiField>
-          <div class="flex gap-3">
+          <div class="flex flex-wrap gap-3">
             <UiButton type="submit" :loading="theme.loading.value" :disabled="!!themeError">Save theme</UiButton>
             <UiButton v-if="property.print_theme" variant="secondary" @click="clearTheme">Clear theme</UiButton>
           </div>

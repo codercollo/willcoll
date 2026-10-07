@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ApiError } from '~/utils/apiError'
+import { ApiError } from '#base/utils/apiError'
 import type { ImportRowError } from '~/types/api'
 
 const open = defineModel<boolean>({ default: false })
