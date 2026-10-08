@@ -1,0 +1,11 @@
+# Only matters if a build ever uses the repo root as its context. Prefer
+# backend/ or frontend/ as the context (each has its own .dockerignore).
+**/.env
+**/.env.*
+!**/.env.example
+**/*.env
+**/node_modules
+**/.nuxt
+**/.output
+backend/bin
+.git

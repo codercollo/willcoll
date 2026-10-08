@@ -1,0 +1,14 @@
+# Build context is frontend/ (the pnpm workspace root).
+**/node_modules
+**/.nuxt
+**/.output
+**/.nitro
+**/.cache
+**/dist
+**/coverage
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/*.tsbuildinfo
+.git

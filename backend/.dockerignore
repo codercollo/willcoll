@@ -1,0 +1,13 @@
+# Build context is backend/. Nothing secret, generated or vendored goes in.
+.env
+.env.*
+!.env.example
+*.env
+bin/
+tmp/
+*.test
+*.out
+*.exe
+coverage*
+.git
+.github

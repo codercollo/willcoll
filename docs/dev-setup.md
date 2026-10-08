@@ -209,6 +209,28 @@ DEV_PLATFORM_DB=willcoll_platform
 `make dev/up` points both APIs at the local SMS/PayHero stand-ins and blanks `SMTP_HOST` **for those
 processes only**, whatever your `.env` says, so nothing real is called or sent.
 
+## Race detector: `make test/race`
+
+`go test -race` needs cgo, and a bare Windows machine has no C compiler, so plain `make test`
+needs `RACE=` here and runs without the detector. **`make test/race` (from `backend/`) is the
+only way to get `-race` on this machine.** It needs Docker Desktop running and does this:
+
+- runs `go test -race -vet=off ./...` inside `golang:<version in go.mod>` (the version is read
+  from `go.mod`, so it follows the project);
+- streams the source in with `tar` instead of bind-mounting it, leaving out `backend/.env` and
+  `bin/`, and passes no environment variables, so the container can never see your real DSNs
+  or passwords;
+- keeps the Go module and build caches in the named volumes `willcoll-gomod` and
+  `willcoll-gobuild` (the first run downloads modules; later runs are quick).
+
+Database integration tests are skipped here (no Postgres in the container); run
+`make test/integration` for those. CI runs the same race tests natively on Linux.
+
+A stray `backend/.env` can also override DSNs when you run other `make` targets; `make
+NO_DOTENV=1 <target>` ignores it. Images and containers never read it: every `.dockerignore`
+excludes `.env*`, and Compose files must name their own env file (`deploy/local/.env`) with
+`env_file`.
+
 ## Troubleshooting
 
 - **`cannot connect with MIGRATE_DSN`**: Postgres is not running, or the user/password is wrong.

@@ -1,7 +1,11 @@
+# A stray .env silently overrides DSNs and passwords. NO_DOTENV=1 ignores it:
+#   make NO_DOTENV=1 test/integration
+ifndef NO_DOTENV
 -include .env
 export
+endif
 
-.PHONY: help dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero
+.PHONY: help dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/race test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero
 
 help:
 	@echo "usage: make [target]"
@@ -13,6 +17,7 @@ help:
 	@echo "  build/rentals-api      build a static binary with the version embedded"
 	@echo "  run/api, build/api     deprecated aliases for the two targets above"
 	@echo "  test                   run the tests with the race detector (RACE= to turn it off)"
+	@echo "  test/race              go test -race ./... inside golang:<go.mod version> via Docker, no backend/.env visible (the way to get -race on Windows)"
 	@echo "  audit                  format, vet, staticcheck, golangci-lint and test all code"
 	@echo "  test/integration       run every test, incl. Postgres integration + concurrency, on throwaway rentals + platform databases (INTEGRATION=1: a missing DSN fails, not skips)"
 	@echo "  rehearse/cutover       rehearse the whole platform-split cutover end to end on throwaway databases (ARGS=--with-gate to run the gate first)"
@@ -78,6 +83,20 @@ RACE ?= -race
 
 test:
 	go test ${RACE} -vet=off ./...
+
+# `go test -race` in a clean Linux container: the race detector needs cgo,
+# which a bare Windows machine lacks. The source is streamed in with tar, so
+# nothing is bind-mounted and backend/.env (and bin/) never reach the
+# container, and no host environment variable is passed. Module and build
+# caches live in named volumes. The Go version is read from go.mod.
+# MSYS_NO_PATHCONV stops Git Bash rewriting /src and the volume paths.
+go_version = $(shell awk '/^go /{print $$2}' go.mod)
+
+test/race:
+	tar --exclude=./.env --exclude=./bin -cf - . | MSYS_NO_PATHCONV=1 docker run --rm -i \
+		-v willcoll-gomod:/go/pkg/mod -v willcoll-gobuild:/root/.cache/go-build \
+		-e GOFLAGS=-buildvcs=false -w /src golang:$(go_version) \
+		sh -c 'tar -xf - && go test -race -vet=off ./...'
 
 # Everything CI runs before a merge. staticcheck and golangci-lint are the
 # only tools not installed by `go`; the first two lines say how to get them.

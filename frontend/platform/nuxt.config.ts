@@ -16,15 +16,13 @@ export default defineNuxtConfig({
   // app subdomain receives it.
   ssr: false,
   runtimeConfig: {
+    // Server-only: where the /_platform/v1/** proxy (layers/base server/routes)
+    // sends requests. Read at request time; NUXT_API_PLATFORM_INTERNAL_BASE.
+    apiPlatformInternalBase: "http://localhost:4100",
     public: {
       // Platform is not a product: no per-product billing rewrite, no paywall.
       product: "",
       guard: PLATFORM_GUARD,
-    },
-  },
-  routeRules: {
-    "/_platform/v1/**": {
-      proxy: `${process.env.NUXT_API_PLATFORM_INTERNAL_BASE || "http://localhost:4100"}/v1/**`,
     },
   },
   icon: { serverBundle: "local" },

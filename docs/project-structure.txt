@@ -102,7 +102,7 @@ willcoll/
 │   │   │                        # note from old 000001-000044)
 │   │   ├── estates/             # 000001+  (willcoll_estates)
 │   │   └── waste/               # 000001+  (willcoll_waste)
-│   ├── configs/{platform,rentals,estates,waste}/config.example.env
+│   ├── configs/{platform,rentals,estates,waste}/config.env.example
 │   │                            # product APIs: PLATFORM_DB_DSN + DB_DSN
 │   ├── api/{platform,rentals,estates,waste}/openapi.yaml
 │   ├── test/{shared,platform,rentals,estates,waste}/   # integration

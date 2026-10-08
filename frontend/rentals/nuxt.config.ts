@@ -18,17 +18,17 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // Server-only: the address the Nuxt server itself uses to reach the API
     // (never sent to the browser). Overridden by NUXT_API_INTERNAL_BASE.
-    // Used both by the /v1/** proxy below and by server/routes/q/[token].get.ts,
+    // Used both by the /v1/** proxy (server/routes/v1) and by server/routes/q/[token].get.ts,
     // which must NOT follow the API's redirect server-side (see that file).
     apiInternalBase: "http://localhost:4000",
     // Same for platform-api (identity, account, billing, admin oversight),
-    // behind the /_platform/v1/** proxy below. NUXT_API_PLATFORM_INTERNAL_BASE.
+    // behind the /_platform/v1/** proxy (layers/base server/routes). NUXT_API_PLATFORM_INTERNAL_BASE.
     apiPlatformInternalBase: "http://localhost:4100",
     public: {
       // Empty = same origin (proxied below). Overridden by NUXT_PUBLIC_API_BASE.
       apiBase: "",
       // Where the browser reaches platform-api. Default: the same-origin
-      // /_platform proxy below, so the platform session cookie is first-party
+      // /_platform proxy, so the platform session cookie is first-party
       // to this app and rentals-api (proxied the same way) receives it.
       // Overridden by NUXT_PUBLIC_API_PLATFORM_BASE (e.g. https://api.willcoll.co.ke).
       apiPlatformBase: "/_platform",
@@ -37,14 +37,6 @@ export default defineNuxtConfig({
       product: "rentals",
       // The sign-in guard (layers/base utils/routeGuard.ts), Rentals' paths.
       guard: RENTALS_GUARD,
-    },
-  },
-  routeRules: {
-    "/v1/**": {
-      proxy: `${process.env.NUXT_API_INTERNAL_BASE || "http://localhost:4000"}/v1/**`,
-    },
-    "/_platform/v1/**": {
-      proxy: `${process.env.NUXT_API_PLATFORM_INTERNAL_BASE || "http://localhost:4100"}/v1/**`,
     },
   },
   icon: { serverBundle: "local" },

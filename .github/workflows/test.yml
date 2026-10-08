@@ -131,6 +131,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # Cheap checks first. Fails if git tracks node_modules/, .nuxt/,
+      # .output/ or a real .env file (only *.env.example templates may be).
+      - name: No build output or .env files are tracked
+        run: sh scripts/check_tracked_files.sh
+
+      # The runner image ships shellcheck. -x follows `. ./lib_*.sh`; the
+      # dialect (-s) comes from each script's shebang.
+      - name: shellcheck scripts
+        run: sh scripts/shellcheck_all.sh
+
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: backend/go.mod

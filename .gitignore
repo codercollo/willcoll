@@ -7,7 +7,6 @@ backend/bin/
 
 # Env / secrets
 *.env
-!backend/configs/config.example.env
 backend/.env
 
 # Frontend

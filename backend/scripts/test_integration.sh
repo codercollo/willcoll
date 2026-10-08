@@ -25,7 +25,7 @@ testdb_init
 SCRATCH=willcoll_verify
 SCRATCH_PLATFORM=willcoll_platform_verify
 
-# shellcheck disable=SC2317 # false positive: cleanup runs from the trap below
+# shellcheck disable=SC2317,SC2329 # false positive: cleanup runs from the trap below
 cleanup() {
     psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${SCRATCH}" >/dev/null 2>&1 || true
     psql "$MIGRATE_DSN" -qc "DROP DATABASE IF EXISTS ${SCRATCH_PLATFORM}" >/dev/null 2>&1 || true

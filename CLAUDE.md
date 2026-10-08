@@ -429,4 +429,4 @@ but the claim in `payment_channels` stays with the original property.
 
 - `backend/.env` was removed from git tracking (kept on disk, now
   git-ignored) — it held local secrets and should never be committed.
-  Real config templates live in `backend/configs/config.example.env`.
+  Real config templates live in `backend/configs/config.env.example`.
