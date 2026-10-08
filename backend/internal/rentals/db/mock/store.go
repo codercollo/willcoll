@@ -1625,6 +1625,96 @@ func (mr *MockStoreMockRecorder) RevokeUnitQRCodesForLease(ctx, arg any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeUnitQRCodesForLease", reflect.TypeOf((*MockStore)(nil).RevokeUnitQRCodesForLease), ctx, arg)
 }
 
+// ScopeHasLandlord mocks base method.
+func (m *MockStore) ScopeHasLandlord(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLandlord", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLandlord indicates an expected call of ScopeHasLandlord.
+func (mr *MockStoreMockRecorder) ScopeHasLandlord(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLandlord", reflect.TypeOf((*MockStore)(nil).ScopeHasLandlord), ctx, id)
+}
+
+// ScopeHasLease mocks base method.
+func (m *MockStore) ScopeHasLease(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLease", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLease indicates an expected call of ScopeHasLease.
+func (mr *MockStoreMockRecorder) ScopeHasLease(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLease", reflect.TypeOf((*MockStore)(nil).ScopeHasLease), ctx, id)
+}
+
+// ScopeHasLedgerEntry mocks base method.
+func (m *MockStore) ScopeHasLedgerEntry(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLedgerEntry", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLedgerEntry indicates an expected call of ScopeHasLedgerEntry.
+func (mr *MockStoreMockRecorder) ScopeHasLedgerEntry(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLedgerEntry", reflect.TypeOf((*MockStore)(nil).ScopeHasLedgerEntry), ctx, id)
+}
+
+// ScopeHasPayment mocks base method.
+func (m *MockStore) ScopeHasPayment(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasPayment", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasPayment indicates an expected call of ScopeHasPayment.
+func (mr *MockStoreMockRecorder) ScopeHasPayment(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasPayment", reflect.TypeOf((*MockStore)(nil).ScopeHasPayment), ctx, id)
+}
+
+// ScopeHasProperty mocks base method.
+func (m *MockStore) ScopeHasProperty(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasProperty", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasProperty indicates an expected call of ScopeHasProperty.
+func (mr *MockStoreMockRecorder) ScopeHasProperty(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasProperty", reflect.TypeOf((*MockStore)(nil).ScopeHasProperty), ctx, id)
+}
+
+// ScopeHasUnit mocks base method.
+func (m *MockStore) ScopeHasUnit(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasUnit", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasUnit indicates an expected call of ScopeHasUnit.
+func (mr *MockStoreMockRecorder) ScopeHasUnit(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasUnit", reflect.TypeOf((*MockStore)(nil).ScopeHasUnit), ctx, id)
+}
+
 // SetLeaseElectricityDeposit mocks base method.
 func (m *MockStore) SetLeaseElectricityDeposit(ctx context.Context, arg sqlc.SetLeaseElectricityDepositParams) error {
 	m.ctrl.T.Helper()

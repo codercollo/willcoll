@@ -83,6 +83,7 @@ type Models struct {
 	PayAccess   PayAccessModel
 	UnitQR      UnitQRModel
 	Onboarding  OnboardingModel
+	Scope       ScopeModel
 }
 
 // NewModels wires the models to their connection pools: conn is the API's
@@ -122,6 +123,7 @@ func newModels(store, adminStore db.Store, timeout time.Duration) Models {
 		PayAccess:   PayAccessModel{Store: store, Timeout: timeout},
 		UnitQR:      UnitQRModel{Store: store, Resolver: adminStore, Timeout: timeout},
 		Onboarding:  OnboardingModel{Store: store, Timeout: timeout},
+		Scope:       ScopeModel{Store: store, Timeout: timeout},
 	}
 }
 

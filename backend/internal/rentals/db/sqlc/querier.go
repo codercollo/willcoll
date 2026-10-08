@@ -81,6 +81,10 @@ type Querier interface {
 	CreatePayOTP(ctx context.Context, arg CreatePayOTPParams) error
 	// CreatePayment is idempotent on mpesa_receipt: a PayHero retry of the
 	// same delivery inserts nothing and returns no row (sql.ErrNoRows).
+	// matched_unit_id is set up front only when the unit is known at insert (a
+	// payment a staff member records against a unit): a property-scoped caller can
+	// only see, and so only insert, a payment that already names an in-scope unit
+	// (migration 000047). The webhook paths leave it NULL and match afterwards.
 	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
 	// CreatePaymentAllocation links a payment to the ledger entry that credited
 	// it. The caller picks the id up front because the credit entry reference_id
@@ -407,6 +411,17 @@ type Querier interface {
 	// RevokeUnitQRCodesForLease retires the lease's live code. Zero rows means it
 	// had none (already revoked, or never generated), which is fine.
 	RevokeUnitQRCodesForLease(ctx context.Context, arg RevokeUnitQRCodesForLeaseParams) (int64, error)
+	ScopeHasLandlord(ctx context.Context, id uuid.UUID) (bool, error)
+	ScopeHasLease(ctx context.Context, id uuid.UUID) (bool, error)
+	ScopeHasLedgerEntry(ctx context.Context, id uuid.UUID) (bool, error)
+	ScopeHasPayment(ctx context.Context, id uuid.UUID) (bool, error)
+	// Existence checks the API runs for a property-scoped caller before a route
+	// that names a resource in its path. They run in the caller's tenant
+	// transaction, so row-level security (tenant isolation AND the property_scope
+	// policies, migration 000047) decides what exists: a row outside the caller's
+	// scope is simply absent, exactly like one that was never there.
+	ScopeHasProperty(ctx context.Context, id uuid.UUID) (bool, error)
+	ScopeHasUnit(ctx context.Context, id uuid.UUID) (bool, error)
 	// SetLeaseElectricityDeposit records the amount an existing lease was
 	// retroactively charged for its electricity deposit, in the same
 	// transaction as the charge itself (EnableElectricityDeposit). Not part of

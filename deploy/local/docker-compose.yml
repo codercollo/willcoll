@@ -131,6 +131,8 @@ services:
       <<: *fake-env
       ENV: staging
       PORT: "4100"
+      # Internal /debug/vars listener: container network only, not published, not in Caddy.
+      METRICS_ADDR: ":9100"
       DB_DSN: postgres://willcoll_platform_app:${PLATFORM_APP_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
       DB_ADMIN_DSN: postgres://willcoll_platform_admin:${PLATFORM_ADMIN_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
       FRONTEND_URL: ${PLATFORM_ORIGIN}
@@ -168,6 +170,7 @@ services:
       <<: *fake-env
       ENV: staging
       PORT: "4000"
+      METRICS_ADDR: ":9000"
       DB_DSN: postgres://willcoll_app:${RENTALS_APP_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
       DB_ADMIN_DSN: postgres://willcoll_admin:${RENTALS_ADMIN_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
       PLATFORM_DB_DSN: postgres://willcoll_platform_app:${PLATFORM_APP_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable

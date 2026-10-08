@@ -1581,6 +1581,96 @@ func (mr *MockQuerierMockRecorder) RevokeUnitQRCodesForLease(ctx, arg any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeUnitQRCodesForLease", reflect.TypeOf((*MockQuerier)(nil).RevokeUnitQRCodesForLease), ctx, arg)
 }
 
+// ScopeHasLandlord mocks base method.
+func (m *MockQuerier) ScopeHasLandlord(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLandlord", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLandlord indicates an expected call of ScopeHasLandlord.
+func (mr *MockQuerierMockRecorder) ScopeHasLandlord(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLandlord", reflect.TypeOf((*MockQuerier)(nil).ScopeHasLandlord), ctx, id)
+}
+
+// ScopeHasLease mocks base method.
+func (m *MockQuerier) ScopeHasLease(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLease", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLease indicates an expected call of ScopeHasLease.
+func (mr *MockQuerierMockRecorder) ScopeHasLease(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLease", reflect.TypeOf((*MockQuerier)(nil).ScopeHasLease), ctx, id)
+}
+
+// ScopeHasLedgerEntry mocks base method.
+func (m *MockQuerier) ScopeHasLedgerEntry(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasLedgerEntry", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasLedgerEntry indicates an expected call of ScopeHasLedgerEntry.
+func (mr *MockQuerierMockRecorder) ScopeHasLedgerEntry(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasLedgerEntry", reflect.TypeOf((*MockQuerier)(nil).ScopeHasLedgerEntry), ctx, id)
+}
+
+// ScopeHasPayment mocks base method.
+func (m *MockQuerier) ScopeHasPayment(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasPayment", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasPayment indicates an expected call of ScopeHasPayment.
+func (mr *MockQuerierMockRecorder) ScopeHasPayment(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasPayment", reflect.TypeOf((*MockQuerier)(nil).ScopeHasPayment), ctx, id)
+}
+
+// ScopeHasProperty mocks base method.
+func (m *MockQuerier) ScopeHasProperty(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasProperty", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasProperty indicates an expected call of ScopeHasProperty.
+func (mr *MockQuerierMockRecorder) ScopeHasProperty(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasProperty", reflect.TypeOf((*MockQuerier)(nil).ScopeHasProperty), ctx, id)
+}
+
+// ScopeHasUnit mocks base method.
+func (m *MockQuerier) ScopeHasUnit(ctx context.Context, id uuid.UUID) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeHasUnit", ctx, id)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ScopeHasUnit indicates an expected call of ScopeHasUnit.
+func (mr *MockQuerierMockRecorder) ScopeHasUnit(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeHasUnit", reflect.TypeOf((*MockQuerier)(nil).ScopeHasUnit), ctx, id)
+}
+
 // SetLeaseElectricityDeposit mocks base method.
 func (m *MockQuerier) SetLeaseElectricityDeposit(ctx context.Context, arg sqlc.SetLeaseElectricityDepositParams) error {
 	m.ctrl.T.Helper()

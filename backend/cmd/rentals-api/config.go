@@ -17,6 +17,9 @@ import (
 type config struct {
 	port int
 	env  string
+	// metricsAddr is the internal-only listener for /debug/vars (empty = off).
+	// Bind it to loopback or the container network; never publish or proxy it.
+	metricsAddr string
 
 	// healthTimeout bounds each database check on the Super Admin health
 	// report (HEALTH_TIMEOUT), instead of the short per-query timeout, so the
@@ -194,6 +197,7 @@ func parseConfig() config {
 	var cfg config
 
 	flag.IntVar(&cfg.port, "port", envInt("PORT", 4000), "API server port")
+	flag.StringVar(&cfg.metricsAddr, "metrics-addr", envString("METRICS_ADDR", ""), "Internal listener address for /debug/vars, e.g. 127.0.0.1:9090 (empty disables; never expose publicly)")
 	flag.StringVar(&cfg.env, "env", envString("ENV", "development"), "Environment (development|staging|production)")
 
 	flag.StringVar(&cfg.db.dsn, "db-dsn", envString("DB_DSN", ""), "PostgreSQL DSN")

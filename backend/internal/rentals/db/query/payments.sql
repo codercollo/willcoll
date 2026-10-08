@@ -22,12 +22,16 @@ LIMIT 1;
 
 -- CreatePayment is idempotent on mpesa_receipt: a PayHero retry of the
 -- same delivery inserts nothing and returns no row (sql.ErrNoRows).
+-- matched_unit_id is set up front only when the unit is known at insert (a
+-- payment a staff member records against a unit): a property-scoped caller can
+-- only see, and so only insert, a payment that already names an in-scope unit
+-- (migration 000047). The webhook paths leave it NULL and match afterwards.
 -- name: CreatePayment :one
 INSERT INTO payments (
     tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn,
-    payer_name, account_reference, status, raw_payload, received_at
+    payer_name, account_reference, status, raw_payload, received_at, matched_unit_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, sqlc.narg('matched_unit_id')
 )
 ON CONFLICT (mpesa_receipt) DO NOTHING
 RETURNING *;

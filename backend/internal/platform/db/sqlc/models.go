@@ -144,17 +144,18 @@ type SmsWallet struct {
 }
 
 type Staff struct {
-	ID           uuid.UUID
-	ManagerID    uuid.UUID
-	Name         string
-	Email        string
-	Phone        *string
-	PasswordHash []byte
-	Role         string
-	ModuleAccess []string
-	Status       string
-	CreatedAt    time.Time
-	Version      int32
+	ID             uuid.UUID
+	ManagerID      uuid.UUID
+	Name           string
+	Email          string
+	Phone          *string
+	PasswordHash   []byte
+	Role           string
+	ModuleAccess   []string
+	Status         string
+	CreatedAt      time.Time
+	Version        int32
+	PropertyAccess json.RawMessage
 }
 
 type Subscription struct {

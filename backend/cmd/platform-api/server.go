@@ -10,6 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 )
 
 // serve starts the HTTP server and gracefully shuts it down on SIGINT/SIGTERM.
@@ -28,6 +30,18 @@ func (app *application) serve() error {
 		ErrorLog:     slog.NewLogLogger(app.logger.Handler(), slog.LevelError),
 	}
 
+	// Internal /debug/vars listener (off unless METRICS_ADDR is set).
+	var metricsSrv *http.Server
+	if app.config.metricsAddr != "" {
+		metricsSrv = httpx.NewMetricsServer(app.config.metricsAddr, app.logger)
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				app.logger.Error("metrics listener", "addr", metricsSrv.Addr, "error", err)
+			}
+		}()
+		app.logger.Info("metrics listener (internal only)", "addr", metricsSrv.Addr)
+	}
+
 	shutdownError := make(chan error)
 
 	go func() {
@@ -40,6 +54,9 @@ func (app *application) serve() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
+		if metricsSrv != nil {
+			_ = metricsSrv.Shutdown(ctx)
+		}
 		if err := srv.Shutdown(ctx); err != nil {
 			shutdownError <- err
 			return

@@ -220,7 +220,7 @@ type Querier interface {
 	// UpdateManager: optimistic concurrency; zero rows means the version moved on.
 	UpdateManager(ctx context.Context, arg UpdateManagerParams) (int32, error)
 	// UpdateStaff: optimistic concurrency. Used both for an owner's edits
-	// (role, module_access, name, phone, status) and for self-activation
+	// (role, module_access, property_access, name, phone, status) and for self-activation
 	// (password_hash + status -> active) from an invite token.
 	UpdateStaff(ctx context.Context, arg UpdateStaffParams) (int32, error)
 	// UpsertAdmin provisions the one Super Admin from configuration at

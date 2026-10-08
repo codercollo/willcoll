@@ -41,13 +41,16 @@ func buildVersion() string { return vcs.Combine(releaseVersion, vcs.Version()) }
 // application holds the dependencies shared by every HTTP handler
 // (system-design.txt 4.1).
 type application struct {
-	config  config
-	logger  *slog.Logger
-	db      *sql.DB
-	models  data.Models
-	mailer  mailer.Mailer
-	payhero stkPusher
-	sms     smsSender
+	// routeGuards records every route's permission or public reason, filled
+	// by routes() (internal/shared/auth); the deny-by-default test reads it.
+	routeGuards *auth.RouteTable
+	config      config
+	logger      *slog.Logger
+	db          *sql.DB
+	models      data.Models
+	mailer      mailer.Mailer
+	payhero     stkPusher
+	sms         smsSender
 	// wg tracks background() goroutines (emails, SMS, PDF renders) so a
 	// graceful shutdown can wait for them (see server.go). jobs.Group,
 	// not sync.WaitGroup directly, since background() needs its recover

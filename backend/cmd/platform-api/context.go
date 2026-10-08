@@ -59,17 +59,6 @@ func contextGetStaff(c *gin.Context) *data.Staff {
 	return data.AnonymousStaff
 }
 
-// principalRole returns the signed-in request's role: the staff
-// principal's Role, or data.RoleOwner when the principal is the manager's
-// own login (system-design.txt A.1 — one manager login is always the
-// implicit owner).
-func principalRole(c *gin.Context) string {
-	if staff := contextGetStaff(c); !staff.IsAnonymous() {
-		return staff.Role
-	}
-	return data.RoleOwner
-}
-
 // contextSetAdmin records the authenticated Super Admin on c.
 func contextSetAdmin(c *gin.Context, admin *data.Admin) {
 	c.Set(adminContextKey, admin)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/platform/db/mock"
 	"github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"
 )
@@ -127,5 +128,24 @@ func TestStaffModel_Get_ScopedToTenant(t *testing.T) {
 	_, err := m.Get(context.Background(), tenantY, staffID)
 	if !errors.Is(err, ErrRecordNotFound) {
 		t.Fatalf("err = %v, want ErrRecordNotFound", err)
+	}
+}
+
+// internal/shared/auth carries its own copy of the four role names (shared
+// code cannot import this package); they must match the staff.role CHECK.
+func TestRolesMatchSharedAuth(t *testing.T) {
+	pairs := [][2]string{
+		{RoleViewer, auth.RoleViewer}, {RoleOfficer, auth.RoleOfficer},
+		{RoleAccountant, auth.RoleAccountant}, {RoleOwner, auth.RoleOwner},
+	}
+	for _, p := range pairs {
+		if p[0] != p[1] {
+			t.Errorf("role %q differs from shared/auth %q", p[0], p[1])
+		}
+	}
+	for _, r := range staffRoles {
+		if len(auth.RolePermissions(r)) == 0 {
+			t.Errorf("staff role %q has no permissions in shared/auth", r)
+		}
 	}
 }

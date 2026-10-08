@@ -344,7 +344,7 @@ func (m RentModel) PostPayment(ctx context.Context, tenantID, managerID, unitID 
 		payment, err := q.CreatePayment(ctx, sqlc.CreatePaymentParams{
 			TenantID: tenantID, Source: "manual", MpesaReceipt: receipt, Amount: in.Amount,
 			Msisdn: msisdn, PayerName: payer, AccountReference: ref, Status: "matched",
-			RawPayload: raw, ReceivedAt: m.now(),
+			RawPayload: raw, ReceivedAt: m.now(), MatchedUnitID: &unitID,
 		})
 		if err != nil {
 			return err

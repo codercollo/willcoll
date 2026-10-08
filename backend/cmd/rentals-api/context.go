@@ -41,7 +41,7 @@ func contextGetManager(c *gin.Context) *platformdata.Manager {
 // resolved to. The underlying manager is set separately, via
 // contextSetManager with this binary's OWN rentals-local Manager row (the
 // same id — 3d's backfill preserved it), so every existing tenant/RLS/
-// activation check keeps working unchanged; only requireRole reads this.
+// activation check keeps working unchanged; only requirePermission reads this.
 func contextSetStaff(c *gin.Context, staff *platformdata.Staff) {
 	c.Set(staffContextKey, staff)
 }

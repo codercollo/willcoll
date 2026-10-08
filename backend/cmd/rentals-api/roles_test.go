@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
@@ -48,25 +47,7 @@ func testStaffRow(role string, moduleAccess ...string) platformsqlc.Staff {
 	}
 }
 
-func TestMinRoleFor(t *testing.T) {
-	tests := []struct {
-		method, path string
-		want         string
-	}{
-		{"GET", "/v1/properties", platformdata.RoleViewer},      // unlisted GET defaults to viewer
-		{"POST", "/v1/properties", platformdata.RoleAccountant}, // explicitly listed
-		{"POST", "/v1/units/:id/rent/payments", platformdata.RoleOfficer},
-		{"POST", "/v1/ledger-entries/:id/reverse", platformdata.RoleAccountant},
-		{"POST", "/v1/some/unlisted/write", platformdata.RoleOwner}, // unlisted write defaults to owner
-	}
-	for _, tc := range tests {
-		if got := minRoleFor(tc.method, tc.path); got != tc.want {
-			t.Errorf("minRoleFor(%q, %q) = %q, want %q", tc.method, tc.path, got, tc.want)
-		}
-	}
-}
-
-func TestRequireRole_StaffOfficer(t *testing.T) {
+func TestRequirePermission_StaffOfficer(t *testing.T) {
 	m := newRoleTestApp(t)
 	staff := testStaffRow(platformdata.RoleOfficer, "rentals")
 	m.pStore.EXPECT().GetStaff(gomock.Any(), staff.ID).Return(staff, nil).AnyTimes()
@@ -88,7 +69,7 @@ func TestRequireRole_StaffOfficer(t *testing.T) {
 	})
 }
 
-func TestRequireRole_StaffViewer(t *testing.T) {
+func TestRequirePermission_StaffViewer(t *testing.T) {
 	m := newRoleTestApp(t)
 	staff := testStaffRow(platformdata.RoleViewer, "rentals")
 	m.pStore.EXPECT().GetStaff(gomock.Any(), staff.ID).Return(staff, nil).AnyTimes()
@@ -150,21 +131,5 @@ func TestManagerSessionNeverReadsStaff(t *testing.T) {
 
 	if w := m.do(http.MethodGet, "/v1/properties/not-a-uuid", cookie); w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (manager path past every gate)", w.Code)
-	}
-}
-
-// routeMinRole is keyed by method and path with nothing tying it to the
-// router, so a route that is removed (3i-b retired the billing and account
-// routes) would leave a dead entry behind. Every entry must be a registered route.
-func TestRouteMinRoleEntriesAreRegisteredRoutes(t *testing.T) {
-	m := newRoleTestApp(t)
-	registered := map[string]bool{}
-	for _, r := range m.router.Routes() {
-		registered[r.Method+" "+strings.TrimPrefix(r.Path, "/v1")] = true
-	}
-	for key := range routeMinRole {
-		if !registered[key] {
-			t.Errorf("routeMinRole has %q, which is not a registered route: delete it or fix the path", key)
-		}
 	}
 }

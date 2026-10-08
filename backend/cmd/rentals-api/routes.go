@@ -1,8 +1,7 @@
 package main
 
 import (
-	"expvar"
-
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -11,6 +10,17 @@ import (
 // is a placeholder.
 func (app *application) routes() (*gin.Engine, error) {
 	router := gin.New()
+
+	// Every route is registered through guard (a catalog permission) or
+	// public (a reviewed allowlist entry, public_routes.go); registering any
+	// other way fails TestEveryRouteIsGuardedOrPublic.
+	app.routeGuards = auth.NewRouteTable()
+	guard := func(rg *gin.RouterGroup, method, path, perm string, handlers ...gin.HandlerFunc) {
+		auth.Guard(app.routeGuards, rg, method, path, perm, app.requirePermission, handlers...)
+	}
+	public := func(rg *gin.RouterGroup, method, path string, handlers ...gin.HandlerFunc) {
+		auth.Public(app.routeGuards, rg, publicRoutes, method, path, handlers...)
+	}
 
 	// Only X-Forwarded-For from these proxies (Caddy) is believed by
 	// c.ClientIP(). Gin trusts every proxy by default, which would let any
@@ -31,9 +41,9 @@ func (app *application) routes() (*gin.Engine, error) {
 	router.NoRoute(func(c *gin.Context) { app.notFoundResponse(c) })
 	router.NoMethod(func(c *gin.Context) { app.methodNotAllowedResponse(c) })
 
-	// expvar metrics. Caddy only exposes this to localhost/VPN
-	// (system-design.txt 4.2); it is not part of the public API.
-	router.GET("/debug/vars", gin.WrapH(expvar.Handler()))
+	// /debug/vars is NOT on this router: it is served by the internal
+	// metrics listener only (httpx.NewMetricsServer, METRICS_ADDR), so the
+	// public surface has no /debug/* route.
 
 	// One limiter shared by every rate-limited route, so a client can't
 	// multiply its budget by spreading requests across them.
@@ -41,120 +51,120 @@ func (app *application) routes() (*gin.Engine, error) {
 
 	// Public QR scan, outside /v1: the branded domain's /q/* is routed here by
 	// the reverse proxy. Rate limited like the pay surface.
-	router.GET("/q/:token", rateLimited, app.scanUnitQRHandler)
+	public(&router.RouterGroup, "GET", "/q/:token", rateLimited, app.scanUnitQRHandler)
 
 	v1 := router.Group("/v1")
 	{
-		v1.GET("/healthcheck", app.healthcheckHandler)
+		public(v1, "GET", "/healthcheck", app.healthcheckHandler)
 
 		// -- Manager dashboard: an activated manager's session, and every
 		// query inside that manager's RLS scope (system-design.txt 4.5).
 		// requireModule/requirePlatformSubscription read the module
 		// entitlement and trial/subscription from willcoll_platform and
 		// always enforce (build-phases.txt 3i-b).
-		// requireStaffModuleAccess/requireRole (3f-2) are no-ops for the
+		// requireStaffModuleAccess (3f-2) is a no-op for the
 		// manager's own login (always the implicit owner) and only
 		// matter once a staff member signs in. --
 		manager := v1.Group("", app.requireActivatedManager(), app.requireStaffModuleAccess("rentals"),
 			app.requireModule("rentals"), app.requirePlatformSubscription("rentals"),
-			app.requireRole())
+			app.requireResourceInScope())
 		{
 			// Core resources (system-design.txt 4.6)
-			manager.GET("/landlords", app.listLandlordsHandler)
-			manager.POST("/landlords", app.createLandlordHandler)
-			manager.GET("/landlords/:id", app.showLandlordHandler)
-			manager.PATCH("/landlords/:id", app.updateLandlordHandler)
+			guard(manager, "GET", "/landlords", auth.LandlordsRead, app.listLandlordsHandler)
+			guard(manager, "POST", "/landlords", auth.LandlordsWrite, app.denyIfPropertyScoped, app.createLandlordHandler)
+			guard(manager, "GET", "/landlords/:id", auth.LandlordsRead, app.showLandlordHandler)
+			guard(manager, "PATCH", "/landlords/:id", auth.LandlordsWrite, app.updateLandlordHandler)
 
-			manager.GET("/properties", app.listPropertiesHandler)
-			manager.POST("/properties", app.createPropertyHandler)
-			manager.GET("/properties/:id", app.showPropertyHandler)
-			manager.PATCH("/properties/:id", app.updatePropertyHandler)
-			manager.DELETE("/properties/:id", app.deletePropertyHandler) // soft delete (archive)
-			manager.PATCH("/properties/:id/garbage", app.updatePropertyGarbageHandler)
-			manager.PATCH("/properties/:id/electricity", app.updatePropertyElectricityHandler)
-			manager.GET("/properties/:id/electricity/deposits", app.showElectricityDepositsHandler)
-			manager.GET("/properties/:id/electricity/deposits.csv", app.showElectricityDepositsCSVHandler)
-			manager.GET("/properties/:id/electricity/deposits.pdf", app.showElectricityDepositsPDFHandler)
-			manager.PUT("/properties/:id/print-theme", app.updatePropertyPrintThemeHandler)
-			manager.POST("/properties/:id/payment-channel", app.registerPaymentChannelHandler)
-			manager.GET("/properties/:id/payment-channel/status", app.showPaymentChannelStatusHandler)
-			manager.POST("/properties/:id/payment-channel/test", app.sendPaymentChannelTestHandler)
-			manager.GET("/payment-channel-banks", app.listPaymentChannelBanksHandler)
+			guard(manager, "GET", "/properties", auth.PropertiesRead, app.listPropertiesHandler)
+			guard(manager, "POST", "/properties", auth.PropertiesWrite, app.denyIfPropertyScoped, app.createPropertyHandler)
+			guard(manager, "GET", "/properties/:id", auth.PropertiesRead, app.showPropertyHandler)
+			guard(manager, "PATCH", "/properties/:id", auth.PropertiesWrite, app.updatePropertyHandler)
+			guard(manager, "DELETE", "/properties/:id", auth.PropertiesDelete, app.deletePropertyHandler) // soft delete (archive)
+			guard(manager, "PATCH", "/properties/:id/garbage", auth.PropertiesWrite, app.updatePropertyGarbageHandler)
+			guard(manager, "PATCH", "/properties/:id/electricity", auth.PropertiesWrite, app.updatePropertyElectricityHandler)
+			guard(manager, "GET", "/properties/:id/electricity/deposits", auth.DepositsRead, app.showElectricityDepositsHandler)
+			guard(manager, "GET", "/properties/:id/electricity/deposits.csv", auth.ExportsCreate, app.showElectricityDepositsCSVHandler)
+			guard(manager, "GET", "/properties/:id/electricity/deposits.pdf", auth.ExportsCreate, app.showElectricityDepositsPDFHandler)
+			guard(manager, "PUT", "/properties/:id/print-theme", auth.PropertiesWrite, app.updatePropertyPrintThemeHandler)
+			guard(manager, "POST", "/properties/:id/payment-channel", auth.PaymentChannelsManage, app.registerPaymentChannelHandler)
+			guard(manager, "GET", "/properties/:id/payment-channel/status", auth.PaymentChannelsRead, app.showPaymentChannelStatusHandler)
+			guard(manager, "POST", "/properties/:id/payment-channel/test", auth.PaymentChannelsManage, app.sendPaymentChannelTestHandler)
+			guard(manager, "GET", "/payment-channel-banks", auth.PaymentChannelsRead, app.listPaymentChannelBanksHandler)
 
-			manager.GET("/properties/:id/units", app.listUnitsForPropertyHandler)
-			manager.POST("/properties/:id/units", app.createUnitHandler)
-			manager.POST("/properties/:id/units/import", app.importUnitsHandler)
-			manager.GET("/onboarding", app.showOnboardingHandler)
-			manager.POST("/properties/:id/onboarding/import", app.onboardingImportHandler) // units + tenants + opening balances
-			manager.GET("/units/:id", app.showUnitHandler)
-			manager.PATCH("/units/:id", app.updateUnitHandler)
+			guard(manager, "GET", "/properties/:id/units", auth.UnitsRead, app.listUnitsForPropertyHandler)
+			guard(manager, "POST", "/properties/:id/units", auth.UnitsWrite, app.createUnitHandler)
+			guard(manager, "POST", "/properties/:id/units/import", auth.UnitsImport, app.importUnitsHandler)
+			guard(manager, "GET", "/onboarding", auth.OnboardingRead, app.showOnboardingHandler)
+			guard(manager, "POST", "/properties/:id/onboarding/import", auth.OnboardingImport, app.onboardingImportHandler) // units + tenants + opening balances
+			guard(manager, "GET", "/units/:id", auth.UnitsRead, app.showUnitHandler)
+			guard(manager, "PATCH", "/units/:id", auth.UnitsWrite, app.updateUnitHandler)
 
-			manager.POST("/units/:id/leases", app.createLeaseHandler)
-			manager.GET("/units/:id/leases", app.listUnitLeasesHandler)
-			manager.POST("/leases/:id/payers", app.addLeasePayerHandler)
-			manager.DELETE("/leases/:id/payers/:payerId", app.removeLeasePayerHandler)
-			manager.GET("/leases/:id", app.showLeaseHandler)
-			manager.PATCH("/leases/:id", app.updateLeaseHandler)
+			guard(manager, "POST", "/units/:id/leases", auth.LeasesWrite, app.createLeaseHandler)
+			guard(manager, "GET", "/units/:id/leases", auth.TenantsRead, app.listUnitLeasesHandler)
+			guard(manager, "POST", "/leases/:id/payers", auth.TenantsWrite, app.addLeasePayerHandler)
+			guard(manager, "DELETE", "/leases/:id/payers/:payerId", auth.LeasesWrite, app.removeLeasePayerHandler)
+			guard(manager, "GET", "/leases/:id", auth.TenantsRead, app.showLeaseHandler)
+			guard(manager, "PATCH", "/leases/:id", auth.LeasesWrite, app.updateLeaseHandler)
 			// Lease-bound unit QR codes: the sticker on the door.
-			manager.GET("/leases/:id/qr", app.showUnitQRHandler)
-			manager.GET("/leases/:id/qr.png", app.showUnitQRImageHandler)
-			manager.POST("/leases/:id/qr/rotate", app.rotateUnitQRHandler)
-			manager.POST("/properties/:id/qr/bulk", app.bulkGenerateQRHandler)
+			guard(manager, "GET", "/leases/:id/qr", auth.QRRead, app.showUnitQRHandler)
+			guard(manager, "GET", "/leases/:id/qr.png", auth.QRRead, app.showUnitQRImageHandler)
+			guard(manager, "POST", "/leases/:id/qr/rotate", auth.QRManage, app.rotateUnitQRHandler)
+			guard(manager, "POST", "/properties/:id/qr/bulk", auth.QRManage, app.bulkGenerateQRHandler)
 
 			// Billing engines, ledgers, reports (system-design.txt 4.6)
-			manager.PUT("/properties/:id/rent-schedule", app.updateRentScheduleHandler)
-			manager.POST("/properties/:id/rent/generate", app.generateRentChargesHandler)
-			manager.GET("/properties/:id/rent/overview", app.showRentOverviewHandler)
-			manager.POST("/units/:id/rent/payments", app.createRentPaymentHandler)
-			manager.POST("/units/:id/rent/charges", app.createRentChargeHandler)
-			manager.POST("/ledger-entries/:id/reverse", app.reverseLedgerEntryHandler)
+			guard(manager, "PUT", "/properties/:id/rent-schedule", auth.RentScheduleWrite, app.updateRentScheduleHandler)
+			guard(manager, "POST", "/properties/:id/rent/generate", auth.ChargesGenerate, app.generateRentChargesHandler)
+			guard(manager, "GET", "/properties/:id/rent/overview", auth.RentRead, app.showRentOverviewHandler)
+			guard(manager, "POST", "/units/:id/rent/payments", auth.PaymentsRecord, app.createRentPaymentHandler)
+			guard(manager, "POST", "/units/:id/rent/charges", auth.ChargesWrite, app.createRentChargeHandler)
+			guard(manager, "POST", "/ledger-entries/:id/reverse", auth.ChargesReverse, app.reverseLedgerEntryHandler)
 
 			// Payment review queue (system-design.txt 4.8, 5)
-			manager.GET("/payments/review", app.listPaymentsForReviewHandler)
-			manager.POST("/payments/:id/allocate", app.allocatePaymentHandler)
-			manager.POST("/payments/:id/confirm", app.confirmPaymentHandler)
+			guard(manager, "GET", "/payments/review", auth.PaymentsRead, app.listPaymentsForReviewHandler)
+			guard(manager, "POST", "/payments/:id/allocate", auth.PaymentsAllocate, app.allocatePaymentHandler)
+			guard(manager, "POST", "/payments/:id/confirm", auth.PaymentsAllocate, app.confirmPaymentHandler)
 
-			manager.GET("/properties/:id/water", app.showWaterReadingsHandler)
-			manager.PUT("/properties/:id/water", app.updateWaterReadingsHandler)
-			manager.POST("/properties/:id/water/generate", app.generateWaterChargesHandler)
+			guard(manager, "GET", "/properties/:id/water", auth.WaterRead, app.showWaterReadingsHandler)
+			guard(manager, "PUT", "/properties/:id/water", auth.WaterWrite, app.updateWaterReadingsHandler)
+			guard(manager, "POST", "/properties/:id/water/generate", auth.ChargesGenerate, app.generateWaterChargesHandler)
 			// Gin params can't carry a literal suffix, so :period arrives as
 			// "<period>.pdf" and the handler strips the extension.
-			manager.GET("/properties/:id/water/invoices/:period", app.showWaterInvoicesPDFHandler)
-			manager.GET("/properties/:id/garbage/generate", app.previewGarbageChargesHandler)
-			manager.POST("/properties/:id/garbage/generate", app.generateGarbageChargesHandler)
-			manager.GET("/properties/:id/garbage/invoices/:period", app.showGarbageInvoicesPDFHandler)
-			manager.GET("/units/:id/ledger/:type", app.showUnitLedgerHandler)
-			manager.GET("/properties/:id/reports/:period", app.showMonthlyReportHandler)
-			manager.GET("/properties/:id/reports/:period/plot-meter", app.showPlotMeterReadingHandler)
-			manager.PUT("/properties/:id/reports/:period/plot-meter", app.updatePlotMeterReadingHandler)
-			manager.GET("/properties/:id/reports/:period/checks", app.showReportChecksHandler)
-			manager.POST("/properties/:id/reports/:period/confirm", app.confirmMonthlyReportHandler)
-			manager.POST("/properties/:id/reports/:period/generate", app.generateMonthlyReportHandler)
-			manager.POST("/units/:id/arrears-commitments", app.createArrearsCommitmentHandler)
-			manager.GET("/properties/:id/receipts/:period/download", app.showReceiptsPDFHandler)
+			guard(manager, "GET", "/properties/:id/water/invoices/:period", auth.InvoicesRead, app.showWaterInvoicesPDFHandler)
+			guard(manager, "GET", "/properties/:id/garbage/generate", auth.ChargesPreview, app.previewGarbageChargesHandler)
+			guard(manager, "POST", "/properties/:id/garbage/generate", auth.ChargesGenerate, app.generateGarbageChargesHandler)
+			guard(manager, "GET", "/properties/:id/garbage/invoices/:period", auth.InvoicesRead, app.showGarbageInvoicesPDFHandler)
+			guard(manager, "GET", "/units/:id/ledger/:type", auth.LedgerRead, app.showUnitLedgerHandler)
+			guard(manager, "GET", "/properties/:id/reports/:period", auth.ReportsRead, app.showMonthlyReportHandler)
+			guard(manager, "GET", "/properties/:id/reports/:period/plot-meter", auth.PlotMeterRead, app.showPlotMeterReadingHandler)
+			guard(manager, "PUT", "/properties/:id/reports/:period/plot-meter", auth.PlotMeterWrite, app.updatePlotMeterReadingHandler)
+			guard(manager, "GET", "/properties/:id/reports/:period/checks", auth.ReportsRead, app.showReportChecksHandler)
+			guard(manager, "POST", "/properties/:id/reports/:period/confirm", auth.ReportsConfirm, app.confirmMonthlyReportHandler)
+			guard(manager, "POST", "/properties/:id/reports/:period/generate", auth.ReportsConfirm, app.generateMonthlyReportHandler)
+			guard(manager, "POST", "/units/:id/arrears-commitments", auth.ArrearsWrite, app.createArrearsCommitmentHandler)
+			guard(manager, "GET", "/properties/:id/receipts/:period/download", auth.ReceiptsRead, app.showReceiptsPDFHandler)
 		}
 
 		// -- Tenant-facing public payment surface: no login, OTP-gated, and
 		// rate limited throughout (system-design.txt 4.2, 4.7). --
 		pay := v1.Group("/pay", rateLimited)
 		{
-			pay.GET("/:propertySlug/:unitCode", app.showPayPageHandler)
-			pay.POST("/:propertySlug/:unitCode/otp", app.requestPayOTPHandler)
-			pay.POST("/:propertySlug/:unitCode/otp/verify", app.verifyPayOTPHandler)
-			pay.GET("/:propertySlug/:unitCode/balances", app.showPayBalancesHandler)
-			pay.POST("/:propertySlug/:unitCode/intent", app.createPaymentIntentHandler)
-			pay.GET("/intents/:id/status", app.showPaymentIntentStatusHandler)
+			public(pay, "GET", "/:propertySlug/:unitCode", app.showPayPageHandler)
+			public(pay, "POST", "/:propertySlug/:unitCode/otp", app.requestPayOTPHandler)
+			public(pay, "POST", "/:propertySlug/:unitCode/otp/verify", app.verifyPayOTPHandler)
+			public(pay, "GET", "/:propertySlug/:unitCode/balances", app.showPayBalancesHandler)
+			public(pay, "POST", "/:propertySlug/:unitCode/intent", app.createPaymentIntentHandler)
+			public(pay, "GET", "/intents/:id/status", app.showPaymentIntentStatusHandler)
 		}
 
 		// -- PayHero webhooks: server to server, verified in the handlers,
 		// and exempt from rate limiting (system-design.txt 4.2, 4.8). --
-		v1.POST("/webhooks/payhero/collections", app.payheroCollectionsWebhookHandler)
+		public(v1, "POST", "/webhooks/payhero/collections", app.payheroCollectionsWebhookHandler)
 
 		// -- Super Admin only (system-design.txt 4.5, 4.9) --
 		admin := v1.Group("/admin", app.requireAdmin())
 		{
-			admin.GET("/system/health", app.adminSystemHealthHandler)
-			admin.GET("/backups", app.adminListBackupsHandler)
+			guard(admin, "GET", "/system/health", auth.AdminSystemRead, app.adminSystemHealthHandler)
+			guard(admin, "GET", "/backups", auth.AdminSystemRead, app.adminListBackupsHandler)
 		}
 	}
 

@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -37,7 +38,7 @@ var roleRank = map[string]int{RoleViewer: 0, RoleOfficer: 1, RoleAccountant: 2, 
 
 // RoleAtLeast reports whether role meets minimum, by rank. An unknown role
 // never meets any minimum (fails closed) — build-phases.txt 3f-2's
-// requireRole gate depends on this never silently allowing a typo'd role.
+// permission gate depends on this never silently allowing a typo'd role.
 func RoleAtLeast(role, minimum string) bool {
 	r, ok1 := roleRank[role]
 	m, ok2 := roleRank[minimum]
@@ -59,9 +60,13 @@ type Staff struct {
 	Password     password  `json:"-"`
 	Role         string    `json:"role"`
 	ModuleAccess []string  `json:"module_access"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	Version      int32     `json:"-"`
+	// PropertyAccess narrows a non-owner's access to specific properties,
+	// per product (D2). A missing or empty list means all properties; see
+	// PropertyScope, the only way callers should read it.
+	PropertyAccess map[string][]uuid.UUID `json:"property_access"`
+	Status         string                 `json:"status"`
+	CreatedAt      time.Time              `json:"created_at"`
+	Version        int32                  `json:"-"`
 }
 
 // AnonymousStaff represents "no staff principal": either nobody is signed
@@ -73,6 +78,71 @@ var AnonymousStaff = &Staff{}
 // IsAnonymous reports whether s is the anonymous sentinel.
 func (s *Staff) IsAnonymous() bool { return s == AnonymousStaff }
 
+// maxScopedProperties bounds one product's property list: the list rides in
+// every request's context and a Postgres setting, and a firm with more
+// properties than this per clerk should be using the unrestricted role.
+const maxScopedProperties = 200
+
+// PropertyScope returns the property ids this staff member is limited to in
+// product, or nil for "all properties". Owners are never restricted, whatever
+// the stored value says, so a stale row cannot lock an owner out of data. A
+// non-owner whose product list is empty or missing is unrestricted (D2).
+func (s *Staff) PropertyScope(product string) []uuid.UUID {
+	if s == nil || s.IsAnonymous() || s.Role == RoleOwner {
+		return nil
+	}
+	if ids := s.PropertyAccess[product]; len(ids) > 0 {
+		return ids
+	}
+	return nil
+}
+
+// NormalizePropertyAccess drops empty lists and duplicate ids so the stored
+// value is canonical (an empty list and a missing key mean the same thing).
+func NormalizePropertyAccess(in map[string][]uuid.UUID) map[string][]uuid.UUID {
+	out := make(map[string][]uuid.UUID, len(in))
+	for product, ids := range in {
+		seen := map[uuid.UUID]bool{}
+		var list []uuid.UUID
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				list = append(list, id)
+			}
+		}
+		if len(list) > 0 {
+			out[product] = list
+		}
+	}
+	return out
+}
+
+// PropertyAccessEqual reports whether two normalised values scope the same
+// properties (order-insensitive), so an unchanged value does not revoke
+// sessions.
+func PropertyAccessEqual(a, b map[string][]uuid.UUID) bool {
+	a, b = NormalizePropertyAccess(a), NormalizePropertyAccess(b)
+	if len(a) != len(b) {
+		return false
+	}
+	for product, ids := range a {
+		other := b[product]
+		if len(ids) != len(other) {
+			return false
+		}
+		set := map[uuid.UUID]bool{}
+		for _, id := range other {
+			set[id] = true
+		}
+		for _, id := range ids {
+			if !set[id] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func ValidateStaff(v *validator.Validator, s *Staff) {
 	v.Check(s.Name != "", "name", "must be provided")
 	v.Check(len(s.Name) <= 200, "name", "must not be more than 200 bytes long")
@@ -80,6 +150,14 @@ func ValidateStaff(v *validator.Validator, s *Staff) {
 	v.Check(validator.PermittedValue(s.Role, staffRoles...), "role", "must be one of owner, accountant, officer, viewer")
 	for _, p := range s.ModuleAccess {
 		v.Check(validator.PermittedValue(p, ProductRentals, ProductEstates, ProductWaste), "module_access", "must be one of rentals, estates, waste")
+	}
+	for product, ids := range s.PropertyAccess {
+		v.Check(validator.PermittedValue(product, ProductRentals, ProductEstates, ProductWaste), "property_access", "keys must be one of rentals, estates, waste")
+		v.Check(len(ids) <= maxScopedProperties, "property_access", "must not list more than 200 properties per product")
+		if len(ids) > 0 {
+			v.Check(validator.PermittedValue(product, s.ModuleAccess...), "property_access", "can only restrict a product the staff member has access to")
+			v.Check(s.Role != RoleOwner, "property_access", "owners cannot be restricted to specific properties")
+		}
 	}
 }
 
@@ -101,9 +179,28 @@ type StaffModel struct {
 	Timeout time.Duration
 }
 
+// marshalPropertyAccess encodes the column value ('{}' for none).
+func marshalPropertyAccess(m map[string][]uuid.UUID) json.RawMessage {
+	b, err := json.Marshal(NormalizePropertyAccess(m))
+	if err != nil { // a map of string -> []uuid cannot fail to encode
+		return json.RawMessage(`{}`)
+	}
+	return b
+}
+
 func staffFromRow(r sqlc.Staff) *Staff {
+	// A value that does not decode restricts nothing it should not: it is
+	// treated as no restriction only for the owner; for anyone else a corrupt
+	// value must fail closed, so it becomes a scope no real property matches.
+	var access map[string][]uuid.UUID
+	if len(r.PropertyAccess) > 0 {
+		if err := json.Unmarshal(r.PropertyAccess, &access); err != nil {
+			access = map[string][]uuid.UUID{ProductRentals: {uuid.Nil}, ProductEstates: {uuid.Nil}, ProductWaste: {uuid.Nil}}
+		}
+	}
 	return &Staff{
-		ID: r.ID, ManagerID: r.ManagerID, Name: r.Name, Email: r.Email, Phone: r.Phone,
+		PropertyAccess: NormalizePropertyAccess(access),
+		ID:             r.ID, ManagerID: r.ManagerID, Name: r.Name, Email: r.Email, Phone: r.Phone,
 		Password: password{hash: r.PasswordHash}, Role: r.Role, ModuleAccess: r.ModuleAccess,
 		Status: r.Status, CreatedAt: r.CreatedAt, Version: r.Version,
 	}
@@ -128,6 +225,7 @@ func (m StaffModel) Invite(ctx context.Context, tenantID uuid.UUID, s *Staff) er
 		row, err := q.CreateStaff(ctx, sqlc.CreateStaffParams{
 			ManagerID: tenantID, Name: s.Name, Email: s.Email, Phone: s.Phone,
 			PasswordHash: dummyPasswordHash(), Role: s.Role, ModuleAccess: s.ModuleAccess, Status: StaffInvited,
+			PropertyAccess: marshalPropertyAccess(s.PropertyAccess),
 		})
 		if err != nil {
 			return staffWriteError(err)
@@ -200,6 +298,7 @@ func (m StaffModel) Update(ctx context.Context, tenantID uuid.UUID, s *Staff) er
 		version, err := q.UpdateStaff(ctx, sqlc.UpdateStaffParams{
 			ID: s.ID, Version: s.Version, Name: s.Name, Email: s.Email, Phone: s.Phone,
 			PasswordHash: s.Password.hash, Role: s.Role, ModuleAccess: s.ModuleAccess, Status: s.Status,
+			PropertyAccess: marshalPropertyAccess(s.PropertyAccess),
 		})
 		if err != nil {
 			return staffWriteError(editConflict(err))
@@ -254,6 +353,7 @@ func (m StaffModel) Activate(ctx context.Context, s *Staff) error {
 	version, err := m.AdminStore.UpdateStaff(ctx, sqlc.UpdateStaffParams{
 		ID: s.ID, Version: s.Version, Name: s.Name, Email: s.Email, Phone: s.Phone,
 		PasswordHash: s.Password.hash, Role: s.Role, ModuleAccess: s.ModuleAccess, Status: StaffActive,
+		PropertyAccess: marshalPropertyAccess(s.PropertyAccess),
 	})
 	if err != nil {
 		return editConflict(err)

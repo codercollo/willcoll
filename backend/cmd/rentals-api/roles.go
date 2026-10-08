@@ -1,109 +1,62 @@
 package main
 
 import (
-	"net/http"
-	"strings"
-
-	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/gin-gonic/gin"
 )
 
-// requireRole (build-phases.txt 3f-2, system-design.txt A.1): every
-// manager route's minimum role, in one table rather than scattered
-// per-handler checks. The manager's own login is always the implicit
-// owner and always passes; a staff principal needs their Role to rank at
-// least the route's minimum (platformdata.RoleAtLeast — an unknown role
-// meets no minimum, fails closed).
-//
-// Routes not listed default by method: GET/HEAD is viewer (read-only,
-// system-design.txt A.1), anything else is owner — the safe default for
-// a write nobody explicitly classified, rather than silently permissive.
-//
-// This table is the source of truth; features-functionalities.txt notes
-// that it lives here rather than duplicating every row.
-var routeMinRole = map[string]string{
-	// Officer: day-to-day entry (water readings, unit/lease lookups, cash
-	// receipts) — system-design.txt A.1.
-	"POST /properties/:id/units":                     platformdata.RoleOfficer,
-	"PATCH /units/:id":                               platformdata.RoleOfficer,
-	"POST /units/:id/leases":                         platformdata.RoleAccountant, // sets financial lease terms
-	"POST /leases/:id/payers":                        platformdata.RoleOfficer,
-	"POST /units/:id/rent/payments":                  platformdata.RoleOfficer, // cash receipts
-	"PUT /properties/:id/water":                      platformdata.RoleOfficer, // water readings
-	"PUT /properties/:id/reports/:period/plot-meter": platformdata.RoleOfficer,
-
-	// Accountant: + generate runs, reversals, allocations, reports, exports.
-	"POST /landlords":                               platformdata.RoleAccountant,
-	"PATCH /landlords/:id":                          platformdata.RoleAccountant,
-	"POST /properties":                              platformdata.RoleAccountant,
-	"PATCH /properties/:id":                         platformdata.RoleAccountant,
-	"PATCH /properties/:id/garbage":                 platformdata.RoleAccountant,
-	"PATCH /properties/:id/electricity":             platformdata.RoleAccountant,
-	"GET /properties/:id/electricity/deposits.csv":  platformdata.RoleAccountant,
-	"GET /properties/:id/electricity/deposits.pdf":  platformdata.RoleAccountant,
-	"PUT /properties/:id/print-theme":               platformdata.RoleAccountant,
-	"POST /properties/:id/units/import":             platformdata.RoleAccountant,
-	"POST /properties/:id/onboarding/import":        platformdata.RoleAccountant,
-	"DELETE /leases/:id/payers/:payerId":            platformdata.RoleAccountant,
-	"PATCH /leases/:id":                             platformdata.RoleAccountant,
-	"POST /leases/:id/qr/rotate":                    platformdata.RoleAccountant,
-	"POST /properties/:id/qr/bulk":                  platformdata.RoleAccountant,
-	"PUT /properties/:id/rent-schedule":             platformdata.RoleAccountant,
-	"POST /properties/:id/rent/generate":            platformdata.RoleAccountant,
-	"POST /units/:id/rent/charges":                  platformdata.RoleAccountant,
-	"POST /ledger-entries/:id/reverse":              platformdata.RoleAccountant, // reversals
-	"POST /payments/:id/allocate":                   platformdata.RoleAccountant, // allocations
-	"POST /payments/:id/confirm":                    platformdata.RoleAccountant,
-	"POST /properties/:id/water/generate":           platformdata.RoleAccountant,
-	"GET /properties/:id/water/invoices/:period":    platformdata.RoleAccountant, // export
-	"POST /properties/:id/garbage/generate":         platformdata.RoleAccountant,
-	"GET /properties/:id/garbage/invoices/:period":  platformdata.RoleAccountant, // export
-	"GET /properties/:id/reports/:period":           platformdata.RoleAccountant, // reports
-	"GET /properties/:id/reports/:period/checks":    platformdata.RoleAccountant,
-	"POST /properties/:id/reports/:period/confirm":  platformdata.RoleAccountant,
-	"POST /properties/:id/reports/:period/generate": platformdata.RoleAccountant,
-	"POST /units/:id/arrears-commitments":           platformdata.RoleAccountant,
-	"GET /properties/:id/receipts/:period/download": platformdata.RoleAccountant, // export
-
-	// Owner only: payment-channel setup and archiving a property
-	// (system-design.txt A.1). Staff, billing and modules are platform-api's.
-	"POST /properties/:id/payment-channel":      platformdata.RoleOwner,
-	"POST /properties/:id/payment-channel/test": platformdata.RoleOwner,
-	"DELETE /properties/:id":                    platformdata.RoleOwner, // archiving a whole property
-}
-
-// minRoleFor looks up method+fullPath's minimum role, falling back to the
-// safe by-method default (see routeMinRole's doc comment) when unlisted.
-func minRoleFor(method, fullPath string) string {
-	fullPath = strings.TrimPrefix(fullPath, "/v1")
-	if role, ok := routeMinRole[method+" "+fullPath]; ok {
-		return role
-	}
-	if method == http.MethodGet || method == http.MethodHead {
-		return platformdata.RoleViewer
-	}
-	return platformdata.RoleOwner
-}
-
-// requireRole enforces routeMinRole for every manager route. Must run
-// after requireActivatedManager (and, for a staff principal, after
-// requireStaffModuleAccess).
-func (app *application) requireRole() gin.HandlerFunc {
+// requirePermission guards one route with one catalog permission
+// (internal/shared/auth, docs/security/authorization.md). It replaces the
+// old routeMinRole table: every route now names its permission where it is
+// registered (routes.go), and auth.Guard refuses a route that doesn't.
+// Must run after requireActivatedManager (and, for a staff principal, after
+// requireStaffModuleAccess). The permission is resolved per request from the
+// staff row authenticate() just loaded, so a demotion takes effect at once.
+func (app *application) requirePermission(perm string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		staff := contextGetStaff(c)
-		if staff.IsAnonymous() {
-			c.Next() // the manager's own login: always the implicit owner
+		if app.permitted(c, perm) {
+			c.Next()
 			return
 		}
-
-		minRole := minRoleFor(c.Request.Method, c.FullPath())
-		if !platformdata.RoleAtLeast(staff.Role, minRole) {
+		if _, isAdmin := contextGetAdmin(c); !isAdmin && contextGetManager(c).IsAnonymous() {
+			app.authenticationRequiredResponse(c)
+		} else {
+			app.logDenied(c, perm)
 			app.notPermittedResponse(c)
-			c.Abort()
-			return
 		}
-		c.Next()
+		c.Abort()
 	}
+}
+
+// permitted reports whether the request's principal holds perm: a Super
+// Admin only admin.*, the firm's own login the owner set, a staff member
+// their role's set (an unknown role holds nothing).
+func (app *application) permitted(c *gin.Context, perm string) bool {
+	if _, ok := contextGetAdmin(c); ok {
+		return auth.AdminPermits(perm)
+	}
+	if contextGetManager(c).IsAnonymous() {
+		return false
+	}
+	staff := contextGetStaff(c)
+	if staff.IsAnonymous() {
+		return auth.FirmLoginPermits(perm)
+	}
+	return auth.StaffPermits(staff.Role, perm)
+}
+
+// logDenied records a refused request (actor, permission, route, IP) in the
+// application log only: a denied call is not a business event, and writing
+// each one to audit_log would let a misbehaving client flood it.
+func (app *application) logDenied(c *gin.Context, perm string) {
+	actor := "manager"
+	if _, ok := contextGetAdmin(c); ok {
+		actor = "admin"
+	} else if staff := contextGetStaff(c); !staff.IsAnonymous() {
+		actor = "staff:" + staff.ID.String()
+	}
+	app.logger.Info("permission denied", "actor", actor, "permission", perm,
+		"method", c.Request.Method, "route", c.FullPath(), "ip", c.ClientIP())
 }
 
 // requireOwnerForChannelChange refuses (403) a staff member below owner who
@@ -113,10 +66,14 @@ func (app *application) requireRole() gin.HandlerFunc {
 // POST /properties/:id/payment-channel (system-design.txt A.1). The firm's
 // own login is the implicit owner. Reports whether the request may go on.
 func (app *application) requireOwnerForChannelChange(c *gin.Context, changed bool) bool {
+	// Routes calling this sit behind requireActivatedManager, so an anonymous
+	// staff value is the firm's own login (owner set): only a staff principal
+	// can be refused here.
 	staff := contextGetStaff(c)
-	if !changed || staff.IsAnonymous() || platformdata.RoleAtLeast(staff.Role, platformdata.RoleOwner) {
+	if !changed || staff.IsAnonymous() || auth.StaffPermits(staff.Role, auth.PaymentChannelsManage) {
 		return true
 	}
+	app.logDenied(c, auth.PaymentChannelsManage)
 	app.notPermittedResponse(c)
 	return false
 }
@@ -142,4 +99,19 @@ func (app *application) requireStaffModuleAccess(product string) gin.HandlerFunc
 		app.notPermittedResponse(c)
 		c.Abort()
 	}
+}
+
+// denyIfPropertyScoped refuses (403) a request from a staff member restricted
+// to specific properties, on the two routes that create firm-wide records: a
+// new property or landlord has no place inside a property scope (it would be
+// invisible to its own creator), so a restricted member cannot make one
+// (authorization.md section 3).
+func (app *application) denyIfPropertyScoped(c *gin.Context) {
+	if len(auth.PropertyScopeFrom(c.Request.Context())) > 0 {
+		app.logDenied(c, "firm-wide create while property-scoped")
+		app.notPermittedResponse(c)
+		c.Abort()
+		return
+	}
+	c.Next()
 }

@@ -388,8 +388,11 @@ Run from `backend/`:
   `main.buildTime`); reported by `/v1/healthcheck` and `/debug/vars`
   together with the VCS revision (`internal/shared/vcs`); `make build/api`
   is a deprecated alias
-- `make test` — `go test -race ./...` (the race detector needs cgo: with no C
-  compiler, e.g. bare Windows, run `make test RACE=`)
+- `make test` — `go test -race ./...` (needs cgo; on this Windows machine it
+  has no C compiler, so it is NOT the race gate)
+- `make test/race` — **the race gate: run it for every gate/sub-step.** It runs
+  `go test -race ./...` inside the golang Docker image (Docker must be up), with
+  no `backend/.env` visible. Do not substitute `make test RACE=`.
 - `make audit` — tidy, `go vet`, staticcheck, golangci-lint
   (`backend/.golangci.yml`), then `make test`
 - `make test/integration` — every test, including the Postgres integration and
@@ -412,12 +415,38 @@ migration.
 
 - `includeCoAuthoredBy` is disabled globally — do not add
   "Generated with Claude Code" / "Co-Authored-By: Claude" trailers.
-- **Never run `git commit` or `git push`. Stage changes only; the user
-  commits.** This is a permanent rule, not a per-task instruction — it
-  applies to every future session in this repo, no exceptions, even if a
-  task's wording implies committing is expected.
-- **Never run `git checkout`, `git restore`, `git reset` or `git stash`.**
-  If a file needs to go back, ask the user. The user owns all git state.
+- **Read-only git is allowed**: `status`, `diff`, `log`, `show`,
+  `check-ignore`, `describe`, `ls-files`.
+- **Anything that changes repo state is forbidden**: `add`, `commit`,
+  `push`, `checkout`, `restore`, `reset`, `stash`, `merge`, `rebase`, `rm`,
+  `mv`. The user owns all git state and does the staging and committing.
+  This is a permanent rule, not a per-task instruction — it applies to every
+  future session in this repo, no exceptions, even if a task's wording
+  implies otherwise. If a file needs to go back, ask the user.
+
+## Phase 4b decisions (local staging)
+
+- Local staging serves apps on `*.willcoll.localhost`, with Caddy using
+  `tls internal` for certificates.
+- `TRUSTED_PROXIES` governs client-IP trust (rate limiting, `audit_log` IP).
+- Owner DB roles are BYPASSRLS and are used only by migrate/seed. APIs
+  connect as the `_app` roles (subject to RLS), never as an owner.
+
+## Authorization (docs/security/authorization.md, D1-D5 approved)
+
+- Every route is registered through `guard(...)` (a catalog permission in
+  `internal/shared/auth/permissions.go`) or `public(...)` (a reviewed entry in
+  `public_routes.go`); `route_guards_test.go` fails the build otherwise.
+- `/debug/vars` is not on any public router: it is served by the internal
+  `METRICS_ADDR` listener (`httpx.NewMetricsServer`, off when empty). The
+  production Caddyfile (4c) must also block `/debug/*`.
+- Scopes: product (`module_access`), property (`staff.property_access`, enforced
+  by RESTRICTIVE RLS `property_scope` policies fed from `app.property_ids`,
+  rentals migration 000047), firm (`tenant_isolation`). Out of scope = 404. A new
+  tenant table needs a `property_scope` policy or a reasoned exemption
+  (`TestPropertyScope_EveryTenantTableHasAPolicyOrAnExemption`).
+- Staff role / module_access / property_access / disable changes revoke the
+  member's sessions (`authorityChange` in `cmd/platform-api/staff.go`).
 
 ## Money-channel rule
 

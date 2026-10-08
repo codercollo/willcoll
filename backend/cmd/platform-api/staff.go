@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // Staff accounts (system-design.txt A.1, build-phases.txt 3f-1): sub-logins
@@ -19,7 +21,7 @@ import (
 const staffInviteTokenTTL = 3 * 24 * time.Hour
 
 // inviteStaffHandler handles POST /v1/staff: {"name", "email", "phone",
-// "role", "module_access": [...]}. Creates the staff row invited and
+// "role", "module_access": [...], "property_access": {...}}. Creates the staff row invited and
 // emails an activation link; the staff member sets their own password to
 // activate (activateStaffHandler).
 func (app *application) inviteStaffHandler(c *gin.Context) {
@@ -35,6 +37,9 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 		Phone        *string  `json:"phone"`
 		Role         string   `json:"role"`
 		ModuleAccess []string `json:"module_access"`
+		// PropertyAccess: {"rentals": ["<property id>", ...]}; absent or an
+		// empty list = all properties of that product (D2).
+		PropertyAccess map[string][]uuid.UUID `json:"property_access"`
 	}
 	if err := app.readJSON(c, &input); err != nil {
 		app.badRequestResponse(c, err)
@@ -44,6 +49,7 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 	staff := &data.Staff{
 		Name: input.Name, Email: input.Email, Phone: input.Phone,
 		Role: input.Role, ModuleAccess: input.ModuleAccess,
+		PropertyAccess: data.NormalizePropertyAccess(input.PropertyAccess),
 	}
 	if staff.ModuleAccess == nil {
 		staff.ModuleAccess = []string{}
@@ -131,12 +137,15 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 		Role         *string  `json:"role"`
 		ModuleAccess []string `json:"module_access"`
 		Status       *string  `json:"status"`
+		// PropertyAccess replaces the whole value when present ({} clears it).
+		PropertyAccess *map[string][]uuid.UUID `json:"property_access"`
 	}
 	if err := app.readJSON(c, &input); err != nil {
 		app.badRequestResponse(c, err)
 		return
 	}
 
+	before := *staff // what the sessions were issued against
 	if input.Name != nil {
 		staff.Name = strings.TrimSpace(*input.Name)
 	}
@@ -148,6 +157,9 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 	}
 	if input.ModuleAccess != nil {
 		staff.ModuleAccess = input.ModuleAccess
+	}
+	if input.PropertyAccess != nil {
+		staff.PropertyAccess = data.NormalizePropertyAccess(*input.PropertyAccess)
 	}
 	statusChangedToDisabled := false
 	if input.Status != nil {
@@ -179,16 +191,49 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 		return
 	}
 
-	if statusChangedToDisabled {
+	// Sign the staff member out everywhere when their authority changes: they
+	// are disabled (removed), demoted or otherwise change role, or their
+	// module or property scope changes. Authorization is also re-read on every
+	// request, so this is the second layer: no session issued under the old
+	// authority survives, and the person re-authenticates under the new one.
+	reason := authorityChange(before, *staff, statusChangedToDisabled)
+	if reason != "" {
 		if _, err := app.revokeStaffSessions(ctx, staff.ID); err != nil {
-			app.logger.Error("revoking disabled staff member's sessions", "staff_id", staff.ID, "error", err)
+			app.logger.Error("revoking staff member's sessions", "staff_id", staff.ID, "reason", reason, "error", err)
 		}
 	}
-	app.audit(c, "", "staff.updated", "staff", &staff.ID, "updated "+staff.Email+" (role "+staff.Role+", status "+staff.Status+")")
+	detail := "updated " + staff.Email + " (role " + staff.Role + ", status " + staff.Status + ")"
+	if reason != "" {
+		detail += "; signed out everywhere: " + reason
+	}
+	app.audit(c, "", "staff.updated", "staff", &staff.ID, detail)
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{"staff": staff}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
+}
+
+// authorityChange names why a staff update must end the member's sessions, or
+// returns "" when it need not (a name or phone edit, an unchanged scope).
+func authorityChange(before, after data.Staff, disabled bool) string {
+	switch {
+	case disabled:
+		return "disabled"
+	case before.Role != after.Role:
+		return "role changed"
+	case !sameStrings(before.ModuleAccess, after.ModuleAccess):
+		return "module access changed"
+	case !data.PropertyAccessEqual(before.PropertyAccess, after.PropertyAccess):
+		return "property access changed"
+	}
+	return ""
+}
+
+func sameStrings(a, b []string) bool {
+	as, bs := slices.Clone(a), slices.Clone(b)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(as, bs)
 }
 
 // activateStaffHandler handles PUT /v1/staff/activated: {"token": ...,

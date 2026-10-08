@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -14,20 +15,21 @@ import (
 
 const createStaff = `-- name: CreateStaff :one
 
-INSERT INTO staff (manager_id, name, email, phone, password_hash, role, module_access, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version
+INSERT INTO staff (manager_id, name, email, phone, password_hash, role, module_access, status, property_access)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version, property_access
 `
 
 type CreateStaffParams struct {
-	ManagerID    uuid.UUID
-	Name         string
-	Email        string
-	Phone        *string
-	PasswordHash []byte
-	Role         string
-	ModuleAccess []string
-	Status       string
+	ManagerID      uuid.UUID
+	Name           string
+	Email          string
+	Phone          *string
+	PasswordHash   []byte
+	Role           string
+	ModuleAccess   []string
+	Status         string
+	PropertyAccess json.RawMessage
 }
 
 // Staff: sub-accounts under a manager (system-design.txt A.1,
@@ -45,6 +47,7 @@ func (q *Queries) CreateStaff(ctx context.Context, arg CreateStaffParams) (Staff
 		arg.Role,
 		pq.Array(arg.ModuleAccess),
 		arg.Status,
+		arg.PropertyAccess,
 	)
 	var i Staff
 	err := row.Scan(
@@ -59,12 +62,13 @@ func (q *Queries) CreateStaff(ctx context.Context, arg CreateStaffParams) (Staff
 		&i.Status,
 		&i.CreatedAt,
 		&i.Version,
+		&i.PropertyAccess,
 	)
 	return i, err
 }
 
 const getStaff = `-- name: GetStaff :one
-SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version FROM staff WHERE id = $1
+SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version, property_access FROM staff WHERE id = $1
 `
 
 func (q *Queries) GetStaff(ctx context.Context, id uuid.UUID) (Staff, error) {
@@ -82,12 +86,13 @@ func (q *Queries) GetStaff(ctx context.Context, id uuid.UUID) (Staff, error) {
 		&i.Status,
 		&i.CreatedAt,
 		&i.Version,
+		&i.PropertyAccess,
 	)
 	return i, err
 }
 
 const getStaffForToken = `-- name: GetStaffForToken :one
-SELECT staff.id, staff.manager_id, staff.name, staff.email, staff.phone, staff.password_hash, staff.role, staff.module_access, staff.status, staff.created_at, staff.version FROM staff
+SELECT staff.id, staff.manager_id, staff.name, staff.email, staff.phone, staff.password_hash, staff.role, staff.module_access, staff.status, staff.created_at, staff.version, staff.property_access FROM staff
 INNER JOIN tokens ON tokens.staff_id = staff.id
 WHERE tokens.hash = $1 AND tokens.scope = $2 AND tokens.expiry > now()
 `
@@ -112,12 +117,13 @@ func (q *Queries) GetStaffForToken(ctx context.Context, arg GetStaffForTokenPara
 		&i.Status,
 		&i.CreatedAt,
 		&i.Version,
+		&i.PropertyAccess,
 	)
 	return i, err
 }
 
 const listActiveStaffByEmail = `-- name: ListActiveStaffByEmail :many
-SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version FROM staff WHERE email = $1 AND status = 'active'
+SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version, property_access FROM staff WHERE email = $1 AND status = 'active'
 `
 
 // ListActiveStaffByEmail resolves a login attempt: staff.email is only
@@ -147,6 +153,7 @@ func (q *Queries) ListActiveStaffByEmail(ctx context.Context, email string) ([]S
 			&i.Status,
 			&i.CreatedAt,
 			&i.Version,
+			&i.PropertyAccess,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +169,7 @@ func (q *Queries) ListActiveStaffByEmail(ctx context.Context, email string) ([]S
 }
 
 const listStaffForManager = `-- name: ListStaffForManager :many
-SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version FROM staff WHERE manager_id = $1 ORDER BY created_at
+SELECT id, manager_id, name, email, phone, password_hash, role, module_access, status, created_at, version, property_access FROM staff WHERE manager_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListStaffForManager(ctx context.Context, managerID uuid.UUID) ([]Staff, error) {
@@ -186,6 +193,7 @@ func (q *Queries) ListStaffForManager(ctx context.Context, managerID uuid.UUID) 
 			&i.Status,
 			&i.CreatedAt,
 			&i.Version,
+			&i.PropertyAccess,
 		); err != nil {
 			return nil, err
 		}
@@ -203,25 +211,27 @@ func (q *Queries) ListStaffForManager(ctx context.Context, managerID uuid.UUID) 
 const updateStaff = `-- name: UpdateStaff :one
 UPDATE staff
 SET name = $1, email = $2, phone = $3, password_hash = $4,
-    role = $5, module_access = $6, status = $7, version = version + 1
-WHERE id = $8 AND version = $9
+    role = $5, module_access = $6, status = $7,
+    property_access = $8, version = version + 1
+WHERE id = $9 AND version = $10
 RETURNING version
 `
 
 type UpdateStaffParams struct {
-	Name         string
-	Email        string
-	Phone        *string
-	PasswordHash []byte
-	Role         string
-	ModuleAccess []string
-	Status       string
-	ID           uuid.UUID
-	Version      int32
+	Name           string
+	Email          string
+	Phone          *string
+	PasswordHash   []byte
+	Role           string
+	ModuleAccess   []string
+	Status         string
+	PropertyAccess json.RawMessage
+	ID             uuid.UUID
+	Version        int32
 }
 
 // UpdateStaff: optimistic concurrency. Used both for an owner's edits
-// (role, module_access, name, phone, status) and for self-activation
+// (role, module_access, property_access, name, phone, status) and for self-activation
 // (password_hash + status -> active) from an invite token.
 func (q *Queries) UpdateStaff(ctx context.Context, arg UpdateStaffParams) (int32, error) {
 	row := q.db.QueryRowContext(ctx, updateStaff,
@@ -232,6 +242,7 @@ func (q *Queries) UpdateStaff(ctx context.Context, arg UpdateStaffParams) (int32
 		arg.Role,
 		pq.Array(arg.ModuleAccess),
 		arg.Status,
+		arg.PropertyAccess,
 		arg.ID,
 		arg.Version,
 	)

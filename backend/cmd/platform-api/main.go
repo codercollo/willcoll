@@ -44,6 +44,9 @@ func buildVersion() string { return vcs.Combine(releaseVersion, vcs.Version()) }
 // creates or destroys a session row, provisions the Super Admin, and owns
 // billing — every product API only reads this database.
 type application struct {
+	// routeGuards records every route's permission or public reason, filled
+	// by routes() (internal/shared/auth); the deny-by-default test reads it.
+	routeGuards    *auth.RouteTable
 	config         config
 	logger         *slog.Logger
 	db             *sql.DB

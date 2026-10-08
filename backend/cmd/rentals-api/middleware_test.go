@@ -266,15 +266,33 @@ func TestCORSPreflightForThePayPage(t *testing.T) {
 	}
 }
 
-func TestMetricsEndpoint(t *testing.T) {
+// /debug/vars is served only by the internal metrics listener; the public
+// router must not have it at all (authorization.md M13).
+func TestDebugVarsNotOnPublicRouter(t *testing.T) {
+	m := newMiddlewareTestApp(t)
+	for _, target := range []string{"/debug/vars", "/debug/pprof/", "/debug/"} {
+		if w := m.do(http.MethodGet, target, nil, nil); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s through the public router: status %d, want 404", target, w.Code)
+		}
+	}
+}
+
+func TestMetricsListenerServesDebugVarsOnly(t *testing.T) {
 	m := newMiddlewareTestApp(t)
 	m.do(http.MethodGet, "/v1/healthcheck", nil, nil)
 
-	w := m.do(http.MethodGet, "/debug/vars", nil, nil)
+	h := httpx.NewMetricsServer("127.0.0.1:0", slog.New(slog.NewTextHandler(io.Discard, nil))).Handler
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
 	for _, key := range []string{"requests_received_total", "responses_sent_total", "processing_time_microseconds", "responses_sent_by_status"} {
 		if !strings.Contains(w.Body.String(), key) {
 			t.Errorf("/debug/vars missing %s", key)
 		}
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/healthcheck", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("metrics listener served /v1/healthcheck: status %d, want 404", w.Code)
 	}
 }
 

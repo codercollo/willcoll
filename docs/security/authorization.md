@@ -1,4 +1,4 @@
-# Authorization model (Phase 4-auth-1 — FINAL, D1-D5 approved)
+# Authorization model (Phase 4-auth-1 — FINAL, D1-D5 approved; C1 permissions and C2 scopes built)
 
 Status: analysis only; no enforcement code exists for anything marked
 "proposed". Source: `docs/security/_scratch/route-inventory.md` (route sweep)
@@ -101,7 +101,7 @@ today, see section 5).
 `PUT /staff/activated`, `POST /sessions`, `POST /admin/sessions`,
 `POST /tokens/password-reset`, `PUT /managers/password`,
 `GET /healthcheck`, `GET /q/:token`, `/pay/*` (pay-session token),
-`POST /webhooks/payhero/*` (signature), `/debug/vars` (see mismatch M13).
+`POST /webhooks/payhero/*` (signature). `/debug/vars` is NOT public: it is on the internal metrics listener only (M13).
 
 ## 3. Role -> permission matrix
 
@@ -145,6 +145,36 @@ cannot call any firm route (rentals chain rejects admin).
    property list is filtered). Archived/deleted property ids are pruned
    lazily.
 
+### 3a. Property scope as built (C2)
+
+- **Storage**: platform `staff.property_access jsonb` (migration platform
+  000020), `{"rentals": ["<property id>", ...]}`. Missing or empty list = all
+  properties. Owners and the firm login are never restricted (ignored when
+  read, rejected when written). Validated: known product the member has
+  `module_access` to, at most 200 ids, deduplicated.
+- **Enforcement is in the database, not middleware.** `authenticate()` puts the
+  list in the request context (`auth.WithPropertyScope`); every tenant
+  transaction (`db.execTx`) sets `app.property_ids`; RESTRICTIVE `property_scope`
+  RLS policies (rentals migration 000047) on every table that holds property
+  data are ANDed with `tenant_isolation`. So lists, dashboards, reports,
+  exports, search and joins are filtered by the queries themselves. Tables hang
+  off their parent (leases -> units -> properties), so one rule governs each
+  hop. `TestPropertyScope_EveryTenantTableHasAPolicyOrAnExemption` fails the
+  build for a new tenant table that does not decide.
+- **Out of scope = 404.** `requireResourceInScope` checks the path resource
+  (property, unit, lease, landlord, payment, ledger entry) first for a scoped
+  caller and answers 404 (it runs before the permission check, so a missing
+  permission cannot be used to probe what exists). A write the database refuses
+  maps to `auth.ErrOutOfScope`, answered 404 by `serverErrorResponse`.
+- **Deliberate edges**: a scoped caller cannot create properties or landlords
+  (403: the row would be invisible to them); unmatched payments (no unit) are
+  invisible to a scoped caller, so only an unrestricted user places them;
+  `transaction_headers` and `pay_otps` are not scoped (no tenant data / no staff
+  principal). System work (webhooks, jobs, usage recount) has no principal and
+  is unrestricted by design.
+- **Revocation**: platform `PATCH /staff/:id` ends all of the member's sessions
+  when role, module_access, property_access or status changes.
+
 ## 4. High-risk actions and recommended extra controls (recommend only)
 
 | Action | Risk | Recommended control |
@@ -179,18 +209,18 @@ test in C3 anyway.
 | M6 | channel test audit-exempt but sends a real prompt | exempt | audit it |
 | M7 | Unlisted routes silently get default tier | `routeMinRole` fallthrough | deny by default; test fails if a route has no permission |
 | M8 | `module_access` not validated against firm modules | any product name | validate against held modules |
-| M9 | No property scope | none | property_access (proposed) |
+| M9 | No property scope | **DONE (C2)** | `staff.property_access`, enforced by RLS (see section 3a) |
 | M10 | Rentals UI never hides controls by role | all roles see all buttons | permission-driven UI (4-auth-3) |
 | M11 | Client principal conflates staff and manager | manager | `GET /v1/me` returns permissions |
 | M12 | Role names baked into 6 route entries + 2 handler checks | scattered | single catalog in `internal/shared/auth` |
-| M13 | `/debug/vars` unauthenticated in-app on both APIs | Caddy only | keep behind Caddy; add to explicit allowlist + admin-only alternative |
+| M13 | `/debug/vars` unauthenticated in-app on both APIs | **DONE (C2)** | removed from both public routers; served only by the internal `METRICS_ADDR` listener (`httpx.NewMetricsServer`); tests assert 404 on the public router; Caddy blocks `/debug/*` too |
 | M14 | Activation endpoints (`PUT /managers/activated`, `PUT /staff/activated`) have no rate limit | none | add rate limit |
 | M15 | Webhook secret may ride `?token=` (log leakage), webhooks unthrottled | accepted | prefer header/HMAC; document |
 | M16 | No service credential between products and platform | shared DB roles | accept for now (same host/DB cluster); document; 4-auth-2 keeps signature checks and limits via DB grants |
 | M17 | Reads never audited (PII, PDFs, staff list, exports) | none | audit exports.create at least |
 | M18 | Admin plan writes audit-exempt | exempt | optional: audit as actor_type=admin |
 | M19 | Audit coverage tests only prove a call exists in source | source check | acceptable; keep |
-| M20 | Staff role changes do not revoke sessions on demotion | verify in C2: disable revokes, role change unconfirmed | permissions resolved per request; revoke on demote/remove |
+| M20 | Staff role changes do not revoke sessions on demotion | **DONE (C2)** | role, module_access, property_access and disable all end the member's sessions (`authorityChange`); permissions are also re-read per request |
 | M21 | Super Admin cannot reach firm routes — not pinned by test | by chain | route x role test (C4) |
 
 Routes with no explicit gate (rely on default tier): every GET in the

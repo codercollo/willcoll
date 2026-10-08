@@ -17,9 +17,9 @@ import (
 const createPayment = `-- name: CreatePayment :one
 INSERT INTO payments (
     tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn,
-    payer_name, account_reference, status, raw_payload, received_at
+    payer_name, account_reference, status, raw_payload, received_at, matched_unit_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (mpesa_receipt) DO NOTHING
 RETURNING id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note
@@ -37,10 +37,15 @@ type CreatePaymentParams struct {
 	Status           string
 	RawPayload       json.RawMessage
 	ReceivedAt       time.Time
+	MatchedUnitID    *uuid.UUID
 }
 
 // CreatePayment is idempotent on mpesa_receipt: a PayHero retry of the
 // same delivery inserts nothing and returns no row (sql.ErrNoRows).
+// matched_unit_id is set up front only when the unit is known at insert (a
+// payment a staff member records against a unit): a property-scoped caller can
+// only see, and so only insert, a payment that already names an in-scope unit
+// (migration 000047). The webhook paths leave it NULL and match afterwards.
 func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error) {
 	row := q.db.QueryRowContext(ctx, createPayment,
 		arg.TenantID,
@@ -54,6 +59,7 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		arg.Status,
 		arg.RawPayload,
 		arg.ReceivedAt,
+		arg.MatchedUnitID,
 	)
 	var i Payment
 	err := row.Scan(

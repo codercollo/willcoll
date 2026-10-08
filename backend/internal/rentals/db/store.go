@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/ledgerkit"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Store is what the data layer depends on, so tests can swap in the
@@ -126,7 +128,29 @@ func (s *SQLStore) withRetry(ctx context.Context, b txBeginner, tenantID uuid.UU
 	}
 }
 
-func execTx(ctx context.Context, b txBeginner, tenantID uuid.UUID, fn func(q sqlc.Querier) error) error {
+// pgRLSViolation is SQLSTATE 42501, raised when a write fails a row-level-
+// security policy's check.
+const pgRLSViolation = "42501"
+
+// execTx runs fn in a tenant transaction. When ctx carries a property scope
+// (auth.WithPropertyScope) it is set as app.property_ids, right after the
+// tenant, so the property_scope policies (migration 000047) apply to every
+// statement fn runs. A write outside that scope surfaces as
+// auth.ErrOutOfScope.
+func execTx(ctx context.Context, b txBeginner, tenantID uuid.UUID, fn func(q sqlc.Querier) error) (err error) {
+	scope := auth.PropertyScopeFrom(ctx)
+	if len(scope) > 0 {
+		defer func() {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == pgRLSViolation {
+				err = fmt.Errorf("%w: %w", auth.ErrOutOfScope, err)
+			}
+		}()
+	}
+	return execTxScoped(ctx, b, tenantID, scope, fn)
+}
+
+func execTxScoped(ctx context.Context, b txBeginner, tenantID uuid.UUID, scope []uuid.UUID, fn func(q sqlc.Querier) error) error {
 	tx, err := b.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
@@ -135,6 +159,11 @@ func execTx(ctx context.Context, b txBeginner, tenantID uuid.UUID, fn func(q sql
 
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID.String()); err != nil {
 		return fmt.Errorf("db: setting tenant scope: %w", err)
+	}
+	if len(scope) > 0 {
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.property_ids', $1, true)`, auth.PropertyScopeSetting(scope)); err != nil {
+			return fmt.Errorf("db: setting property scope: %w", err)
+		}
 	}
 
 	if err := fn(sqlc.New(tx)); err != nil {

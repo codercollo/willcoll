@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -157,6 +158,10 @@ func (app *application) resolvePlatformPrincipal(c *gin.Context) bool {
 			// carry: every tenant/RLS/activation check applies unchanged.
 			contextSetManager(c, manager)
 			contextSetStaff(c, staff)
+			// Property scope (D2): carried in the request context so the
+			// database layer applies it to every query, not just to routes
+			// that remember to check (internal/shared/auth/scope.go).
+			c.Request = c.Request.WithContext(auth.WithPropertyScope(ctx, staff.PropertyScope(platformdata.ProductRentals)))
 		}
 	}
 	return true

@@ -6,6 +6,7 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -304,19 +305,56 @@ func (app *application) requireActivatedManager() gin.HandlerFunc {
 	}
 }
 
-// requireOwner guards routes only an owner may use — staff management,
-// billing, modules and plans (system-design.txt A.1). The manager's own
-// login is always the implicit owner; a signed-in staff member needs
-// Role == owner. Must run after requireActivatedManager.
-func (app *application) requireOwner() gin.HandlerFunc {
+// requirePermission guards one route with one catalog permission
+// (internal/shared/auth, docs/security/authorization.md); it replaced
+// requireOwner. The permission is resolved per request from the staff row
+// authenticate() just loaded, so a demotion takes effect at once.
+func (app *application) requirePermission(perm string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if principalRole(c) != data.RoleOwner {
-			app.notPermittedResponse(c)
-			c.Abort()
+		if app.permitted(c, perm) {
+			c.Next()
 			return
 		}
-		c.Next()
+		if _, isAdmin := contextGetAdmin(c); !isAdmin && contextGetManager(c).IsAnonymous() {
+			app.authenticationRequiredResponse(c)
+		} else {
+			app.logDenied(c, perm)
+			app.notPermittedResponse(c)
+		}
+		c.Abort()
 	}
+}
+
+// permitted reports whether the request's principal holds perm: a Super
+// Admin only admin.*, the firm's own login the owner set plus
+// account.password, a staff member their role's set (an unknown role holds
+// nothing).
+func (app *application) permitted(c *gin.Context, perm string) bool {
+	if _, ok := contextGetAdmin(c); ok {
+		return auth.AdminPermits(perm)
+	}
+	if contextGetManager(c).IsAnonymous() {
+		return false
+	}
+	staff := contextGetStaff(c)
+	if staff.IsAnonymous() {
+		return auth.FirmLoginPermits(perm)
+	}
+	return auth.StaffPermits(staff.Role, perm)
+}
+
+// logDenied records a refused request (actor, permission, route, IP) in the
+// application log only: a denied call is not a business event, and writing
+// each one to audit_log would let a misbehaving client flood it.
+func (app *application) logDenied(c *gin.Context, perm string) {
+	actor := "manager"
+	if _, ok := contextGetAdmin(c); ok {
+		actor = "admin"
+	} else if staff := contextGetStaff(c); !staff.IsAnonymous() {
+		actor = "staff:" + staff.ID.String()
+	}
+	app.logger.Info("permission denied", "actor", actor, "permission", perm,
+		"method", c.Request.Method, "route", c.FullPath(), "ip", c.ClientIP())
 }
 
 // requireAdmin guards /v1/admin/*: only a signed-in Super Admin.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ type platformStub struct {
 
 	mu    sync.Mutex
 	firms map[uuid.UUID]*stubFirm
+	staff map[uuid.UUID]platformsqlc.Staff
 }
 
 // stubFirm is one manager's willcoll_platform state.
@@ -55,7 +57,17 @@ func newPlatformStub(t *testing.T) *platformStub {
 	// The usage reporter (usage.go) fires after unit changes; accept it.
 	pq.EXPECT().UpsertModuleUsage(gomock.Any(), gomock.Any()).Return(platformsqlc.ModuleUsage{}, nil).AnyTimes()
 
-	s := &platformStub{firms: map[uuid.UUID]*stubFirm{}}
+	s := &platformStub{firms: map[uuid.UUID]*stubFirm{}, staff: map[uuid.UUID]platformsqlc.Staff{}}
+
+	pStore.EXPECT().GetStaff(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id uuid.UUID) (platformsqlc.Staff, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		st, ok := s.staff[id]
+		if !ok {
+			return platformsqlc.Staff{}, sql.ErrNoRows
+		}
+		return st, nil
+	}).AnyTimes()
 
 	pStore.EXPECT().GetManager(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id uuid.UUID) (platformsqlc.Manager, error) {
 		s.mu.Lock()
@@ -141,4 +153,31 @@ func (s *platformStub) login(t *testing.T, principalType string, principalID uui
 // loginManager is login for a manager principal.
 func (s *platformStub) loginManager(t *testing.T, id uuid.UUID) string {
 	return s.login(t, principalManager, id)
+}
+
+// newStaff registers an active staff member of firm with role, module access
+// to rentals, and the given per-product property scope (nil = unrestricted),
+// and returns their Cookie header after a platform-api login. The row can be
+// edited afterwards with editStaff, the way an owner's PATCH would.
+func (s *platformStub) newStaff(t *testing.T, firm uuid.UUID, role string, propertyAccess map[string][]uuid.UUID) (id uuid.UUID, cookie string) {
+	t.Helper()
+	id = uuid.New()
+	raw, err := json.Marshal(propertyAccess)
+	if err != nil || propertyAccess == nil {
+		raw = []byte(`{}`)
+	}
+	s.mu.Lock()
+	s.staff[id] = platformsqlc.Staff{ID: id, ManagerID: firm, Name: "Staffer", Email: id.String()[:8] + "@staff.example.com",
+		Role: role, ModuleAccess: []string{"rentals"}, Status: platformdata.StaffActive, Version: 1, PropertyAccess: raw}
+	s.mu.Unlock()
+	return id, s.login(t, principalStaff, id)
+}
+
+// editStaff changes a staff row under the stub's lock.
+func (s *platformStub) editStaff(id uuid.UUID, fn func(st *platformsqlc.Staff)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.staff[id]
+	fn(&st)
+	s.staff[id] = st
 }

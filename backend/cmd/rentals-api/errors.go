@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,7 +25,15 @@ func (app *application) codedErrorResponse(c *gin.Context, status int, message a
 }
 
 // serverErrorResponse logs err and responds 500.
+//
+// A write the database refused because the row lies outside the caller's
+// property scope (auth.ErrOutOfScope) is answered 404, exactly as a row that
+// does not exist, so scope never reveals what exists beyond it.
 func (app *application) serverErrorResponse(c *gin.Context, err error) {
+	if errors.Is(err, auth.ErrOutOfScope) {
+		app.responder().NotFoundResponse(c)
+		return
+	}
 	app.responder().ServerErrorResponse(c, err)
 }
 

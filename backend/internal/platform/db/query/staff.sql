@@ -5,8 +5,8 @@
 -- willcoll_platform_admin (BYPASSRLS) instead — see StaffModel.
 
 -- name: CreateStaff :one
-INSERT INTO staff (manager_id, name, email, phone, password_hash, role, module_access, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO staff (manager_id, name, email, phone, password_hash, role, module_access, status, property_access)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetStaff :one
@@ -30,11 +30,12 @@ INNER JOIN tokens ON tokens.staff_id = staff.id
 WHERE tokens.hash = @hash AND tokens.scope = @scope AND tokens.expiry > now();
 
 -- UpdateStaff: optimistic concurrency. Used both for an owner's edits
--- (role, module_access, name, phone, status) and for self-activation
+-- (role, module_access, property_access, name, phone, status) and for self-activation
 -- (password_hash + status -> active) from an invite token.
 -- name: UpdateStaff :one
 UPDATE staff
 SET name = @name, email = @email, phone = @phone, password_hash = @password_hash,
-    role = @role, module_access = @module_access, status = @status, version = version + 1
+    role = @role, module_access = @module_access, status = @status,
+    property_access = @property_access, version = version + 1
 WHERE id = @id AND version = @version
 RETURNING version;

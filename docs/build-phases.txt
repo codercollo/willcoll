@@ -1468,6 +1468,12 @@ PHASE 4 — LOCAL STAGING + CI
          since there's no production approval gate to separate them from
          yet) are written the same way: present, dormant, waiting for
          Phase 9 to add the real SSH target and flip their trigger.
+         REQUIRED in the production Caddyfile (deploy/caddy/Caddyfile):
+         an explicit `@debug path /debug /debug/*` + `respond @debug 404`
+         on every host. /debug/vars is not on either API's public router
+         at all (it lives on the internal METRICS_ADDR listener, reached
+         only over the container network); the Caddy block is defence in
+         depth, and the local-staging Caddyfile already has it.
   4d [ ] Dockerfiles for every frontend app (needed for 4b's compose
          either way, local or real); remove the deprecated run/api,
          build/api Makefile aliases now that both binaries have had their

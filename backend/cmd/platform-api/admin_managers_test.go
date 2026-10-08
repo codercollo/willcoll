@@ -58,8 +58,11 @@ type fakePlatform struct {
 	activated     bool
 	staffHash     []byte // the staff member's password hash, changed by UpdateStaff
 	staffVersion  int32
-	staffRole     string // the staff member's role; officer unless a test sets it
-	firmName      string // the manager's firm name, changed by UpdateManager
+	staffRole     string   // the staff member's role; officer unless a test sets it
+	staffModules  []string // module_access; [rentals] unless a test sets it
+	staffProps    []byte   // property_access jsonb; none unless a test sets it
+	staffStatus   string   // active unless a test sets it
+	firmName      string   // the manager's firm name, changed by UpdateManager
 	managerVer    int32
 	audit         []sqlc.CreateAuditLogParams
 }
@@ -98,9 +101,16 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 	staffRow := func() sqlc.Staff {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		modules, status := f.staffModules, f.staffStatus
+		if modules == nil {
+			modules = []string{"rentals"}
+		}
+		if status == "" {
+			status = data.StaffActive
+		}
 		return sqlc.Staff{
 			ID: fakeStaffID, ManagerID: fakeManagerID, Name: "Clerk", Email: fakeStaffEmail, PasswordHash: f.staffHash,
-			Role: f.staffRole, ModuleAccess: []string{"rentals"}, Status: data.StaffActive, Version: f.staffVersion,
+			Role: f.staffRole, ModuleAccess: modules, Status: status, Version: f.staffVersion, PropertyAccess: f.staffProps,
 		}
 	}
 
@@ -129,6 +139,9 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 	store.EXPECT().ListActiveStaffByEmail(gomock.Any(), fakeStaffEmail).DoAndReturn(func(context.Context, string) ([]sqlc.Staff, error) {
 		return []sqlc.Staff{staffRow()}, nil
 	}).AnyTimes()
+	q.EXPECT().GetStaff(gomock.Any(), fakeStaffID).DoAndReturn(func(context.Context, uuid.UUID) (sqlc.Staff, error) {
+		return staffRow(), nil
+	}).AnyTimes()
 	// An owner's or the staff member's own save: optimistic concurrency on version.
 	q.EXPECT().UpdateStaff(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a sqlc.UpdateStaffParams) (int32, error) {
 		f.mu.Lock()
@@ -137,6 +150,7 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 			return 0, sql.ErrNoRows
 		}
 		f.staffHash = a.PasswordHash
+		f.staffRole, f.staffModules, f.staffProps, f.staffStatus = a.Role, a.ModuleAccess, a.PropertyAccess, a.Status
 		f.staffVersion++
 		return f.staffVersion, nil
 	}).AnyTimes()
