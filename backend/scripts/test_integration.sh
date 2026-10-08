@@ -11,6 +11,12 @@
 # FAILS instead of skipping (internal/testenv), so a green run here means the
 # database tests really ran. The summary's skip column shows anything else.
 #
+# Packages run one at a time (-p 1): they all share the two scratch databases,
+# so parallel packages contend on the same tables and CPU and make the
+# concurrency tests flaky. Per-package databases would lift this; until then
+# CI runs this same script, so it gets the same setting. Pass your own -p to
+# override.
+#
 # Settings and the platform roles' passwords: see scripts/lib_testdb.sh.
 # Needs `psql` on the PATH; uses golang-migrate (`migrate`) when installed,
 # otherwise applies the .up.sql files with psql. DSNs are never printed.
@@ -50,7 +56,7 @@ WILLCOLL_TEST_DB_DSN="$(app_dsn "$SCRATCH")" \
 WILLCOLL_TEST_ADMIN_DB_DSN="$(admin_dsn "$SCRATCH")" \
 WILLCOLL_TEST_PLATFORM_DB_DSN="$(platform_app_dsn "$SCRATCH_PLATFORM")" \
 WILLCOLL_TEST_PLATFORM_ADMIN_DB_DSN="$(platform_admin_dsn "$SCRATCH_PLATFORM")" \
-    go test -count=1 -json "$@" >"$results" || status=$?
+    go test -count=1 -p 1 -json "$@" >"$results" || status=$?
 
 # The json stream is the source of truth; the summary prints the per-package
 # table (run / pass / fail / skip) and, on failure, the failing output.

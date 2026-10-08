@@ -50,7 +50,7 @@ func seedTenant(t *testing.T, conn *sql.DB) (tenantID, landlordID uuid.UUID) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true), set_config('app.property_scope', 'all', true)`, tenantID.String()); err != nil {
 		t.Fatal(err)
 	}
 	// Bank details so any water/garbage bill's payment particulars aren't
@@ -182,7 +182,7 @@ func TestPropertyModelIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantA.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true), set_config('app.property_scope', 'all', true)`, tenantA.String()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT deleted_at FROM properties WHERE id = $1`, kiwi.ID).Scan(&archivedAt); err != nil {

@@ -342,9 +342,11 @@ func TestPropertyScope_EveryTableFiltered(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(scope) > 0 {
-			if _, err := tx.Exec(`SELECT set_config('app.property_ids', $1, true)`, auth.PropertyScopeSetting(scope)); err != nil {
+			if _, err := tx.Exec(`SELECT set_config('app.property_scope', 'list', true), set_config('app.property_ids', $1, true)`, auth.PropertyScopeSetting(scope)); err != nil {
 				t.Fatal(err)
 			}
+		} else if _, err := tx.Exec(`SELECT set_config('app.property_scope', 'all', true)`); err != nil {
+			t.Fatal(err)
 		}
 		if err := tx.QueryRow(fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, table, where)).Scan(&n); err != nil {
 			t.Fatalf("%s: %v", table, err)
@@ -398,8 +400,8 @@ func TestPropertyScope_EveryTableFiltered(t *testing.T) {
 func TestPropertyScope_EveryTenantTableHasAPolicyOrAnExemption(t *testing.T) {
 	conn := openTestDB(t)
 	exempt := map[string]string{
-		"transaction_headers": "groups ledger entries; carries no unit or tenant data (entries are scoped)",
-		"pay_otps":            "used only by the unauthenticated pay surface, which has no staff principal",
+		"transaction_headers": "groups ledger entries; carries no unit or tenant data. No staff route reads it except joined from ledger_entries (scoped): TestPropertyScopeProof_UnscopedTablesAreOnlyReadThroughScopedOnes",
+		"pay_otps":            "used only by the unauthenticated pay surface, which has no staff principal; no manager route can call its queries (same proof test)",
 	}
 	rows, err := conn.Query(`
 		SELECT tablename,

@@ -40,7 +40,7 @@ func biTx(t *testing.T, conn *sql.DB, tenant uuid.UUID, fn func(tx *sql.Tx)) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`SELECT set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
+	if _, err := tx.Exec(`SELECT set_config('app.tenant_id', $1, true), set_config('app.property_scope', 'all', true)`, tenant.String()); err != nil {
 		t.Fatal(err)
 	}
 	fn(tx)

@@ -111,7 +111,7 @@ func (s *SQLStore) withRetry(ctx context.Context, b txBeginner, tenantID uuid.UU
 
 	for attempt := 0; ; attempt++ {
 		err := execTx(ctx, b, tenantID, fn)
-		if err == nil || !ledgerkit.IsSerializationFailure(err) || attempt == maxRetries {
+		if err == nil || !ledgerkit.IsRetryable(err) || attempt == maxRetries {
 			return err
 		}
 
@@ -160,8 +160,16 @@ func execTxScoped(ctx context.Context, b txBeginner, tenantID uuid.UUID, scope [
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID.String()); err != nil {
 		return fmt.Errorf("db: setting tenant scope: %w", err)
 	}
-	if len(scope) > 0 {
-		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.property_ids', $1, true)`, auth.PropertyScopeSetting(scope)); err != nil {
+	// Migration 000048: unrestricted must be explicit ('all'); a transaction
+	// that never sets app.property_scope sees no property data at all.
+	// Both settings are transaction-local (is_local = true), so neither can
+	// outlive this transaction on the pooled connection.
+	if len(scope) == 0 {
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.property_scope', 'all', true)`); err != nil {
+			return fmt.Errorf("db: setting property scope: %w", err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.property_scope', 'list', true), set_config('app.property_ids', $1, true)`, auth.PropertyScopeSetting(scope)); err != nil {
 			return fmt.Errorf("db: setting property scope: %w", err)
 		}
 	}

@@ -74,7 +74,7 @@ func (s *SQLStore) ExecTenantTx(ctx context.Context, tenantID uuid.UUID, fn func
 
 	for attempt := 0; ; attempt++ {
 		err := s.execTx(ctx, tenantID, fn)
-		if err == nil || !ledgerkit.IsSerializationFailure(err) || attempt == ledgerkit.MaxSerializationRetries {
+		if err == nil || !ledgerkit.IsRetryable(err) || attempt == ledgerkit.MaxSerializationRetries {
 			return err
 		}
 

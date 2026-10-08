@@ -22,7 +22,13 @@ import (
 
 // MaxSerializationRetries is how many times a transaction is re-run after a
 // serialization failure (SQLSTATE 40001) before giving up (system-design.txt 3.8).
-const MaxSerializationRetries = 3
+//
+// 3 was too tight: several same-tenant runs (e.g. four concurrent billing runs
+// of one property) lose SSI conflicts in turn, and on a loaded machine a
+// transaction can lose more than three times in a row. With the capped,
+// jittered backoff below, 8 attempts wait roughly 1s in total at most, still
+// inside DefaultTxTimeout, which bounds the whole call regardless.
+const MaxSerializationRetries = 8
 
 // MaxExclusiveRetries is the allowance for a transaction that first takes a
 // per-tenant advisory lock. The lock already removes conflicts between one
@@ -45,6 +51,15 @@ const DefaultTxTimeout = 3 * time.Second
 func IsSerializationFailure(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
+// IsRetryable reports whether err means the whole transaction lost a race and
+// is safe to re-run from the start: a serialization failure (40001) or a
+// detected deadlock (40P01). Postgres has already rolled the transaction back
+// in both cases.
+func IsRetryable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01")
 }
 
 // AdvisoryKey derives a stable 64-bit Postgres advisory-lock key for a

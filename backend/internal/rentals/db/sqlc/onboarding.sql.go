@@ -70,7 +70,10 @@ SELECT
     (SELECT count(*) FROM properties p2 WHERE p2.tenant_id = $1 AND p2.deleted_at IS NULL AND p2.payhero_channel_id IS NOT NULL AND p2.payhero_channel_id <> '')::int AS properties_with_channel,
     (SELECT count(*) FROM units u1 JOIN properties p3 ON p3.id = u1.property_id WHERE u1.tenant_id = $1 AND p3.deleted_at IS NULL)::int AS units,
     (SELECT count(*) FROM leases l1 WHERE l1.tenant_id = $1 AND l1.status = 'active')::int AS active_leases,
-    (SELECT count(*) FROM transaction_headers th WHERE th.tenant_id = $1 AND th.type = 'OPENING_BALANCE')::int AS opening_imports,
+    -- transaction_headers has no property_scope policy, so it is only ever
+    -- read through ledger_entries (which has one): a scoped caller counts the
+    -- imports that touched their properties, never the firm's.
+    (SELECT count(DISTINCT th.id) FROM transaction_headers th JOIN ledger_entries oe ON oe.transaction_header_id = th.id WHERE th.tenant_id = $1 AND th.type = 'OPENING_BALANCE')::int AS opening_imports,
     (SELECT count(*) FROM water_readings wr WHERE wr.tenant_id = $1)::int AS water_readings,
     (SELECT count(*) FROM charges c WHERE c.tenant_id = $1 AND c.source_type = 'rent_run')::int AS rent_charges,
     (SELECT count(*) FROM unit_qr_codes q WHERE q.tenant_id = $1 AND q.revoked_at IS NULL)::int AS live_qr_codes
