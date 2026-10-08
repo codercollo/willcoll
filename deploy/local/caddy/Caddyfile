@@ -1,0 +1,37 @@
+# Local staging front door: one TLS endpoint for both web apps, on
+# *.willcoll.localhost (Chrome and Edge resolve that to loopback, no hosts-file
+# edit). `tls internal` = Caddy's own CA signs the certificates; trust its root
+# once (docs/dev-setup.md "Local staging"). Production uses the same shape with
+# real hostnames and automatic public certificates.
+#
+# Both sites listen on 8443 INSIDE the container; compose publishes it on
+# ${HTTPS_PORT} of the host. The browser's Host header names the hostname, which
+# is what the site blocks match on.
+{
+	# No port 80 listener: nothing to redirect.
+	auto_https disable_redirects
+	# trusted_proxies is deliberately left empty: whatever X-Forwarded-* a client
+	# sends is replaced by what Caddy actually saw, so the client IP the APIs
+	# eventually read cannot be spoofed from the browser.
+}
+
+# Compose healthcheck target (plain HTTP, never published to the host).
+:8080 {
+	respond /healthz 200
+}
+
+app.willcoll.localhost:8443 {
+	tls internal
+	encode zstd gzip
+	reverse_proxy platform-web:3001 {
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+rentals.willcoll.localhost:8443 {
+	tls internal
+	encode zstd gzip
+	reverse_proxy rentals-web:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+}

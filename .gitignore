@@ -8,6 +8,7 @@ backend/bin/
 # Env / secrets
 *.env
 backend/.env
+deploy/local/caddy-root.crt
 
 # Frontend
 frontend/node_modules/

@@ -30,7 +30,7 @@ func (app *application) audit(c *gin.Context, action, entityType string, entityI
 	}
 	app.writeAudit(tenantID, platformdata.AuditEntry{
 		ActorType: actorType, ActorID: &actorID, Product: platformdata.ProductRentals,
-		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary,
+		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary, IP: c.ClientIP(),
 	})
 }
 

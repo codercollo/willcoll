@@ -29,7 +29,7 @@ func (app *application) audit(c *gin.Context, product, action, entityType string
 	}
 	app.writeAudit(tenantID, data.AuditEntry{
 		ActorType: actorType, ActorID: &actorID, Product: product,
-		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary,
+		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary, IP: c.ClientIP(),
 	})
 }
 
@@ -43,7 +43,7 @@ func (app *application) auditAdmin(c *gin.Context, targetTenantID uuid.UUID, pro
 	}
 	app.writeAudit(targetTenantID, data.AuditEntry{
 		ActorType: data.ActorAdmin, ActorID: &admin.ID, Product: product,
-		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary,
+		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary, IP: c.ClientIP(),
 	})
 }
 

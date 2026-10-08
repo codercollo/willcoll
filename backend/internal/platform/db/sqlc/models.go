@@ -34,6 +34,7 @@ type AuditLog struct {
 	CreatedAt  time.Time
 	ActorType  string
 	ActorID    *uuid.UUID
+	Ip         *string
 }
 
 type HandoffInvoice struct {

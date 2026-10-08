@@ -1,0 +1,288 @@
+# Local staging: the whole platform as containers on a laptop (build-phases.txt
+# Phase 4b). A laptop is "staging" until a VPS exists, so this is the stack the
+# later phases are built and verified against. Drive it with the backend
+# Makefile: make staging/up | down | logs | seed | reset | check-rls.
+#
+# Reads exactly one env file, deploy/local/.env (copied from .env.example by
+# `make staging/up`). backend/.env is never read, passed or mounted. No service
+# bind-mounts a host path: init scripts, Caddyfile and migrations are COPYed
+# into their images. DEV_FAKES=true: SMS and PayHero are local stand-ins and all
+# email goes to Mailpit, so nothing real is ever called or sent.
+name: willcoll-local
+
+x-api-common: &api-common
+  restart: unless-stopped
+  networks: [willcoll]
+
+x-fake-env: &fake-env
+  PAYHERO_BASE_URL: http://fakes:14902
+  PAYHERO_API_KEY: dev
+  PAYHERO_ACCOUNT_ID: "1"
+  PAYHERO_BILLING_CHANNEL_ID: BILLING-DEV
+  PAYHERO_COLLECTIONS_CHANNEL_ID: COLLECTIONS-DEV
+  PAYHERO_WEBHOOK_SECRET: ${PAYHERO_WEBHOOK_SECRET}
+  AFRICASTALKING_API_KEY: dev
+  AFRICASTALKING_USERNAME: dev
+  AFRICASTALKING_BASE_URL: http://fakes:14901
+  # Mailpit catches every email (activation and reset links): nothing leaves the stack.
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_USERNAME: ""
+  SMTP_PASSWORD: ""
+
+services:
+  postgres:
+    build: ../postgres
+    image: willcoll-local/postgres
+    restart: unless-stopped
+    networks: [willcoll]
+    # Only the init script reads the role passwords.
+    env_file: .env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP on purpose: while the image runs its first-boot init it starts a
+      # temporary server that listens on the Unix socket only, and a socket check
+      # would pass before the real server (and the init script) is done.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d willcoll_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---- migrations: one-shot containers, never run by an API at boot ---------------
+  migrate-platform:
+    build: { context: ../../backend, dockerfile: build/Dockerfile, target: migrate }
+    image: willcoll-local/migrate
+    networks: [willcoll]
+    depends_on:
+      postgres: { condition: service_healthy }
+    command:
+      - -path
+      - /migrations/platform
+      - -database
+      - postgres://willcoll_platform_owner:${PLATFORM_OWNER_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      - up
+    restart: "no"
+
+  migrate-rentals:
+    image: willcoll-local/migrate
+    networks: [willcoll]
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate-platform: { condition: service_completed_successfully }
+    command:
+      - -path
+      - /migrations/rentals
+      - -database
+      - postgres://willcoll_rentals_owner:${RENTALS_OWNER_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      - up
+    restart: "no"
+
+  # ---- mail catcher: SMTP :1025 for the APIs, inbox UI on 127.0.0.1 only -----------
+  mailpit:
+    <<: *api-common
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8025/livez >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- stand-ins for Africa's Talking and PayHero ---------------------------------
+  fakes:
+    <<: *api-common
+    build:
+      context: ../../backend
+      dockerfile: build/Dockerfile
+      args: { SERVICE: rehearse }
+    image: willcoll-local/fakes
+    command: ["fakes"]
+    environment:
+      FAKE_SMS_ADDR: 0.0.0.0:14901
+      FAKE_PAYHERO_ADDR: 0.0.0.0:14902
+      # Every STK push is completed (callback to rentals-api) after a few seconds.
+      FAKE_PAYHERO_AUTOCALLBACK: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 14902 && nc -z 127.0.0.1 14901"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- APIs -------------------------------------------------------------------
+  platform-api:
+    <<: *api-common
+    build:
+      context: ../../backend
+      dockerfile: build/Dockerfile
+      args: { SERVICE: platform-api }
+    image: willcoll-local/platform-api
+    depends_on:
+      migrate-platform: { condition: service_completed_successfully }
+      fakes: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+    environment:
+      <<: *fake-env
+      ENV: staging
+      PORT: "4100"
+      DB_DSN: postgres://willcoll_platform_app:${PLATFORM_APP_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      DB_ADMIN_DSN: postgres://willcoll_platform_admin:${PLATFORM_ADMIN_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      FRONTEND_URL: ${PLATFORM_ORIGIN}
+      CORS_TRUSTED_ORIGINS: ${PLATFORM_ORIGIN} ${RENTALS_ORIGIN}
+      SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN}
+      SESSION_SECURE: "true"
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES}
+      LIMITER_ENABLED: ${LIMITER_ENABLED}
+      LIMITER_RPS: ${LIMITER_RPS}
+      LIMITER_BURST: ${LIMITER_BURST}
+      RENTALS_API_URL: http://rentals-api:4000
+      PAYHERO_CALLBACK_BASE_URL: http://platform-api:4100
+      ADMIN_NAME: ${ADMIN_NAME}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4100/v1/healthcheck >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rentals-api:
+    <<: *api-common
+    build:
+      context: ../../backend
+      dockerfile: build/Dockerfile
+      args: { SERVICE: rentals-api }
+    image: willcoll-local/rentals-api
+    depends_on:
+      migrate-rentals: { condition: service_completed_successfully }
+      platform-api: { condition: service_healthy }
+      fakes: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+    environment:
+      <<: *fake-env
+      ENV: staging
+      PORT: "4000"
+      DB_DSN: postgres://willcoll_app:${RENTALS_APP_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      DB_ADMIN_DSN: postgres://willcoll_admin:${RENTALS_ADMIN_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      PLATFORM_DB_DSN: postgres://willcoll_platform_app:${PLATFORM_APP_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      PLATFORM_DB_ADMIN_DSN: postgres://willcoll_platform_admin:${PLATFORM_ADMIN_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      FRONTEND_URL: ${RENTALS_ORIGIN}
+      QR_BASE_URL: ${RENTALS_ORIGIN}
+      CORS_TRUSTED_ORIGINS: ${PLATFORM_ORIGIN} ${RENTALS_ORIGIN}
+      SESSION_SECURE: "true"
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES}
+      LIMITER_ENABLED: ${LIMITER_ENABLED}
+      LIMITER_RPS: ${LIMITER_RPS}
+      LIMITER_BURST: ${LIMITER_BURST}
+      PAYHERO_CALLBACK_BASE_URL: http://rentals-api:4000
+      PAY_SESSION_SECRET: ${PAY_SESSION_SECRET}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/v1/healthcheck >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ---- web apps (the same images as production: only env differs) -----------------
+  platform-web:
+    <<: *api-common
+    build: { context: ../../frontend, dockerfile: platform/Dockerfile }
+    image: willcoll-local/platform-web
+    depends_on:
+      platform-api: { condition: service_healthy }
+    environment:
+      NUXT_API_PLATFORM_INTERNAL_BASE: http://platform-api:4100
+      NUXT_PUBLIC_APPS_PLATFORM: ${PLATFORM_ORIGIN}
+      NUXT_PUBLIC_APPS_RENTALS: ${RENTALS_ORIGIN}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/auth/login >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rentals-web:
+    <<: *api-common
+    build: { context: ../../frontend, dockerfile: rentals/Dockerfile }
+    image: willcoll-local/rentals-web
+    depends_on:
+      rentals-api: { condition: service_healthy }
+      platform-api: { condition: service_healthy }
+    environment:
+      NUXT_API_INTERNAL_BASE: http://rentals-api:4000
+      NUXT_API_PLATFORM_INTERNAL_BASE: http://platform-api:4100
+      NUXT_PUBLIC_APPS_PLATFORM: ${PLATFORM_ORIGIN}
+      NUXT_PUBLIC_APPS_RENTALS: ${RENTALS_ORIGIN}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/auth/login >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  caddy:
+    <<: *api-common
+    build: ./caddy
+    image: willcoll-local/caddy
+    depends_on:
+      platform-web: { condition: service_healthy }
+      rentals-web: { condition: service_healthy }
+    ports:
+      - "${HTTPS_PORT:-8443}:8443"
+    volumes:
+      # Caddy's local CA lives here; its root certificate is what you trust once
+      # on your machine (docs/dev-setup.md). `staging/reset` deletes it too.
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- one-off tools (`make staging/seed`), not part of `up` -----------------------
+  seed:
+    profiles: [tools]
+    build:
+      context: ../../backend
+      dockerfile: build/Dockerfile
+      args: { SERVICE: seed }
+    image: willcoll-local/seed
+    networks: [willcoll]
+    restart: "no"
+    environment: &tools-env
+      # The seeder and devtools refuse to run outside development.
+      ENV: development
+      DB_DSN: postgres://willcoll_app:${RENTALS_APP_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      DB_ADMIN_DSN: postgres://willcoll_admin:${RENTALS_ADMIN_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      MIGRATE_DSN: postgres://willcoll_rentals_owner:${RENTALS_OWNER_PASSWORD}@postgres:5432/willcoll_rentals?sslmode=disable
+      # Creates managers, plans and invoices, which the narrow platform roles may
+      # not: it runs as the platform owner.
+      PLATFORM_DSN: postgres://willcoll_platform_owner:${PLATFORM_OWNER_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      PLATFORM_MIGRATE_DSN: postgres://willcoll_platform_owner:${PLATFORM_OWNER_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      PAYHERO_CALLBACK_BASE_URL: http://rentals-api:4000
+      ADMIN_NAME: ${ADMIN_NAME}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+  devtools:
+    profiles: [tools]
+    build:
+      context: ../../backend
+      dockerfile: build/Dockerfile
+      args: { SERVICE: devtools }
+    image: willcoll-local/devtools
+    networks: [willcoll]
+    restart: "no"
+    environment: *tools-env
+
+networks:
+  willcoll:
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

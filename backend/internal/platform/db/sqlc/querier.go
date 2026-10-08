@@ -45,7 +45,7 @@ type Querier interface {
 	// Append-only audit trail (system-design.txt A.1, A.8). Tenant-scoped
 	// (RLS by manager_id, migration 000012). actor_type/actor_id (migration
 	// 000018) identify who did it; staff_id is kept alongside for joins when
-	// actor_type = 'staff'.
+	// actor_type = 'staff'. ip (migration 000019) is the resolved client address.
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
 	// Managers: the SaaS tenant (system-design.txt A.1). Not tenant-scoped (no
 	// RLS), so these run on the Store directly, outside ExecTenantTx.

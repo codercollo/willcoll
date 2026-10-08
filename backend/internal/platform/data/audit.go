@@ -32,6 +32,10 @@ type AuditEntry struct {
 	EntityType string
 	EntityID   *uuid.UUID
 	Summary    string
+	// IP is the client address as the API resolved it (c.ClientIP(): the TCP
+	// peer, or X-Forwarded-For only from a trusted proxy). Empty for a system
+	// action; stored as NULL.
+	IP string
 }
 
 // AuditModel is tenant-scoped, append-only audit_log access.
@@ -55,6 +59,10 @@ func (m AuditModel) Log(ctx context.Context, tenantID uuid.UUID, e AuditEntry) e
 	if e.Product != "" {
 		product = &e.Product
 	}
+	var ip *string
+	if e.IP != "" {
+		ip = &e.IP
+	}
 	// staff_id is kept alongside actor_type/actor_id (migration 000018)
 	// only when the actor actually is a staff member, for joins.
 	var staffID *uuid.UUID
@@ -65,7 +73,7 @@ func (m AuditModel) Log(ctx context.Context, tenantID uuid.UUID, e AuditEntry) e
 	return m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
 		return q.CreateAuditLog(ctx, sqlc.CreateAuditLogParams{
 			ManagerID: tenantID, StaffID: staffID, ActorType: e.ActorType, ActorID: e.ActorID,
-			Product: product, Action: e.Action, EntityType: e.EntityType, EntityID: e.EntityID, Summary: e.Summary,
+			Product: product, Action: e.Action, EntityType: e.EntityType, EntityID: e.EntityID, Summary: e.Summary, Ip: ip,
 		})
 	})
 }

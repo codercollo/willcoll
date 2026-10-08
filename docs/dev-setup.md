@@ -209,6 +209,92 @@ DEV_PLATFORM_DB=willcoll_platform
 `make dev/up` points both APIs at the local SMS/PayHero stand-ins and blanks `SMTP_HOST` **for those
 processes only**, whatever your `.env` says, so nothing real is called or sent.
 
+## Local staging (Docker)
+
+The whole platform as containers, the way production will run it: Postgres (4 databases),
+one-shot migrations, platform-api, rentals-api, both Nuxt apps, Caddy, the fake SMS/PayHero
+service and Mailpit. It is separate from the plain-Go dev stack above and runs beside it
+(different ports). Needs Docker Desktop running.
+
+| What | URL / port |
+|---|---|
+| Platform app (sign in, account, Super Admin) | <https://app.willcoll.localhost:8443> |
+| Rentals app and the public pay page | <https://rentals.willcoll.localhost:8443> |
+| Mailpit inbox (activation / reset emails) | <http://127.0.0.1:8025> |
+| Postgres, for psql / a GUI (superuser `postgres`) | `127.0.0.1:5433` (never 5432) |
+
+**Commands (from `backend/`):**
+
+| Want | Do |
+|---|---|
+| Start everything (builds, migrates, waits until healthy) | `make staging/up` |
+| Demo firm + `TEST - KES 10` plan + Super Admin | `make staging/seed` (`RESEED=yes` replaces an existing demo firm) |
+| Prove RLS applies to the API roles | `make staging/check-rls` |
+| Logs / status | `make staging/logs` (`SVC=rentals-api` for one), `make staging/ps` |
+| Stop (keeps data) | `make staging/down` |
+| Wipe databases **and** Caddy's CA | `make staging/reset CONFIRM=yes` |
+
+The first `staging/up` copies `deploy/local/.env.example` to `deploy/local/.env` (git-ignored;
+throwaway local passwords). That is the only env file the stack reads: `backend/.env` is never
+passed to a container, and nothing is bind-mounted (init scripts, the Caddyfile and migrations are
+copied into their images). `DEV_FAKES=true`: SMS and PayHero go to local stand-ins and email goes
+to Mailpit, so nothing real is ever called or sent. Demo logins are the same as the dev stack
+(`demo@willcoll.test` / `Demo-Password-1`); the Super Admin is `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+from `deploy/local/.env` at `/admin/login`. Read the pay page's SMS code with
+`make staging/logs SVC=fakes`.
+
+### Trust Caddy's root certificate once (Windows)
+
+Caddy signs the `*.willcoll.localhost` certificates with its own CA (`tls internal`). Until your
+machine trusts that CA, the browser stops on a certificate warning and **stores no cookie**.
+Chrome and Edge resolve `*.willcoll.localhost` to your own machine by themselves: no hosts-file
+edit. The session cookie is `Secure; HttpOnly; SameSite=Lax; Domain=.willcoll.localhost`, which
+both browsers accept and send to both hosts (verified in Chrome 154 and Edge 154).
+
+1. `make staging/up`, then export the root certificate out of Caddy's data volume
+   (`/data/caddy/pki/authorities/local/root.crt`):
+
+   ```
+   make staging/export-ca          # writes deploy/local/caddy-root.crt (git-ignored)
+   ```
+
+   (by hand: `docker compose -f ../deploy/local/docker-compose.yml cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt`)
+
+2. Trust it for your Windows user (no admin rights; Windows may ask you to confirm):
+
+   ```
+   certutil -user -addstore Root deploy\local\caddy-root.crt
+   ```
+
+   Restart Chrome/Edge fully afterwards. Firefox keeps its own store (Settings, Privacy, View
+   Certificates, Authorities, Import).
+
+3. To undo it: `certutil -user -delstore Root "Caddy Local Authority - 2026 ECC Root"`.
+
+The CA lives in the `caddy_data` volume, so it survives `staging/down` and `staging/up`. After
+`staging/reset` (which deletes the volume) Caddy makes a new one: delete the old entry (step 3),
+then export and trust again. The CA's private key stays in that volume on your machine; the
+certificate you trust is only good for `localhost` names Caddy issues here, but treat it like any
+local dev CA and remove it when you stop using the stack.
+
+### Things that are deliberately different from the dev stack
+
+- **Database roles** (`deploy/postgres/init.sql`, reused in production): per database a migration
+  *owner* and an API *app* role; rentals and platform also have an *admin* role (BYPASSRLS). The
+  owner is BYPASSRLS because tenant tables have FORCE ROW LEVEL SECURITY and a data-fixing
+  migration (000015) cannot run otherwise; owners are used by `migrate` and the seeder only.
+  `make staging/check-rls` proves the API roles are not superuser/BYPASSRLS/owner, cannot alter
+  the schema, and see zero rows for a tenant that owns nothing; it fails if that is ever wrong.
+- **Web images take their API targets at run time** (`NUXT_API_INTERNAL_BASE`,
+  `NUXT_API_PLATFORM_INTERNAL_BASE`, `NUXT_PUBLIC_APPS_*`): the same image runs in every
+  environment.
+- **Client IP.** Caddy replaces any `X-Forwarded-For` it is sent, the Nuxt servers append the peer
+  they see, and the APIs believe the header only when their direct peer is in `TRUSTED_PROXIES`
+  (the compose network's private ranges here; empty in plain `make dev`). In Docker Desktop the
+  browser reaches Caddy through Docker's NAT, so request logs show `172.18.0.1` for you; a real
+  server shows the real address.
+- The Super Admin System page shows Backups as "not configured" locally; that is expected.
+
 ## Race detector: `make test/race`
 
 `go test -race` needs cgo, and a bare Windows machine has no C compiler, so plain `make test`

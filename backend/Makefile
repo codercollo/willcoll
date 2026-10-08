@@ -5,7 +5,7 @@ ifndef NO_DOTENV
 export
 endif
 
-.PHONY: help dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/race test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero
+.PHONY: help dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/race test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero staging/up staging/down staging/logs staging/ps staging/seed staging/check-rls staging/export-ca staging/reset
 
 help:
 	@echo "usage: make [target]"
@@ -28,6 +28,14 @@ help:
 	@echo "  db/migrations/up       apply all up migrations"
 	@echo "  db/migrations/down     roll back all migrations"
 	@echo "  sqlc/generate          regenerate sqlc queries and gomock mocks"
+	@echo "  staging/up             local staging in Docker (deploy/local): build, migrate, start everything, wait until healthy"
+	@echo "  staging/down           stop it (data volumes kept)"
+	@echo "  staging/logs           follow logs; SVC=<service> for one (e.g. SVC=rentals-api)"
+	@echo "  staging/ps             service status"
+	@echo "  staging/seed           demo firm + TEST plan + Super Admin (RESEED=yes replaces an existing demo firm)"
+	@echo "  staging/check-rls      prove row-level security applies to the API roles"
+	@echo "  staging/export-ca      write Caddy's root CA to deploy/local/caddy-root.crt (to trust it: docs/dev-setup.md)"
+	@echo "  staging/reset          delete the database AND Caddy CA volumes; needs CONFIRM=yes"
 	@echo "  dev/payhero            result=<success|cancelled|insufficient|failed> [id=<ref>]: answer a pending fake STK push by hand"
 	@echo "  dev/test-plan          upsert the TEST - KES 10 subscription plan (ENV=development only)"
 	@echo "  dev/expire-trial       EMAIL=<email>: end that manager's trial/subscription yesterday (ENV=development only)"
@@ -118,6 +126,45 @@ test/integration:
 # ARGS=--with-gate also runs the full gate first.
 rehearse/cutover:
 	sh ./scripts/rehearse_cutover.sh $(ARGS)
+
+# ---- Local staging: the whole stack in Docker (deploy/local, docs/dev-setup.md) ----
+# Reads deploy/local/.env only (copied from .env.example on first `up`); the
+# containers never see backend/.env. MSYS_NO_PATHCONV keeps Git Bash from
+# rewriting container paths.
+STAGING_DIR = ../deploy/local
+STAGING_COMPOSE = MSYS_NO_PATHCONV=1 docker compose -f $(STAGING_DIR)/docker-compose.yml --env-file $(STAGING_DIR)/.env
+
+staging/up:
+	@test -f $(STAGING_DIR)/.env || { cp $(STAGING_DIR)/.env.example $(STAGING_DIR)/.env && echo "created $(STAGING_DIR)/.env from .env.example"; }
+	$(STAGING_COMPOSE) up -d --build --wait
+	@echo ""
+	@echo "up. Next: make staging/seed (first time), trust Caddy's CA once (docs/dev-setup.md), then open the platform URL from $(STAGING_DIR)/.env"
+
+staging/down:
+	$(STAGING_COMPOSE) down
+
+staging/logs:
+	$(STAGING_COMPOSE) logs -f --tail=100 $(SVC)
+
+staging/ps:
+	$(STAGING_COMPOSE) ps -a
+
+# The seeder fails if the demo firm already exists: RESEED=yes replaces it.
+staging/seed:
+	$(STAGING_COMPOSE) run --rm seed $(if $(filter yes,$(RESEED)),-reset)
+	$(STAGING_COMPOSE) run --rm devtools test-plan
+	$(STAGING_COMPOSE) run --rm devtools claim-channels
+
+staging/check-rls:
+	$(STAGING_COMPOSE) exec -T postgres psql -U postgres -v ON_ERROR_STOP=1 -f /opt/willcoll/check_rls.sql
+
+# Caddy's local root certificate, to import into the OS/browser trust store once.
+staging/export-ca:
+	$(STAGING_COMPOSE) cp caddy:/data/caddy/pki/authorities/local/root.crt $(STAGING_DIR)/caddy-root.crt
+
+staging/reset:
+	@test "$(CONFIRM)" = yes || { echo "staging/reset deletes the staging databases and Caddy's local CA. Re-run with CONFIRM=yes"; exit 1; }
+	$(STAGING_COMPOSE) --profile tools down -v --remove-orphans
 
 tidy:
 	go fmt ./...
