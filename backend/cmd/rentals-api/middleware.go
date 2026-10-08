@@ -54,6 +54,29 @@ func (app *application) rateLimit() gin.HandlerFunc {
 	}, app.rateLimitExceededResponse)
 }
 
+// payRateLimits returns the pay surface's two limiters. Behind carrier-grade
+// NAT one public IP is many tenants, so the per-IP cap is loose (a safety net)
+// and status polling is bucketed by intent id instead. The status limiter
+// falls back to the IP only when the URL carries no id.
+func (app *application) payRateLimits() (perIP, perIntent gin.HandlerFunc) {
+	perIP = httpx.RateLimit(httpx.RateLimiterConfig{
+		Enabled: app.config.limiter.enabled,
+		RPS:     app.config.pay.ipRPS,
+		Burst:   app.config.pay.ipBurst,
+	}, app.rateLimitExceededResponse)
+	perIntent = httpx.RateLimitBy(httpx.RateLimiterConfig{
+		Enabled: app.config.limiter.enabled,
+		RPS:     app.config.pay.statusRPS,
+		Burst:   app.config.pay.statusBurst,
+	}, func(c *gin.Context) string {
+		if id := c.Param("id"); id != "" {
+			return "intent:" + id
+		}
+		return "ip:" + c.ClientIP()
+	}, app.rateLimitExceededResponse)
+	return perIP, perIntent
+}
+
 // Session principal types, as platform-api writes them into the shared
 // willcoll_platform session row (ADR-0007).
 const (
@@ -108,6 +131,9 @@ func (app *application) resolvePlatformPrincipal(c *gin.Context) bool {
 	if app.platformSessionPolicy.Expired(sm, sessionCtx) {
 		return true // idle too long or past the absolute cap: anonymous (never destroyed here)
 	}
+	// The step-up window platform-api opened on this session, if any (D5,
+	// internal/shared/auth/stepup.go). Read-only like everything else here.
+	c.Set(auth.StepUpContextKey, sm.GetInt64(sessionCtx, auth.SessionKeyStepUpUntil))
 	principalID, err := uuid.Parse(sm.GetString(sessionCtx, sessionKeyPrincipalID))
 	if err != nil {
 		return true

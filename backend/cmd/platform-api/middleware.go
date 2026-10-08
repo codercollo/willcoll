@@ -178,6 +178,12 @@ func (app *application) authenticate() gin.HandlerFunc {
 		ctx := c.Request.Context()
 		sm := app.sessionManager
 
+		// The session's step-up window (internal/shared/auth/stepup.go), for
+		// requireStepUp and the handlers that gate part of their input.
+		if app.sessionLoaded(c) {
+			c.Set(auth.StepUpContextKey, sm.GetInt64(ctx, auth.SessionKeyStepUpUntil))
+		}
+
 		principalType := sm.GetString(ctx, sessionKeyPrincipalType)
 		principalID, err := uuid.Parse(sm.GetString(ctx, sessionKeyPrincipalID))
 		if principalType == "" || err != nil {

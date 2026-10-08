@@ -1509,6 +1509,13 @@ PHASE 5 — RENTALS SELLABLE (system-design B.4)
   5k [ ] frontend/platform pages MOVED here from Phase 3 (3l): SMS wallet
          (balance, top-up, ledger; over 5b) and the audit log page
          (owner-only, filterable view of audit_log).
+  BACKLOG (Phase 5, not scheduled to a sub-step): concurrent
+         GenerateForPeriod calls for the same property+period should
+         serialise on a per-(tenant, property, period) advisory lock and be
+         idempotent, instead of relying on 40001 retries to sort out who
+         bills. Found when TestRentIntegration's four concurrent runs
+         exhausted the old 3-retry budget (ExecTenantTx now retries 8x and
+         also retries 40P01, but that is a safety net, not the design).
   PROMPT: "Phase 5 sub-step <5x> from docs/build-phases.txt, scope
            system-design B.4. Do <5x> only (frontend only in 5j), run the
            gate, report, stop."

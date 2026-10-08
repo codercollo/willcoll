@@ -176,6 +176,21 @@ func (mr *MockStoreMockRecorder) CountManagerUnits(ctx, tenantID any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountManagerUnits", reflect.TypeOf((*MockStore)(nil).CountManagerUnits), ctx, tenantID)
 }
 
+// CountPayOTPsSince mocks base method.
+func (m *MockStore) CountPayOTPsSince(ctx context.Context, arg sqlc.CountPayOTPsSinceParams) (int32, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountPayOTPsSince", ctx, arg)
+	ret0, _ := ret[0].(int32)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountPayOTPsSince indicates an expected call of CountPayOTPsSince.
+func (mr *MockStoreMockRecorder) CountPayOTPsSince(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountPayOTPsSince", reflect.TypeOf((*MockStore)(nil).CountPayOTPsSince), ctx, arg)
+}
+
 // CountPendingPaymentsForPeriod mocks base method.
 func (m *MockStore) CountPendingPaymentsForPeriod(ctx context.Context, arg sqlc.CountPendingPaymentsForPeriodParams) (int64, error) {
 	m.ctrl.T.Helper()

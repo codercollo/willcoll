@@ -447,12 +447,33 @@ migration.
   (`TestPropertyScope_EveryTenantTableHasAPolicyOrAnExemption`).
 - Staff role / module_access / property_access / disable changes revoke the
   member's sessions (`authorityChange` in `cmd/platform-api/staff.go`).
+- Step-up (C3, D5): `POST /v1/sessions/step-up` opens a 5-minute password
+  re-entry window in the shared session (`internal/shared/auth/stepup.go`);
+  `requireStepUp` gates channel changes, reversals and staff authority changes
+  (403 `step_up_required`, the frontend `useApi` prompts and retries). The firm
+  login is emailed on those events (`security_alert.tmpl`). Details:
+  `docs/security/authorization.md` "D5 as built"; the C3 brief is saved in
+  `docs/security/c3-spec.md`.
 
 ## Money-channel rule
 
 A PayHero channel with recorded receipts is never released or reassigned
 (system-design A.6). The property may change or clear its channel setting,
 but the claim in `payment_channels` stays with the original property.
+
+## Rate limiters are in-memory, per instance
+
+Every limiter and tracker in the APIs lives in process memory: the `httpx`
+token-bucket limiters (per-IP; per-intent on pay status polling), the pay-OTP
+per-IP window (`payotplimit.go`), and the health-page trackers. That is fine on
+a single VPS. **Before running more than one instance of an API, move them to
+Postgres or Redis** — with N instances every cap is effectively N times looser
+and the trackers undercount. (The per-phone and per-firm OTP ceilings are
+counted from `pay_otps` in Postgres, so those already hold across instances.)
+Pay limits are deliberately loose per IP, because Safaricom carrier-grade NAT
+puts many tenants behind one public IP: the real controls are per phone/unit
+(3 codes / 10 min), per firm (`PAY_FIRM_DAILY_OTPS`, default 500/day, alerts on
+the System page) and per intent (status polls, 1 req/s burst 3).
 
 ## Housekeeping notes
 

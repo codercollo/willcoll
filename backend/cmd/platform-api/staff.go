@@ -80,6 +80,8 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 
 	manager := contextGetManager(c)
 	app.sendStaffInviteEmail(manager, staff, token)
+	app.alertOwner(c, "A staff member was invited",
+		staff.Name+" ("+staff.Email+") as "+staff.Role)
 	app.audit(c, "", "staff.invited", "staff", &staff.ID, "invited "+staff.Email+" as "+staff.Role)
 
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"staff": staff}, nil); err != nil {
@@ -179,6 +181,14 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 		return
 	}
 
+	// Changing what a member may do, or removing them, needs step-up (D5); a
+	// rename or phone edit does not. Checked before anything is saved.
+	reason := authorityChange(before, *staff, statusChangedToDisabled)
+	if reason != "" && !app.stepUpSatisfied(c) {
+		app.stepUpRequiredResponse(c)
+		return
+	}
+
 	if err := app.models.Staff.Update(ctx, tenantID, staff); err != nil {
 		switch {
 		case errors.Is(err, data.ErrEditConflict):
@@ -196,7 +206,10 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 	// module or property scope changes. Authorization is also re-read on every
 	// request, so this is the second layer: no session issued under the old
 	// authority survives, and the person re-authenticates under the new one.
-	reason := authorityChange(before, *staff, statusChangedToDisabled)
+	if before.Role != staff.Role {
+		app.alertOwner(c, "A staff member's role was changed",
+			staff.Name+" ("+staff.Email+"): "+before.Role+" to "+staff.Role)
+	}
 	if reason != "" {
 		if _, err := app.revokeStaffSessions(ctx, staff.ID); err != nil {
 			app.logger.Error("revoking staff member's sessions", "staff_id", staff.ID, "reason", reason, "error", err)

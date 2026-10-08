@@ -35,6 +35,7 @@ func staffSessionAlive(t *testing.T, f *fakePlatform, c *http.Cookie) bool {
 func patchStaff(t *testing.T, f *fakePlatform, body string) (int, string) {
 	t.Helper()
 	owner := f.session(t, principalManager, fakeManagerID)
+	f.stepUp(t, owner)
 	w := f.do(http.MethodPatch, "/v1/staff/"+fakeStaffID.String(), body, owner)
 	return w.Code, w.Body.String()
 }

@@ -80,6 +80,9 @@ func (app *application) createPropertyHandler(c *gin.Context) {
 		return
 	}
 	app.audit(c, "property.created", "property", &property.ID, property.Name)
+	if channelID := channelValue(property.PayheroChannelID); channelID != "" {
+		app.alertOwner(c, "A payment channel was changed", channelChangeTarget(property.Name, "", channelID))
+	}
 
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"property": property}, nil); err != nil {
 		app.serverErrorResponse(c, err)
@@ -275,6 +278,9 @@ func (app *application) updatePropertyHandler(c *gin.Context) {
 		app.releasePropertyChannel(c, tenantID, property.ID, oldChannel)
 	}
 	app.audit(c, "property.updated", "property", &property.ID, property.Name)
+	if oldChannel != newChannel {
+		app.alertOwner(c, "A payment channel was changed", channelChangeTarget(property.Name, oldChannel, newChannel))
+	}
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{"property": property}, nil); err != nil {
 		app.serverErrorResponse(c, err)

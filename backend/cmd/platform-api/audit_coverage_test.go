@@ -22,6 +22,7 @@ var auditCoverage = map[string]string{
 	"PUT /v1/staff/activated":        "exempt: identity lifecycle, pre-session",
 	"POST /v1/sessions":              "exempt: login, not a tenant mutation",
 	"DELETE /v1/sessions":            "exempt: logout",
+	"POST /v1/sessions/step-up":      "audited",
 	"POST /v1/admin/sessions":        "exempt: admin login",
 	"POST /v1/tokens/password-reset": "exempt: resend email",
 	"PUT /v1/managers/password":      "exempt: password reset via emailed token, pre-session",

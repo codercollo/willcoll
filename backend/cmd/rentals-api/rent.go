@@ -272,13 +272,15 @@ func (app *application) reverseLedgerEntryHandler(c *gin.Context) {
 		return
 	}
 
-	reversalID, err := app.models.Rent.ReverseEntry(c.Request.Context(), tenantID, manager.ID, entryID, input.Reason)
+	reversal, err := app.models.Rent.ReverseEntryDetailed(c.Request.Context(), tenantID, manager.ID, entryID, input.Reason)
 	if err != nil {
 		app.billingErrorResponse(c, err)
 		return
 	}
 	app.audit(c, "ledger_entry.reversed", "ledger_entry", &entryID, "reversed: "+input.Reason)
-	if err := app.writeJSON(c, http.StatusCreated, envelope{"reversal_entry_id": reversalID}, nil); err != nil {
+	app.alertOwner(c, "A ledger entry was reversed",
+		"KES "+reversal.Amount.Display()+" (entry "+entryID.String()+"), reason: "+strings.TrimSpace(input.Reason))
+	if err := app.writeJSON(c, http.StatusCreated, envelope{"reversal_entry_id": reversal.ID}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
 }

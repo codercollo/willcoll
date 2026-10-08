@@ -22,6 +22,7 @@ var errBadPaySession = errors.New("invalid or expired pay session")
 type paySession struct {
 	TenantID uuid.UUID `json:"t"`
 	UnitID   uuid.UUID `json:"u"`
+	LeaseID  uuid.UUID `json:"l"`
 	Phone    string    `json:"p"`
 	Expires  int64     `json:"e"`
 }

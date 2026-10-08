@@ -33,6 +33,10 @@ var (
 	// ErrTooManyCodes is returned when a phone asks for too many codes.
 	ErrTooManyCodes = errors.New("too many codes requested; try again later")
 
+	// ErrFirmOTPCeiling is returned when a firm has used its daily allowance of
+	// pay codes. Callers alert on it; the payer just sees "try again later".
+	ErrFirmOTPCeiling = errors.New("too many codes requested; try again later")
+
 	// ErrInvalidCode is returned for a wrong, expired or used code. It never
 	// says which, so a guess learns nothing.
 	ErrInvalidCode = errors.New("invalid or expired code")
@@ -54,6 +58,10 @@ type PayAccessModel struct {
 
 	// Now returns the current time; nil means time.Now. Tests set it.
 	Now func() time.Time
+
+	// FirmDailyOTPs is the most pay codes one firm may have texted per
+	// Nairobi day; zero means no ceiling.
+	FirmDailyOTPs int
 }
 
 func (m PayAccessModel) now() time.Time {
@@ -139,6 +147,18 @@ func (m PayAccessModel) IssueOTP(ctx context.Context, t PayTarget, phone string,
 		if n >= otpMaxPerWindow {
 			return ErrTooManyCodes
 		}
+		// The firm's daily SMS ceiling protects the SMS wallet. Checked after
+		// the phone is known to be on the lease, so a stranger cannot learn
+		// from it, or burn it, with numbers that were never texted.
+		if m.FirmDailyOTPs > 0 {
+			today, err := q.CountPayOTPsSince(ctx, sqlc.CountPayOTPsSinceParams{TenantID: t.TenantID, CreatedAt: moneyfmt.Today()})
+			if err != nil {
+				return err
+			}
+			if int(today) >= m.FirmDailyOTPs {
+				return ErrFirmOTPCeiling
+			}
+		}
 
 		c, err := randomDigits(otpDigits)
 		if err != nil {
@@ -207,6 +227,41 @@ func (m PayAccessModel) VerifyOTP(ctx context.Context, t PayTarget, phone, code 
 		return "", ErrInvalidCode
 	}
 	return phone, nil
+}
+
+// PayLeaseID returns the id of the unit's live lease for a payer holding phone.
+// "Live" is defined here once, for both minting and using a pay-session token:
+// the lease is active (a move-out terminates it) AND its end date, if any, has
+// not passed (Nairobi calendar), AND phone is still the tenant's or a co-payer's
+// on it. Anything else, including a new tenant now holding the unit, is
+// ErrRecordNotFound, so a token minted for an earlier lease stops working.
+func (m PayAccessModel) PayLeaseID(ctx context.Context, tenantID, unitID uuid.UUID, phone string) (uuid.UUID, error) {
+	ctx, cancel := withTimeout(ctx, m.Timeout)
+	defer cancel()
+
+	phone = reconcile.NormalizePhone(phone)
+	var id uuid.UUID
+	err := m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
+		lease, err := q.GetActiveLeaseByUnit(ctx, sqlc.GetActiveLeaseByUnitParams{TenantID: tenantID, UnitID: unitID})
+		if err != nil {
+			return notFound(err)
+		}
+		if lease.EndDate != nil && moneyfmt.Today().After(moneyfmt.AtNairobiMidnight(*lease.EndDate)) {
+			return ErrRecordNotFound
+		}
+		phones, err := q.ListUnitPayPhones(ctx, sqlc.ListUnitPayPhonesParams{TenantID: tenantID, UnitID: unitID})
+		if err != nil {
+			return err
+		}
+		for _, p := range phones {
+			if phone != "" && reconcile.NormalizePhone(p) == phone {
+				id = lease.ID
+				return nil
+			}
+		}
+		return ErrRecordNotFound
+	})
+	return id, err
 }
 
 func randomDigits(n int) (string, error) {

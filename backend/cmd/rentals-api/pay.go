@@ -47,13 +47,18 @@ func (app *application) paySessionFor(c *gin.Context, target *data.PayTarget) (*
 	if !ok {
 		return nil, false
 	}
+	// A valid token used on someone else's unit: the resource is simply not
+	// theirs, so it reads as not found (C3.1), same as the status poll.
 	if s.UnitID != target.UnitID || s.TenantID != target.TenantID {
-		app.invalidPaySession(c)
+		app.notFoundResponse(c)
 		return nil, false
 	}
 	return s, true
 }
 
+// paySession verifies the bearer token (signature, expiry) and that its lease
+// is still the unit's live one, checked on every request so a move-out or lease
+// end cuts access at once rather than at token expiry.
 func (app *application) paySession(c *gin.Context) (*paySession, bool) {
 	if !app.paySessionsEnabled() {
 		app.errorResponse(c, http.StatusServiceUnavailable, "payments are not available right now")
@@ -62,6 +67,19 @@ func (app *application) paySession(c *gin.Context) (*paySession, bool) {
 	token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer"))
 	s, err := app.verifyPaySession(token, time.Now())
 	if err != nil {
+		app.invalidPaySession(c)
+		return nil, false
+	}
+	leaseID, err := app.models.PayAccess.PayLeaseID(c.Request.Context(), s.TenantID, s.UnitID, s.Phone)
+	if err != nil {
+		if errors.Is(err, data.ErrRecordNotFound) {
+			app.invalidPaySession(c)
+		} else {
+			app.serverErrorResponse(c, err)
+		}
+		return nil, false
+	}
+	if leaseID != s.LeaseID {
 		app.invalidPaySession(c)
 		return nil, false
 	}
@@ -112,8 +130,19 @@ func (app *application) requestPayOTPHandler(c *gin.Context) {
 		return
 	}
 
+	if !app.payOTPByIP.allow(c.ClientIP(), time.Now(), payOTPIPMax, payOTPIPWindow) {
+		app.errorResponse(c, http.StatusTooManyRequests, data.ErrTooManyCodes.Error())
+		return
+	}
+
 	code, issued, err := app.models.PayAccess.IssueOTP(c.Request.Context(), *target, input.Phone, app.otpHash, app.config.pay.otpTTL)
 	if err != nil {
+		if errors.Is(err, data.ErrFirmOTPCeiling) {
+			app.otpCeilings.record(target.TenantID, time.Now())
+			app.logger.Error("pay OTP SMS: firm hit its daily ceiling", "tenant", target.TenantID.String())
+			app.errorResponse(c, http.StatusTooManyRequests, err.Error())
+			return
+		}
 		app.billingErrorResponse(c, err)
 		return
 	}
@@ -181,8 +210,16 @@ func (app *application) verifyPayOTPHandler(c *gin.Context) {
 		return
 	}
 
+	leaseID, err := app.models.PayAccess.PayLeaseID(c.Request.Context(), target.TenantID, target.UnitID, phone)
+	if err != nil {
+		if errors.Is(err, data.ErrRecordNotFound) {
+			err = data.ErrInvalidCode // the lease ended between code and verify
+		}
+		app.billingErrorResponse(c, err)
+		return
+	}
 	expires := time.Now().Add(app.config.pay.sessionTTL)
-	token, err := app.signPaySession(paySession{TenantID: target.TenantID, UnitID: target.UnitID, Phone: phone}, expires)
+	token, err := app.signPaySession(paySession{TenantID: target.TenantID, UnitID: target.UnitID, LeaseID: leaseID, Phone: phone}, expires)
 	if err != nil {
 		app.serverErrorResponse(c, err)
 		return

@@ -147,6 +147,15 @@ type rateLimitClient struct {
 // between route groups so they draw on the same buckets. exceeded is the
 // product's 429 responder.
 func RateLimit(cfg RateLimiterConfig, exceeded func(c *gin.Context)) gin.HandlerFunc {
+	return RateLimitBy(cfg, func(c *gin.Context) string { return c.ClientIP() }, exceeded)
+}
+
+// RateLimitBy is RateLimit with a caller-chosen bucket key instead of the
+// client IP: use it where many legitimate clients share one IP (carrier-grade
+// NAT) and the resource being protected has a better identity, such as an
+// intent id. An empty key shares one bucket per limiter, so key functions
+// should fall back to something non-empty (the IP).
+func RateLimitBy(cfg RateLimiterConfig, key func(c *gin.Context) string, exceeded func(c *gin.Context)) gin.HandlerFunc {
 	var (
 		mu      sync.Mutex
 		clients = make(map[string]*rateLimitClient)
@@ -172,7 +181,7 @@ func RateLimit(cfg RateLimiterConfig, exceeded func(c *gin.Context)) gin.Handler
 			return
 		}
 
-		ip := c.ClientIP()
+		ip := key(c)
 
 		mu.Lock()
 		cl, found := clients[ip]

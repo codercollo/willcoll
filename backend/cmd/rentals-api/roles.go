@@ -64,18 +64,40 @@ func (app *application) logDenied(c *gin.Context, perm string) {
 // owner-gated (POST/PATCH /properties). The channel decides where tenants'
 // money lands, so it is owner-only everywhere it can be set, not just on
 // POST /properties/:id/payment-channel (system-design.txt A.1). The firm's
-// own login is the implicit owner. Reports whether the request may go on.
+// own login is the implicit owner. A permitted change also needs an open
+// step-up window (D5): the password prompt comes after the permission check,
+// so a caller who may not change the channel never sees it. Reports whether
+// the request may go on.
 func (app *application) requireOwnerForChannelChange(c *gin.Context, changed bool) bool {
+	if !changed {
+		return true
+	}
 	// Routes calling this sit behind requireActivatedManager, so an anonymous
 	// staff value is the firm's own login (owner set): only a staff principal
 	// can be refused here.
 	staff := contextGetStaff(c)
-	if !changed || staff.IsAnonymous() || auth.StaffPermits(staff.Role, auth.PaymentChannelsManage) {
-		return true
+	if !staff.IsAnonymous() && !auth.StaffPermits(staff.Role, auth.PaymentChannelsManage) {
+		app.logDenied(c, auth.PaymentChannelsManage)
+		app.notPermittedResponse(c)
+		return false
 	}
-	app.logDenied(c, auth.PaymentChannelsManage)
-	app.notPermittedResponse(c)
-	return false
+	if !app.stepUpSatisfied(c) {
+		app.stepUpRequiredResponse(c)
+		return false
+	}
+	return true
+}
+
+// channelChangeTarget describes a property's channel change for the owner
+// alert, e.g. "Runda Arcade: channel 1234 to none".
+func channelChangeTarget(property, oldChannel, newChannel string) string {
+	orNone := func(s string) string {
+		if s == "" {
+			return "none"
+		}
+		return s
+	}
+	return property + ": channel " + orNone(oldChannel) + " to " + orNone(newChannel)
 }
 
 // requireStaffModuleAccess guards the manager route group against a staff

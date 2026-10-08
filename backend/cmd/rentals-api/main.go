@@ -51,6 +51,10 @@ type application struct {
 	mailer      mailer.Mailer
 	payhero     stkPusher
 	sms         smsSender
+	payOTPByIP  ipWindowLimiter
+	// otpCeilings records each firm that hit its daily pay-OTP SMS ceiling in
+	// the trailing 24h, for the System page.
+	otpCeilings firmCeilingTracker
 	// wg tracks background() goroutines (emails, SMS, PDF renders) so a
 	// graceful shutdown can wait for them (see server.go). jobs.Group,
 	// not sync.WaitGroup directly, since background() needs its recover
@@ -180,6 +184,7 @@ func main() {
 
 	models := data.NewModels(db, adminDB, cfg.db.queryTimeout)
 	models.Platform.HealthTimeout = cfg.healthTimeout
+	models.PayAccess.FirmDailyOTPs = cfg.pay.firmDailyOTPs
 
 	app := &application{
 		config:                 cfg,

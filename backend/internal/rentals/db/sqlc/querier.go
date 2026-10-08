@@ -50,6 +50,9 @@ type Querier interface {
 	// billable count (module_usage, build-phases.txt 3e). Runs inside the
 	// tenant's own transaction (RLS-scoped).
 	CountManagerUnits(ctx context.Context, tenantID uuid.UUID) (int32, error)
+	// CountPayOTPsSince is every code the firm has had texted since a moment: the
+	// input to the per-firm daily SMS ceiling.
+	CountPayOTPsSince(ctx context.Context, arg CountPayOTPsSinceParams) (int32, error)
 	// CountPendingPaymentsForPeriod is the sanity check's "no unallocated or
 	// review-queue payments left for the period": payments matched to one of
 	// the property's units, received within the period, that are not a

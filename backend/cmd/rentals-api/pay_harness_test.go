@@ -180,10 +180,21 @@ func payParams(slug, unit string) gin.Params {
 	return gin.Params{{Key: "propertySlug", Value: slug}, {Key: "unitCode", Value: unit}}
 }
 
-// bearer signs a pay session for the test tenant and unit.
+var testLeaseID = uuid.MustParse("00000000-0000-0000-0000-00000000dead")
+
+// expectLiveLease makes every unit look like it has one live lease (testLeaseID)
+// held by phone, which is what each pay request re-checks.
+func (p *payTestApp) expectLiveLease(phone string) {
+	p.q.EXPECT().GetActiveLeaseByUnit(gomock.Any(), gomock.Any()).
+		Return(sqlc.Lease{ID: testLeaseID}, nil).AnyTimes()
+	p.q.EXPECT().ListUnitPayPhones(gomock.Any(), gomock.Any()).Return([]string{phone}, nil).AnyTimes()
+}
+
+// bearer signs a pay session for the test tenant and unit, on a live lease.
 func (p *payTestApp) bearer(t *testing.T, unit uuid.UUID, phone string, valid time.Duration) map[string]string {
 	t.Helper()
-	tok, err := p.app.signPaySession(paySession{TenantID: testTenantID, UnitID: unit, Phone: phone}, time.Now().Add(valid))
+	p.expectLiveLease(phone)
+	tok, err := p.app.signPaySession(paySession{TenantID: testTenantID, UnitID: unit, LeaseID: testLeaseID, Phone: phone}, time.Now().Add(valid))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -83,6 +83,8 @@ export interface RentalsReport {
   audit_failures_24h: number
   inbox_fallbacks_24h: number
   unclaimed_channels?: UnclaimedChannel[]
+  /** Firms that hit their daily pay-OTP SMS ceiling in the last 24h. */
+  otp_ceiling_firms?: { tenant_id: string; last_hit_at: string }[]
 }
 
 /** ok | degraded | unreachable | unauthorized | not_configured: one service, whatever the others did. */

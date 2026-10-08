@@ -1,6 +1,7 @@
 import { ApiError, defaultMessage, parseApiError } from "../utils/apiError";
 import { flashOf } from "../utils/flash";
 import { isPlatformPath, platformPath } from "../utils/apiTarget";
+import { isStepUpRequired } from "../utils/stepUp";
 
 export interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -78,7 +79,11 @@ export function useApi() {
     });
   }
 
-  async function send(path: string, opts: ApiOptions = {}): Promise<Response> {
+  async function send(
+    path: string,
+    opts: ApiOptions = {},
+    afterStepUp = false,
+  ): Promise<Response> {
     const headers: Record<string, string> = { ...opts.headers };
     if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
     let body: BodyInit | undefined = opts.rawBody;
@@ -101,6 +106,13 @@ export function useApi() {
       const parsed = await res.json().catch(() => null);
       showFlash(parsed);
       const err = parseApiError(res.status, parsed);
+      // Step-up (D5): the action needs a recent password re-entry. Ask once,
+      // then repeat the request exactly once; dismissing the box, or still
+      // being refused, surfaces the original error.
+      if (isStepUpRequired(err) && !opts.token && !afterStepUp && import.meta.client) {
+        const stepped = await nuxt.runWithContext(() => useStepUp().ask());
+        if (stepped) return send(path, opts, true);
+      }
       onFailure(err, opts);
       onPaywall(err);
       throw err;

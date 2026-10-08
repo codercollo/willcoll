@@ -217,6 +217,7 @@ func TestVerifyPayOTP(t *testing.T) {
 		p.q.EXPECT().GetLatestPayOTP(gomock.Any(), gomock.Any()).Return(row, nil)
 		p.q.EXPECT().BumpPayOTPAttempts(gomock.Any(), gomock.Any()).Return(nil)
 		p.q.EXPECT().ConsumePayOTP(gomock.Any(), gomock.Any()).Return(int64(1), nil)
+		p.expectLiveLease(phone)
 
 		code, body := verify(p, "482913")
 		if code != http.StatusOK {
@@ -227,7 +228,7 @@ func TestVerifyPayOTP(t *testing.T) {
 		_ = json.Unmarshal([]byte(body), &raw)
 		_ = json.Unmarshal(raw["token"], &out.Token)
 		s, err := p.app.verifyPaySession(out.Token, time.Now())
-		if err != nil || s.UnitID != testUnitA || s.TenantID != testTenantID || s.Phone != phone {
+		if err != nil || s.UnitID != testUnitA || s.TenantID != testTenantID || s.Phone != phone || s.LeaseID != testLeaseID {
 			t.Errorf("session = %+v, %v", s, err)
 		}
 	})
@@ -266,17 +267,20 @@ func TestPayBalances(t *testing.T) {
 		{Type: "WATER_DEPOSIT", Balance: money("2000")},
 	}
 
-	t.Run("no session, another unit or an expired session is a 401", func(t *testing.T) {
+	t.Run("no session or an expired one is a 401; another unit's session is a 404", func(t *testing.T) {
 		p := newPayTestApp(t)
 		p.expectTarget()
-		for name, h := range map[string]map[string]string{
-			"no token":     nil,
-			"another unit": p.bearer(t, testUnitB, "+254700000000", time.Minute),
-			"expired":      p.bearer(t, testUnitA, "+254700000000", -time.Minute),
-			"not a token":  {"Authorization": "Bearer abc.def"},
+		for name, tc := range map[string]struct {
+			h    map[string]string
+			want int
+		}{
+			"no token":     {nil, http.StatusUnauthorized},
+			"another unit": {p.bearer(t, testUnitB, "+254700000000", time.Minute), http.StatusNotFound},
+			"expired":      {p.bearer(t, testUnitA, "+254700000000", -time.Minute), http.StatusUnauthorized},
+			"not a token":  {map[string]string{"Authorization": "Bearer abc.def"}, http.StatusUnauthorized},
 		} {
-			if w := do(p.app.showPayBalancesHandler, "GET", "/", "", payParams("runda", "A1"), h); w.Code != http.StatusUnauthorized {
-				t.Errorf("%s = %d, want 401", name, w.Code)
+			if w := do(p.app.showPayBalancesHandler, "GET", "/", "", payParams("runda", "A1"), tc.h); w.Code != tc.want {
+				t.Errorf("%s = %d, want %d", name, w.Code, tc.want)
 			}
 		}
 	})

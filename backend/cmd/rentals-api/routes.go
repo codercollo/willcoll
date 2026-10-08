@@ -86,9 +86,13 @@ func (app *application) routes() (*gin.Engine, error) {
 			guard(manager, "GET", "/properties/:id/electricity/deposits.csv", auth.ExportsCreate, app.showElectricityDepositsCSVHandler)
 			guard(manager, "GET", "/properties/:id/electricity/deposits.pdf", auth.ExportsCreate, app.showElectricityDepositsPDFHandler)
 			guard(manager, "PUT", "/properties/:id/print-theme", auth.PropertiesWrite, app.updatePropertyPrintThemeHandler)
-			guard(manager, "POST", "/properties/:id/payment-channel", auth.PaymentChannelsManage, app.registerPaymentChannelHandler)
+			// Step-up (D5, internal/shared/auth/stepup.go): the money-moving
+			// actions below need a recent password re-entry on top of the
+			// permission. Property create/patch check it only when they
+			// actually change the channel (requireOwnerForChannelChange).
+			guard(manager, "POST", "/properties/:id/payment-channel", auth.PaymentChannelsManage, app.requireStepUp(), app.registerPaymentChannelHandler)
 			guard(manager, "GET", "/properties/:id/payment-channel/status", auth.PaymentChannelsRead, app.showPaymentChannelStatusHandler)
-			guard(manager, "POST", "/properties/:id/payment-channel/test", auth.PaymentChannelsManage, app.sendPaymentChannelTestHandler)
+			guard(manager, "POST", "/properties/:id/payment-channel/test", auth.PaymentChannelsManage, app.requireStepUp(), app.sendPaymentChannelTestHandler)
 			guard(manager, "GET", "/payment-channel-banks", auth.PaymentChannelsRead, app.listPaymentChannelBanksHandler)
 
 			guard(manager, "GET", "/properties/:id/units", auth.UnitsRead, app.listUnitsForPropertyHandler)
@@ -117,7 +121,7 @@ func (app *application) routes() (*gin.Engine, error) {
 			guard(manager, "GET", "/properties/:id/rent/overview", auth.RentRead, app.showRentOverviewHandler)
 			guard(manager, "POST", "/units/:id/rent/payments", auth.PaymentsRecord, app.createRentPaymentHandler)
 			guard(manager, "POST", "/units/:id/rent/charges", auth.ChargesWrite, app.createRentChargeHandler)
-			guard(manager, "POST", "/ledger-entries/:id/reverse", auth.ChargesReverse, app.reverseLedgerEntryHandler)
+			guard(manager, "POST", "/ledger-entries/:id/reverse", auth.ChargesReverse, app.requireStepUp(), app.reverseLedgerEntryHandler)
 
 			// Payment review queue (system-design.txt 4.8, 5)
 			guard(manager, "GET", "/payments/review", auth.PaymentsRead, app.listPaymentsForReviewHandler)
@@ -146,14 +150,15 @@ func (app *application) routes() (*gin.Engine, error) {
 
 		// -- Tenant-facing public payment surface: no login, OTP-gated, and
 		// rate limited throughout (system-design.txt 4.2, 4.7). --
-		pay := v1.Group("/pay", rateLimited)
+		payPerIP, payPerIntent := app.payRateLimits()
+		pay := v1.Group("/pay", payPerIP)
 		{
 			public(pay, "GET", "/:propertySlug/:unitCode", app.showPayPageHandler)
 			public(pay, "POST", "/:propertySlug/:unitCode/otp", app.requestPayOTPHandler)
 			public(pay, "POST", "/:propertySlug/:unitCode/otp/verify", app.verifyPayOTPHandler)
 			public(pay, "GET", "/:propertySlug/:unitCode/balances", app.showPayBalancesHandler)
 			public(pay, "POST", "/:propertySlug/:unitCode/intent", app.createPaymentIntentHandler)
-			public(pay, "GET", "/intents/:id/status", app.showPaymentIntentStatusHandler)
+			public(pay, "GET", "/intents/:id/status", payPerIntent, app.showPaymentIntentStatusHandler)
 		}
 
 		// -- PayHero webhooks: server to server, verified in the handlers,

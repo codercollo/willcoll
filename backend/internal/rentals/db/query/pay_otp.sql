@@ -19,6 +19,13 @@ SELECT count(*)::int AS n
 FROM pay_otps
 WHERE tenant_id = $1 AND unit_id = $2 AND phone = $3 AND created_at > $4;
 
+-- CountPayOTPsSince is every code the firm has had texted since a moment: the
+-- input to the per-firm daily SMS ceiling.
+-- name: CountPayOTPsSince :one
+SELECT count(*)::int AS n
+FROM pay_otps
+WHERE tenant_id = $1 AND created_at >= $2;
+
 -- name: CreatePayOTP :exec
 INSERT INTO pay_otps (tenant_id, unit_id, phone, code_hash, expires_at)
 VALUES ($1, $2, $3, $4, $5);

@@ -25,6 +25,8 @@ func TestRateLimitUsesForwardedForFromTrustedProxy(t *testing.T) {
 	m.app.config.limiter.enabled = true
 	m.app.config.limiter.rps = 0.001
 	m.app.config.limiter.burst = 1
+	m.app.config.pay.ipRPS = 0.001 // the pay route has its own (normally loose) per-IP limiter
+	m.app.config.pay.ipBurst = 1
 	m.app.config.trustedProxies = []string{testProxyPeer + "/32"}
 	router, err := m.app.routes()
 	if err != nil {

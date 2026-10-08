@@ -3,4 +3,5 @@
     <NuxtPage />
   </NuxtLayout>
   <UiToastHost />
+  <UiStepUpModal />
 </template>

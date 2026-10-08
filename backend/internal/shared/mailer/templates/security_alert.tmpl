@@ -1,0 +1,89 @@
+{{/*
+  Security alert to the firm owner (docs/security/authorization.md, D5):
+  a payment channel changed, a ledger entry was reversed, or a staff member's
+  role changed.
+
+  Data: FirmName, Headline, Actor, IP, Target, When (Africa/Nairobi).
+  Build it with mailer.NewSecurityAlert.
+
+  Same design-token styling as password_reset.tmpl.
+*/}}
+
+{{define "subject"}}Willcoll alert: {{.Headline}}{{end}}
+
+{{define "plainBody"}}
+Hi {{.FirmName}},
+
+{{.Headline}}.
+
+What:  {{.Target}}
+Who:   {{.Actor}}
+From:  {{.IP}}
+When:  {{.When}}
+
+If this was you or someone you trust, no action is needed. If not, sign in
+now, change your password and review your staff list.
+
+— The Willcoll team
+{{end}}
+
+{{define "htmlBody"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>Willcoll alert</title>
+</head>
+<body style="margin:0;padding:0;background-color:#F1F3F6;font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F1F3F6;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
+
+          <tr>
+            <td style="background-color:#0B1220;border-radius:10px 10px 0 0;padding:20px 24px;">
+              <span style="font-size:18px;line-height:26px;font-weight:700;letter-spacing:-0.01em;color:#FFFFFF;">Willcoll</span>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#FFFFFF;border:1px solid #D7DCE3;border-top:0;border-radius:0 0 10px 10px;padding:24px;">
+              <h1 style="margin:0 0 16px;font-size:22px;line-height:30px;font-weight:700;letter-spacing:-0.01em;color:#111827;">{{.Headline}}</h1>
+
+              <p style="margin:0 0 16px;font-size:14px;line-height:20px;color:#374151;">Hi {{.FirmName}}, this is a security alert for your account.</p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;background-color:#F2F6FF;border:1px solid #D7DCE3;border-radius:6px;">
+                <tr>
+                  <td style="padding:12px 16px;font-size:13px;line-height:18px;font-weight:500;color:#6B7280;width:72px;">What</td>
+                  <td style="padding:12px 16px;font-size:14px;line-height:20px;color:#111827;">{{.Target}}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;font-size:13px;line-height:18px;font-weight:500;color:#6B7280;">Who</td>
+                  <td style="padding:12px 16px;font-size:14px;line-height:20px;color:#111827;">{{.Actor}}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;font-size:13px;line-height:18px;font-weight:500;color:#6B7280;">From</td>
+                  <td style="padding:12px 16px;font-size:14px;line-height:20px;color:#111827;">{{.IP}}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;font-size:13px;line-height:18px;font-weight:500;color:#6B7280;">When</td>
+                  <td style="padding:12px 16px;font-size:14px;line-height:20px;color:#111827;">{{.When}}</td>
+                </tr>
+              </table>
+
+              <p style="margin:0;font-size:12px;line-height:16px;color:#6B7280;">If this was you or someone you trust, no action is needed. If not, sign in now, change your password and review your staff list.</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td align="center" style="padding:16px 24px 0;font-size:12px;line-height:16px;color:#6B7280;">Willcoll · Property &amp; rent reconciliation</td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+{{end}}

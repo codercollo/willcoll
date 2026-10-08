@@ -65,6 +65,7 @@ type fakePlatform struct {
 	firmName      string   // the manager's firm name, changed by UpdateManager
 	managerVer    int32
 	audit         []sqlc.CreateAuditLogParams
+	mail          *captureMailer // every email the app sent
 }
 
 func newFakePlatform(t *testing.T) *fakePlatform {
@@ -83,7 +84,7 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 		t.Fatal(err)
 	}
 
-	f := &fakePlatform{managerStatus: data.ManagerStatusActive, activated: true, staffRole: data.RoleOfficer, firmName: "Kimani & Associates", managerVer: 1}
+	f := &fakePlatform{managerStatus: data.ManagerStatusActive, activated: true, staffRole: data.RoleOfficer, firmName: "Kimani & Associates", managerVer: 1, mail: &captureMailer{}}
 	managerRow := func() sqlc.Manager {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -209,6 +210,7 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		models:         data.NewModelsFromStore(store, 0),
 		sessionManager: sm,
+		mailer:         f.mail,
 	}
 	f.app.config.cors.trustedOrigins = []string{"http://localhost:3000"}
 	router, err := f.app.routes()

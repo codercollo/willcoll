@@ -45,6 +45,26 @@ func (q *Queries) ConsumePayOTP(ctx context.Context, arg ConsumePayOTPParams) (i
 	return result.RowsAffected()
 }
 
+const countPayOTPsSince = `-- name: CountPayOTPsSince :one
+SELECT count(*)::int AS n
+FROM pay_otps
+WHERE tenant_id = $1 AND created_at >= $2
+`
+
+type CountPayOTPsSinceParams struct {
+	TenantID  uuid.UUID
+	CreatedAt time.Time
+}
+
+// CountPayOTPsSince is every code the firm has had texted since a moment: the
+// input to the per-firm daily SMS ceiling.
+func (q *Queries) CountPayOTPsSince(ctx context.Context, arg CountPayOTPsSinceParams) (int32, error) {
+	row := q.db.QueryRowContext(ctx, countPayOTPsSince, arg.TenantID, arg.CreatedAt)
+	var n int32
+	err := row.Scan(&n)
+	return n, err
+}
+
 const countRecentPayOTPs = `-- name: CountRecentPayOTPs :one
 SELECT count(*)::int AS n
 FROM pay_otps

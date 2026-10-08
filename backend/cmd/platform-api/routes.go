@@ -66,6 +66,7 @@ func (app *application) routes() (*gin.Engine, error) {
 		public(v1, "POST", "/sessions", rateLimited, app.createSessionHandler)
 		public(v1, "GET", "/sessions", app.showSessionHandler)
 		public(v1, "DELETE", "/sessions", app.deleteSessionHandler)
+		public(v1, "POST", "/sessions/step-up", rateLimited, app.stepUpHandler)
 		// Super Admin login: outside the /admin group's guard, since the
 		// admin isn't signed in yet.
 		public(v1, "POST", "/admin/sessions", rateLimited, app.createAdminSessionHandler)
@@ -88,7 +89,9 @@ func (app *application) routes() (*gin.Engine, error) {
 			// (system-design.txt A.1, build-phases.txt 3f-1). The manager's
 			// own login is always the implicit owner. --
 			{
-				guard(manager, "POST", "/staff", auth.StaffManage, app.inviteStaffHandler)
+				// Inviting grants a role, so it needs step-up (D5); PATCH checks
+				// it in the handler, only when authority actually changes.
+				guard(manager, "POST", "/staff", auth.StaffManage, app.requireStepUp(), app.inviteStaffHandler)
 				guard(manager, "GET", "/staff", auth.StaffRead, app.listStaffHandler)
 				guard(manager, "POST", "/modules/:product/trial", auth.ModulesManage, app.startModuleTrialHandler)
 				guard(manager, "PATCH", "/staff/:id", auth.StaffManage, app.updateStaffHandler)

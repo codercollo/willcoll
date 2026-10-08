@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/mock/gomock"
 )
@@ -26,6 +28,7 @@ func serveAsStaff(handler gin.HandlerFunc, role, method, body string, params gin
 	c.Params = params
 	contextSetTenantID(c, testTenantID)
 	contextSetStaff(c, &platformdata.Staff{Role: role})
+	c.Set(auth.StepUpContextKey, auth.StepUpUntil(time.Now())) // the role check, not step-up, is under test here
 	handler(c)
 	return w
 }

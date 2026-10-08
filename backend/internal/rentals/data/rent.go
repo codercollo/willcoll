@@ -410,23 +410,38 @@ func (m RentModel) PostManualCharge(ctx context.Context, tenantID, managerID, un
 // idempotency key "reversal:<entry id>" enforces the first rule in the
 // database too, so two concurrent requests cannot both reverse.
 func (m RentModel) ReverseEntry(ctx context.Context, tenantID, managerID, entryID uuid.UUID, reason string) (uuid.UUID, error) {
+	r, err := m.ReverseEntryDetailed(ctx, tenantID, managerID, entryID, reason)
+	return r.ID, err
+}
+
+// Reversal is what ReverseEntryDetailed did: the new entry and the amount it
+// mirrors, for the owner alert (authorization.md D5).
+type Reversal struct {
+	ID     uuid.UUID
+	Amount moneyfmt.Money
+}
+
+// ReverseEntryDetailed is ReverseEntry that also reports the reversed amount.
+func (m RentModel) ReverseEntryDetailed(ctx context.Context, tenantID, managerID, entryID uuid.UUID, reason string) (Reversal, error) {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return uuid.Nil, ErrReasonRequired
+		return Reversal{}, ErrReasonRequired
 	}
 	if len(reason) > maxReasonLength {
-		return uuid.Nil, fmt.Errorf("%w: reason must be at most 500 characters", ErrInvalidInput)
+		return Reversal{}, fmt.Errorf("%w: reason must be at most 500 characters", ErrInvalidInput)
 	}
 
 	var reversalID uuid.UUID
+	var amount moneyfmt.Money
 	err := m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
 		orig, err := q.GetLedgerEntryForReversal(ctx, sqlc.GetLedgerEntryForReversalParams{TenantID: tenantID, ID: entryID})
 		if err != nil {
 			return notFound(err)
 		}
+		amount = orig.Amount
 		switch {
 		case orig.ReferenceType == ReferenceTypeReversal:
 			return ErrNotReversible
@@ -476,9 +491,9 @@ func (m RentModel) ReverseEntry(ctx context.Context, tenantID, managerID, entryI
 		return nil
 	})
 	if err != nil {
-		return uuid.Nil, err
+		return Reversal{}, err
 	}
-	return reversalID, nil
+	return Reversal{ID: reversalID, Amount: amount}, nil
 }
 
 // LedgerView is a unit's rent ledger tab: the RENT ledger and the

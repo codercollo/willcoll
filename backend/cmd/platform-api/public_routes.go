@@ -14,6 +14,7 @@ var publicRoutes = map[string]string{
 	"POST /v1/sessions":                       "firm/staff login; rate limited, credentials",
 	"GET /v1/sessions":                        "whoami; the handler answers 401 to an anonymous caller",
 	"DELETE /v1/sessions":                     "logout; ends only the caller's own session",
+	"POST /v1/sessions/step-up":               "password re-entry for the caller's own session (D5); 401 anonymous, 403 Super Admin, rate limited, session ended after 5 wrong tries",
 	"POST /v1/admin/sessions":                 "Super Admin login; rate limited, credentials",
 	"POST /v1/tokens/password-reset":          "password reset email; rate limited, same response for any address",
 	"PUT /v1/managers/password":               "password reset completion; single-use reset token, rate limited",

@@ -72,6 +72,7 @@ func (app *application) adminSystemHealthHandler(c *gin.Context) {
 		"audit_failures_24h":  app.auditFailures.count24h(time.Now()),
 		"inbox_fallbacks_24h": app.inboxFallbacks.count24h(time.Now()),
 		"unclaimed_channels":  app.unclaimedChannels.list(time.Now()),
+		"otp_ceiling_firms":   app.otpCeilings.list(time.Now()),
 	}
 
 	if err := app.writeJSON(c, http.StatusOK, body, nil); err != nil {

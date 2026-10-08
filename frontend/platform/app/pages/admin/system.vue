@@ -37,6 +37,7 @@ const backupBadge = (s: string | undefined): { status: BadgeStatus; label: strin
 const rentals = computed(() => h.value?.services.rentals)
 const report = computed(() => rentals.value?.report)
 const unclaimed = computed(() => unclaimedChannelsSummary(report.value?.unclaimed_channels))
+const otpCeilingFirms = computed(() => report.value?.otp_ceiling_firms ?? [])
 </script>
 
 <template>
@@ -86,7 +87,11 @@ const unclaimed = computed(() => unclaimedChannelsSummary(report.value?.unclaime
             <UiKpiTile label="Inbox fallbacks (24h)" :value="String(report.inbox_fallbacks_24h)" :tone="report.inbox_fallbacks_24h ? 'arrears' : 'paid'" delta="payments posted without platform's inbox" />
             <UiKpiTile label="Usage reporting" :value="report.usage_reporting.enabled ? 'On' : 'Off'" :tone="report.usage_reporting.enabled ? 'paid' : 'arrears'" :delta="report.usage_reporting.last_report_at ? `last ${formatDateTime(report.usage_reporting.last_report_at)}` : 'no report yet'" />
             <UiKpiTile label="Unclaimed channels" :value="String(unclaimed.count)" :tone="unclaimed.count ? 'arrears' : 'paid'" :delta="unclaimed.text" />
+            <UiKpiTile label="OTP SMS ceiling hits (24h)" :value="String(otpCeilingFirms.length)" :tone="otpCeilingFirms.length ? 'arrears' : 'paid'" delta="firms at their daily pay-code limit" />
           </div>
+          <UiFormAlert v-if="otpCeilingFirms.length">
+            {{ otpCeilingFirms.length }} firm(s) hit the daily pay-code SMS ceiling (last: {{ formatDateTime(otpCeilingFirms[0]!.last_hit_at) }}). Their tenants could not request codes. Check for abuse before raising PAY_FIRM_DAILY_OTPS; the SMS wallet is what it protects.
+          </UiFormAlert>
           <UiFormAlert v-if="unclaimed.count">
             Unclaimed channels: {{ unclaimed.count }} ({{ unclaimed.text }}). Payments on these channels were still posted, but platform has no claim on them. Re-save the channel on the property, or run make dev/setup in development.
           </UiFormAlert>

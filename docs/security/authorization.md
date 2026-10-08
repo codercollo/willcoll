@@ -1,4 +1,4 @@
-# Authorization model (Phase 4-auth-1 — FINAL, D1-D5 approved; C1 permissions and C2 scopes built)
+# Authorization model (Phase 4-auth-1 — FINAL, D1-D5 approved; C1 permissions, C2 scopes and C3 step-up/alerts built)
 
 Status: analysis only; no enforcement code exists for anything marked
 "proposed". Source: `docs/security/_scratch/route-inventory.md` (route sweep)
@@ -254,6 +254,39 @@ Build in C3 (not later):
 - **Owner email alert** (Mailpit locally) on payment channel change, any
   reversal, and any staff role change. Each alert includes actor, IP,
   amount/target and time (Africa/Nairobi).
+
+#### D5 as built (C3)
+
+- **Window**: `POST /v1/sessions/step-up` (platform-api, the only binary that
+  writes sessions, ADR-0007) takes `{password}`, checks it against the
+  caller's OWN password (the firm login's, or the staff member's), and stamps
+  `stepup_until` (now + 5 minutes) into the shared platform session. Rentals
+  reads it read-only in `resolvePlatformPrincipal`. It is per session, dies
+  with the session, and is shared across products. Primitives:
+  `internal/shared/auth/stepup.go`.
+- **Gated**: rentals `POST .../payment-channel`, `POST .../payment-channel/test`,
+  `POST /ledger-entries/:id/reverse` (`requireStepUp`), and the channel field on
+  `POST`/`PATCH /properties` (only when it actually changes, in
+  `requireOwnerForChannelChange`); platform `POST /staff` (a grant) and
+  `PATCH /staff/:id` when role, module_access, property_access or status change
+  (a rename or phone edit is not gated). Staff removal is the disable status;
+  there is no delete route. There is no separate payment-reversal route today.
+- **Order**: the permission check runs first, so someone who may never do the
+  action gets the plain 403, not a password prompt. A missing window is 403 with
+  `code: "step_up_required"`; the client (`useApi`) opens one password box,
+  calls step-up and retries once.
+- **Brute force**: a wrong password is 422 (not 401, which the frontend treats
+  as signed out), rate limited per IP, and the session is ended after 5 wrong
+  re-entries in a row (`StepUpMaxFailures`). Success and failure are audited
+  (`session.step_up`, `session.step_up_failed`).
+- **Alerts**: `security_alert.tmpl` to the firm login's email (Mailpit locally)
+  on a payment channel change (register, or the property field), every
+  reversal (amount, entry id, reason), and a staff role change or invite. Each
+  carries actor (name and role, or "firm login"), IP, target and the time in
+  Africa/Nairobi. They are sent in the background: a mail outage is logged and
+  never fails the action. Sent even when the owner is the actor.
+- **Not alerted**: the channel *test* (no change), module/property scope edits.
+  Say so if you want them added.
 
 Deferred to Phase 8: second-person approval for reversals. Many firms are
 one or two people and it would block them; when built it must be an opt-in

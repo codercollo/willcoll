@@ -15,6 +15,7 @@ import (
 	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/mock"
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -65,6 +66,9 @@ func serveAsTenant(handler gin.HandlerFunc, method, target, body string, params 
 	c.Request = httptest.NewRequest(method, target, strings.NewReader(body))
 	c.Params = params
 	contextSetTenantID(c, testTenantID)
+	// These tests are about what the handler does once the caller may do it;
+	// the step-up gate itself is covered in stepup_test.go.
+	c.Set(auth.StepUpContextKey, auth.StepUpUntil(time.Now()))
 	handler(c)
 	return w
 }

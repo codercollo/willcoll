@@ -89,6 +89,17 @@ type config struct {
 		otpTTL        time.Duration
 		sessionTTL    time.Duration
 		intentTTL     time.Duration
+		// ipRPS/ipBurst: the loose per-IP cap on pay routes. Many tenants share
+		// one public IP behind carrier-grade NAT, so this is a safety net only;
+		// the real controls are per-phone/per-unit (OTP), per-intent (status).
+		ipRPS   float64
+		ipBurst int
+		// statusRPS/statusBurst: status polling, bucketed per intent id.
+		statusRPS   float64
+		statusBurst int
+		// firmDailyOTPs: most OTP SMS one firm may trigger per Nairobi day, to
+		// protect the SMS wallet. 0 turns the ceiling off.
+		firmDailyOTPs int
 	}
 
 	// subscriptionGate turns the trial/paywall on (SUBSCRIPTION_GATE, default
@@ -230,6 +241,11 @@ func parseConfig() config {
 	flag.DurationVar(&cfg.pay.otpTTL, "pay-otp-ttl", envDuration("PAY_OTP_TTL", 5*time.Minute), "How long an SMS one-time code stays valid")
 	flag.DurationVar(&cfg.pay.sessionTTL, "pay-session-ttl", envDuration("PAY_SESSION_TTL", 15*time.Minute), "How long a verified pay session stays valid")
 	flag.DurationVar(&cfg.pay.intentTTL, "pay-intent-ttl", envDuration("PAY_INTENT_TTL", 10*time.Minute), "How long a payment intent waits for its STK push to complete")
+	flag.Float64Var(&cfg.pay.ipRPS, "pay-ip-rps", envFloat("PAY_IP_RPS", 20), "Per-IP requests per second on pay routes (loose: carrier-grade NAT shares IPs)")
+	flag.IntVar(&cfg.pay.ipBurst, "pay-ip-burst", envInt("PAY_IP_BURST", 40), "Per-IP burst on pay routes")
+	flag.Float64Var(&cfg.pay.statusRPS, "pay-status-rps", envFloat("PAY_STATUS_RPS", 1), "Intent status polls per second, per intent")
+	flag.IntVar(&cfg.pay.statusBurst, "pay-status-burst", envInt("PAY_STATUS_BURST", 3), "Intent status poll burst, per intent")
+	flag.IntVar(&cfg.pay.firmDailyOTPs, "pay-firm-daily-otps", envInt("PAY_FIRM_DAILY_OTPS", 500), "Most pay OTP SMS one firm may trigger per day (0 = no ceiling)")
 
 	flag.StringVar(&cfg.africastalking.apiKey, "africastalking-api-key", envString("AFRICASTALKING_API_KEY", ""), "Africa's Talking API key")
 	flag.StringVar(&cfg.africastalking.baseURL, "africastalking-base-url", envString("AFRICASTALKING_BASE_URL", ""), "Africa's Talking API base URL override (local fakes only; empty = the real API)")

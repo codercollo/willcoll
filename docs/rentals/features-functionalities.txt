@@ -63,6 +63,9 @@ Sign-up and sign-in (public; the credential endpoints are rate limited)
   GET    /v1/sessions                         who is signed in; ?product=rentals adds the firm's paywall
                                               standing ("access": trial | subscribed | expired, days_left)
   DELETE /v1/sessions                         sign out (signs out of every product: one shared session)
+  POST   /v1/sessions/step-up                 re-enter your own password; opens a 5-minute step-up window on this
+                                              session (authorization.md D5). 422 on a wrong password; the session is
+                                              ended after 5 wrong tries in a row
   POST   /v1/admin/sessions                   Super Admin sign-in
   PUT    /v1/staff/activated                  a staff member sets their password from the invite token
 
@@ -74,7 +77,10 @@ Account (signed-in, activated manager or staff)
 Owner only: staff and billing (the firm's own login, or a staff owner)
   GET    /v1/staff                            list staff
   POST   /v1/staff                            invite a staff member (role, module_access) - emails a token
+                                              [step-up] and emails the firm login an alert
   PATCH  /v1/staff/:id                        change role / module_access / status; disabling revokes sessions
+                                              [step-up when role, module_access, property_access or status change;
+                                              a rename or phone edit needs none]; a role change alerts the firm login
   GET    /v1/billing/:product/plans           plans for the product, plus unit_count (the firm's reported billable count)
   GET    /v1/billing/:product/subscription    the firm's subscription to the product (404 if none yet)
   POST   /v1/billing/:product/subscription/renew   start a renewal: STK push to the billing channel
@@ -137,8 +143,11 @@ Leases and QR codes
 Getting paid (PayHero channels)
   POST   /v1/properties/:id/payment-channel         register / reuse a PayHero channel; claimed in platform's
                                                     payment_channels first (409 if another property owns it)
+                                                    [step-up] and alerts the firm login. The channel field on
+                                                    POST/PATCH /v1/properties is gated and alerts the same way
+                                                    whenever it actually changes (an echoed value does not)
   GET    /v1/properties/:id/payment-channel/status  connected / problem / not connected
-  POST   /v1/properties/:id/payment-channel/test    send a test prompt
+  POST   /v1/properties/:id/payment-channel/test    send a test prompt [step-up]
   GET    /v1/payment-channel-banks                  supported banks
 
 Billing engines, ledgers, reports
@@ -148,6 +157,7 @@ Billing engines, ledgers, reports
   POST   /v1/units/:id/rent/payments                record a cash payment
   POST   /v1/units/:id/rent/charges                 post a manual charge
   POST   /v1/ledger-entries/:id/reverse             storno reversal (the ledger is append-only)
+                                                    [step-up] and alerts the firm login (amount, reason)
   GET    /v1/units/:id/ledger/:type                 a unit's ledger (rent | water | garbage | deposits)
   POST   /v1/units/:id/arrears-commitments
   GET/PUT /v1/properties/:id/water                  readings grid / save readings

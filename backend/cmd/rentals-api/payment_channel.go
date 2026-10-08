@@ -152,12 +152,14 @@ func (app *application) registerPaymentChannelHandler(c *gin.Context) {
 		}
 	}
 
+	oldChannel := channelValue(property.PayheroChannelID)
 	property.PayheroChannelID = &channelID
 	if err := app.models.Properties.Update(ctx, property); err != nil {
 		app.propertyWriteErrorResponse(c, err)
 		return
 	}
 	app.audit(c, "property.payment_channel_registered", "property", &property.ID, input.Type+" "+input.Description)
+	app.alertOwner(c, "A payment channel was changed", channelChangeTarget(property.Name, oldChannel, channelID))
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{
 		"channel":  envelope{"id": channel.ID, "account_number": channel.AccountNumber, "reused": reused},
