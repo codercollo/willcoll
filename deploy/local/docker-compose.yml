@@ -135,6 +135,9 @@ services:
       METRICS_ADDR: ":9100"
       DB_DSN: postgres://willcoll_platform_app:${PLATFORM_APP_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
       DB_ADMIN_DSN: postgres://willcoll_platform_admin:${PLATFORM_ADMIN_PASSWORD}@postgres:5432/willcoll_platform?sslmode=disable
+      # Product-to-platform credential for /internal/v1/* (C3.3); empty refuses every service call.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
+      SERVICE_TOKEN_PREVIOUS: ${SERVICE_TOKEN_PREVIOUS:-}
       FRONTEND_URL: ${PLATFORM_ORIGIN}
       CORS_TRUSTED_ORIGINS: ${PLATFORM_ORIGIN} ${RENTALS_ORIGIN}
       SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN}

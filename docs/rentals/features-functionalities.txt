@@ -91,6 +91,11 @@ Owner only: staff and billing (the firm's own login, or a staff owner)
 Webhook (server to server; shared secret and/or source IP, never rate limited)
   POST   /v1/webhooks/payhero/subscriptions   a subscription payment's outcome: settles the invoice, activates the plan
 
+Service-to-service (product API -> platform; Authorization: Bearer SERVICE_TOKEN only, never a session;
+internal network only, not routed by Caddy)
+  GET    /internal/v1/health                  the caller's credential works and platform is up
+  POST   /internal/v1/usage                   {manager_id, product, billable_count}: the same upsert as a module_usage write
+
 Super Admin (requireAdmin) - oversight reads willcoll_platform only, never a product database
   GET    /v1/admin/managers                   firms: ?status, ?sort (created_at|firm_name, "-" desc), page, page_size.
                                               Each row: firm, status, latest subscription, modules, per-product
@@ -105,7 +110,15 @@ Super Admin (requireAdmin) - oversight reads willcoll_platform only, never a pro
                                               in parallel, each under HEALTH_TIMEOUT (default 5s). One dead service is
                                               reported as that service (unreachable|unauthorized|not_configured|degraded)
                                               with the rest still returned; 503 only if willcoll_platform is down.
-  GET    /v1/admin/plans                      the plan catalog with subscriber counts
+                                              Its platform block carries unclaimed_receipts {open, open_amount,
+                                              oldest_age_seconds}: money waiting for a Super Admin.
+  GET    /v1/admin/unclaimed-receipts         money received on a PayHero channel nobody has claimed (never posted),
+                                              open ones oldest first, phone masked, payload omitted; + stats
+  POST   /v1/admin/unclaimed-receipts/:id/resolve
+                                              {"note"} required (<= 1000 bytes); resolves once (second call 404);
+                                              the row keeps resolved_by/at/note; audited under the firm that now
+                                              claims the channel, if any
+  GET    /v1/admin/plans                   the plan catalog with subscriber counts
   POST   /v1/admin/plans                      create a plan (flat or per_unit pricing)
   PATCH  /v1/admin/plans/:id                  edit a plan
   POST   /v1/admin/plans/:id/archive          archive (hide from managers; subscribers keep their period)

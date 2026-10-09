@@ -2,11 +2,13 @@ package data
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/db"
 	"github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ModuleUsage is one manager's billable count for one product
@@ -64,6 +66,10 @@ func (m UsageModel) Upsert(ctx context.Context, tenantID uuid.UUID, product stri
 	err := m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
 		row, err := q.UpsertModuleUsage(ctx, sqlc.UpsertModuleUsageParams{ManagerID: tenantID, Product: product, BillableCount: count})
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolation {
+				return ErrRecordNotFound // no such manager
+			}
 			return err
 		}
 		out = moduleUsageFromRow(row)

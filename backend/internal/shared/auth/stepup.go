@@ -19,6 +19,15 @@ import "time"
 // StepUpTTL is how long a successful password re-entry stays valid.
 const StepUpTTL = 5 * time.Minute
 
+// StepUpPermissions are the catalog permissions whose routes require a fresh
+// window (C3.6): where money goes (payment channels), reversing ledger
+// entries, and who holds authority (staff management; the staff route gates
+// only authority changes, not a rename). A test fails when a catalog
+// permission ending in ".reverse" (e.g. a future payments.reverse) is missing
+// from this list, and each product API's route test fails when a route
+// guarded by one of them has no gate.
+var StepUpPermissions = []string{PaymentChannelsManage, ChargesReverse, StaffManage}
+
 // StepUpMaxFailures is how many wrong re-entries a session may make before it
 // is ended: someone holding a stolen session cookie must not be able to guess
 // the password through the step-up endpoint.

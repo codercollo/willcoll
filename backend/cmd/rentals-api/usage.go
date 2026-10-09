@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -62,6 +63,14 @@ func (app *application) usageReportingStatus() envelope {
 // or fail a unit-creation request. A nil app.platform (no PLATFORM_DB_DSN)
 // makes this a deliberate no-op, not an error.
 func (app *application) reportUsage(tenantID uuid.UUID) {
+	app.reportUsageAs(tenantID, "")
+}
+
+// reportUsageAs is reportUsage, optionally on behalf of a background job:
+// with a job name it also writes an audit row as that system actor (C3.4).
+// A request-triggered report (job == "") is already covered by the request's
+// own audit row.
+func (app *application) reportUsageAs(tenantID uuid.UUID, job string) {
 	if app.platform == nil {
 		return
 	}
@@ -79,6 +88,9 @@ func (app *application) reportUsage(tenantID uuid.UUID) {
 			return
 		}
 		app.usageStatus.recordSuccess(time.Now())
+		if job != "" {
+			app.auditSystem(job, tenantID, "usage.recount", "module_usage", nil, fmt.Sprintf("recounted rentals units: %d", count))
+		}
 	})
 }
 
@@ -122,6 +134,6 @@ func (app *application) recountAllManagers(ctx context.Context) {
 		return
 	}
 	for _, id := range ids {
-		app.reportUsage(id)
+		app.reportUsageAs(id, jobUsageRecount)
 	}
 }

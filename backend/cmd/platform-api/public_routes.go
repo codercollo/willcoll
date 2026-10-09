@@ -18,5 +18,7 @@ var publicRoutes = map[string]string{
 	"POST /v1/admin/sessions":                 "Super Admin login; rate limited, credentials",
 	"POST /v1/tokens/password-reset":          "password reset email; rate limited, same response for any address",
 	"PUT /v1/managers/password":               "password reset completion; single-use reset token, rate limited",
+	"GET /internal/v1/health":                 "service-to-service (C3.3): requireService, the SERVICE_TOKEN bearer credential only, never a session; internal network only, blocked at Caddy",
+	"POST /internal/v1/usage":                 "service-to-service (C3.3): requireService, the SERVICE_TOKEN bearer credential only, never a session; internal network only, blocked at Caddy",
 	"POST /v1/webhooks/payhero/subscriptions": "PayHero callback; payhero.VerifyWebhook (IP allowlist and/or secret/HMAC), fail-closed",
 }

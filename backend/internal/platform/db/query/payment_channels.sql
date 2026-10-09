@@ -34,3 +34,10 @@ WHERE manager_id = $1 AND channel_id = $2;
 -- name: ReleasePaymentChannel :execrows
 DELETE FROM payment_channels
 WHERE manager_id = $1 AND channel_id = $2 AND product = $3 AND owner_id = $4;
+
+-- GetPaymentChannelByID resolves a webhook's channel_id to its claim with no
+-- tenant context (a webhook names a channel, not a manager), so it runs on
+-- the admin pool (BYPASSRLS). The claim, never the webhook payload, says
+-- which product and firm a payment belongs to (C3.2).
+-- name: GetPaymentChannelByID :one
+SELECT * FROM payment_channels WHERE channel_id = $1;

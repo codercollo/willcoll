@@ -132,6 +132,21 @@ func (mr *MockStoreMockRecorder) AdminUpdateSubscriptionPlan(ctx, arg any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AdminUpdateSubscriptionPlan", reflect.TypeOf((*MockStore)(nil).AdminUpdateSubscriptionPlan), ctx, arg)
 }
 
+// ClaimDueEmails mocks base method.
+func (m *MockStore) ClaimDueEmails(ctx context.Context, arg sqlc.ClaimDueEmailsParams) ([]sqlc.EmailOutbox, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClaimDueEmails", ctx, arg)
+	ret0, _ := ret[0].([]sqlc.EmailOutbox)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ClaimDueEmails indicates an expected call of ClaimDueEmails.
+func (mr *MockStoreMockRecorder) ClaimDueEmails(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimDueEmails", reflect.TypeOf((*MockStore)(nil).ClaimDueEmails), ctx, arg)
+}
+
 // ClaimPaymentInbox mocks base method.
 func (m *MockStore) ClaimPaymentInbox(ctx context.Context, arg sqlc.ClaimPaymentInboxParams) (sqlc.PaymentInbox, error) {
 	m.ctrl.T.Helper()
@@ -292,6 +307,21 @@ func (mr *MockStoreMockRecorder) DevDeleteSubscription(ctx, arg any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DevDeleteSubscription", reflect.TypeOf((*MockStore)(nil).DevDeleteSubscription), ctx, arg)
 }
 
+// EnqueueEmail mocks base method.
+func (m *MockStore) EnqueueEmail(ctx context.Context, arg sqlc.EnqueueEmailParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EnqueueEmail", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// EnqueueEmail indicates an expected call of EnqueueEmail.
+func (mr *MockStoreMockRecorder) EnqueueEmail(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnqueueEmail", reflect.TypeOf((*MockStore)(nil).EnqueueEmail), ctx, arg)
+}
+
 // ExecTenantTx mocks base method.
 func (m *MockStore) ExecTenantTx(ctx context.Context, tenantID uuid.UUID, fn func(sqlc.Querier) error) error {
 	m.ctrl.T.Helper()
@@ -424,6 +454,21 @@ func (m *MockStore) GetPaymentChannel(ctx context.Context, arg sqlc.GetPaymentCh
 func (mr *MockStoreMockRecorder) GetPaymentChannel(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPaymentChannel", reflect.TypeOf((*MockStore)(nil).GetPaymentChannel), ctx, arg)
+}
+
+// GetPaymentChannelByID mocks base method.
+func (m *MockStore) GetPaymentChannelByID(ctx context.Context, channelID string) (sqlc.PaymentChannel, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPaymentChannelByID", ctx, channelID)
+	ret0, _ := ret[0].(sqlc.PaymentChannel)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPaymentChannelByID indicates an expected call of GetPaymentChannelByID.
+func (mr *MockStoreMockRecorder) GetPaymentChannelByID(ctx, channelID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPaymentChannelByID", reflect.TypeOf((*MockStore)(nil).GetPaymentChannelByID), ctx, channelID)
 }
 
 // GetPaymentChannelByOwner mocks base method.
@@ -561,6 +606,21 @@ func (mr *MockStoreMockRecorder) GetSystemMetadata(ctx, key any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSystemMetadata", reflect.TypeOf((*MockStore)(nil).GetSystemMetadata), ctx, key)
 }
 
+// GetUnclaimedReceipt mocks base method.
+func (m *MockStore) GetUnclaimedReceipt(ctx context.Context, id uuid.UUID) (sqlc.UnclaimedReceipt, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUnclaimedReceipt", ctx, id)
+	ret0, _ := ret[0].(sqlc.UnclaimedReceipt)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetUnclaimedReceipt indicates an expected call of GetUnclaimedReceipt.
+func (mr *MockStoreMockRecorder) GetUnclaimedReceipt(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUnclaimedReceipt", reflect.TypeOf((*MockStore)(nil).GetUnclaimedReceipt), ctx, id)
+}
+
 // ListActiveStaffByEmail mocks base method.
 func (m *MockStore) ListActiveStaffByEmail(ctx context.Context, email string) ([]sqlc.Staff, error) {
 	m.ctrl.T.Helper()
@@ -574,6 +634,21 @@ func (m *MockStore) ListActiveStaffByEmail(ctx context.Context, email string) ([
 func (mr *MockStoreMockRecorder) ListActiveStaffByEmail(ctx, email any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListActiveStaffByEmail", reflect.TypeOf((*MockStore)(nil).ListActiveStaffByEmail), ctx, email)
+}
+
+// ListOpenUnclaimedReceipts mocks base method.
+func (m *MockStore) ListOpenUnclaimedReceipts(ctx context.Context, maxRows int32) ([]sqlc.UnclaimedReceipt, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListOpenUnclaimedReceipts", ctx, maxRows)
+	ret0, _ := ret[0].([]sqlc.UnclaimedReceipt)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListOpenUnclaimedReceipts indicates an expected call of ListOpenUnclaimedReceipts.
+func (mr *MockStoreMockRecorder) ListOpenUnclaimedReceipts(ctx, maxRows any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListOpenUnclaimedReceipts", reflect.TypeOf((*MockStore)(nil).ListOpenUnclaimedReceipts), ctx, maxRows)
 }
 
 // ListStaffForManager mocks base method.
@@ -636,6 +711,34 @@ func (mr *MockStoreMockRecorder) ListSubscriptionPlansForProduct(ctx, arg any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSubscriptionPlansForProduct", reflect.TypeOf((*MockStore)(nil).ListSubscriptionPlansForProduct), ctx, arg)
 }
 
+// MarkEmailFailed mocks base method.
+func (m *MockStore) MarkEmailFailed(ctx context.Context, arg sqlc.MarkEmailFailedParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkEmailFailed", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkEmailFailed indicates an expected call of MarkEmailFailed.
+func (mr *MockStoreMockRecorder) MarkEmailFailed(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkEmailFailed", reflect.TypeOf((*MockStore)(nil).MarkEmailFailed), ctx, arg)
+}
+
+// MarkEmailSent mocks base method.
+func (m *MockStore) MarkEmailSent(ctx context.Context, id uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkEmailSent", ctx, id)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkEmailSent indicates an expected call of MarkEmailSent.
+func (mr *MockStoreMockRecorder) MarkEmailSent(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkEmailSent", reflect.TypeOf((*MockStore)(nil).MarkEmailSent), ctx, id)
+}
+
 // MarkPaymentInboxPosted mocks base method.
 func (m *MockStore) MarkPaymentInboxPosted(ctx context.Context, mpesaReceipt string) (int64, error) {
 	m.ctrl.T.Helper()
@@ -679,6 +782,21 @@ func (m *MockStore) MarkSubscriptionInvoicePaid(ctx context.Context, arg sqlc.Ma
 func (mr *MockStoreMockRecorder) MarkSubscriptionInvoicePaid(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkSubscriptionInvoicePaid", reflect.TypeOf((*MockStore)(nil).MarkSubscriptionInvoicePaid), ctx, arg)
+}
+
+// OutboxStats mocks base method.
+func (m *MockStore) OutboxStats(ctx context.Context) (sqlc.OutboxStatsRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OutboxStats", ctx)
+	ret0, _ := ret[0].(sqlc.OutboxStatsRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// OutboxStats indicates an expected call of OutboxStats.
+func (mr *MockStoreMockRecorder) OutboxStats(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OutboxStats", reflect.TypeOf((*MockStore)(nil).OutboxStats), ctx)
 }
 
 // OversightGetManager mocks base method.
@@ -786,6 +904,21 @@ func (mr *MockStoreMockRecorder) OversightListUsage(ctx, managerIds any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OversightListUsage", reflect.TypeOf((*MockStore)(nil).OversightListUsage), ctx, managerIds)
 }
 
+// RecordUnclaimedReceipt mocks base method.
+func (m *MockStore) RecordUnclaimedReceipt(ctx context.Context, arg sqlc.RecordUnclaimedReceiptParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RecordUnclaimedReceipt", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RecordUnclaimedReceipt indicates an expected call of RecordUnclaimedReceipt.
+func (mr *MockStoreMockRecorder) RecordUnclaimedReceipt(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordUnclaimedReceipt", reflect.TypeOf((*MockStore)(nil).RecordUnclaimedReceipt), ctx, arg)
+}
+
 // RegisterPaymentChannel mocks base method.
 func (m *MockStore) RegisterPaymentChannel(ctx context.Context, arg sqlc.RegisterPaymentChannelParams) (sqlc.PaymentChannel, error) {
 	m.ctrl.T.Helper()
@@ -831,6 +964,21 @@ func (mr *MockStoreMockRecorder) ResolveSubscriptionInvoice(ctx, id any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveSubscriptionInvoice", reflect.TypeOf((*MockStore)(nil).ResolveSubscriptionInvoice), ctx, id)
 }
 
+// ResolveUnclaimedReceipt mocks base method.
+func (m *MockStore) ResolveUnclaimedReceipt(ctx context.Context, arg sqlc.ResolveUnclaimedReceiptParams) (sqlc.UnclaimedReceipt, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveUnclaimedReceipt", ctx, arg)
+	ret0, _ := ret[0].(sqlc.UnclaimedReceipt)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ResolveUnclaimedReceipt indicates an expected call of ResolveUnclaimedReceipt.
+func (mr *MockStoreMockRecorder) ResolveUnclaimedReceipt(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveUnclaimedReceipt", reflect.TypeOf((*MockStore)(nil).ResolveUnclaimedReceipt), ctx, arg)
+}
+
 // SetManagerStatus mocks base method.
 func (m *MockStore) SetManagerStatus(ctx context.Context, arg sqlc.SetManagerStatusParams) (int32, error) {
 	m.ctrl.T.Helper()
@@ -874,6 +1022,21 @@ func (m *MockStore) StartModuleTrial(ctx context.Context, arg sqlc.StartModuleTr
 func (mr *MockStoreMockRecorder) StartModuleTrial(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartModuleTrial", reflect.TypeOf((*MockStore)(nil).StartModuleTrial), ctx, arg)
+}
+
+// UnclaimedReceiptStats mocks base method.
+func (m *MockStore) UnclaimedReceiptStats(ctx context.Context) (sqlc.UnclaimedReceiptStatsRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnclaimedReceiptStats", ctx)
+	ret0, _ := ret[0].(sqlc.UnclaimedReceiptStatsRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UnclaimedReceiptStats indicates an expected call of UnclaimedReceiptStats.
+func (mr *MockStoreMockRecorder) UnclaimedReceiptStats(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnclaimedReceiptStats", reflect.TypeOf((*MockStore)(nil).UnclaimedReceiptStats), ctx)
 }
 
 // UpdateManager mocks base method.

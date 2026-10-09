@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/db"
@@ -25,6 +26,9 @@ type AuditEntry struct {
 	// scheduled job, nobody signed in).
 	ActorType string
 	ActorID   *uuid.UUID
+	// ActorName is the job's name for a system actor (C3.4), e.g.
+	// "usage-recount". Required for ActorSystem and ignored otherwise.
+	ActorName string
 	// Product is "" for a platform-only action (e.g. staff invited) —
 	// stored as NULL.
 	Product    string
@@ -70,9 +74,17 @@ func (m AuditModel) Log(ctx context.Context, tenantID uuid.UUID, e AuditEntry) e
 		staffID = e.ActorID
 	}
 
+	var actorName *string
+	if e.ActorType == ActorSystem {
+		if e.ActorName == "" {
+			return errors.New("audit: a system actor must name its job")
+		}
+		actorName = &e.ActorName
+	}
+
 	return m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
 		return q.CreateAuditLog(ctx, sqlc.CreateAuditLogParams{
-			ManagerID: tenantID, StaffID: staffID, ActorType: e.ActorType, ActorID: e.ActorID,
+			ManagerID: tenantID, StaffID: staffID, ActorType: e.ActorType, ActorID: e.ActorID, ActorName: actorName,
 			Product: product, Action: e.Action, EntityType: e.EntityType, EntityID: e.EntityID, Summary: e.Summary, Ip: ip,
 		})
 	})

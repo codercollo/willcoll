@@ -87,6 +87,17 @@ export interface RentalsReport {
   otp_ceiling_firms?: { tenant_id: string; last_hit_at: string }[]
 }
 
+/** The owner-alert email queue (C3.7). `failed` ran out of retries; `alert_enqueue_failures_24h` could not even be queued. */
+export interface EmailOutbox {
+  status: 'ok' | 'unreachable'
+  pending?: number
+  failed?: number
+  sent_24h?: number
+  oldest_pending_age_seconds?: number
+  last_error?: string | null
+  alert_enqueue_failures_24h: number
+}
+
 /** ok | degraded | unreachable | unauthorized | not_configured: one service, whatever the others did. */
 export type ServiceStatus = 'ok' | 'degraded' | 'unreachable' | 'unauthorized' | 'not_configured'
 
@@ -95,7 +106,7 @@ export interface SystemHealth {
   checked_at: string
   system_info: { environment: string; version: string }
   services: {
-    platform: { status: ServiceStatus; database: DatabaseHealth; wal_archiving?: WalArchiving; audit_failures_24h?: number }
+    platform: { status: ServiceStatus; database: DatabaseHealth; wal_archiving?: WalArchiving; audit_failures_24h?: number; email_outbox?: EmailOutbox }
     rentals: { status: ServiceStatus; latency_ms?: number; error?: string; report?: RentalsReport }
   }
 }

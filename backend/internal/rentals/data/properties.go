@@ -104,7 +104,9 @@ type PropertyModel struct {
 
 // Insert creates property for tenantID, filling in its ID (unless one was
 // pre-assigned), CreatedAt and Version. Returns ErrLandlordNotFound or ErrDuplicateSlug for those cases.
-func (m PropertyModel) Insert(ctx context.Context, tenantID uuid.UUID, property *Property) error {
+// hooks run in the same transaction after the write (an owner alert for a
+// channel change commits with it, C4.0).
+func (m PropertyModel) Insert(ctx context.Context, tenantID uuid.UUID, property *Property, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -150,7 +152,7 @@ func (m PropertyModel) Insert(ctx context.Context, tenantID uuid.UUID, property 
 		}
 
 		*property = propertyFromRow(row)
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 
@@ -224,8 +226,9 @@ func (m PropertyModel) GetAll(ctx context.Context, tenantID uuid.UUID, landlordI
 
 // Update saves property if its Version still matches the stored row, and
 // bumps Version on success. Returns ErrEditConflict if another request
-// updated it first, or ErrLandlordNotFound / ErrDuplicateSlug.
-func (m PropertyModel) Update(ctx context.Context, property *Property) error {
+// updated it first, or ErrLandlordNotFound / ErrDuplicateSlug. hooks run in
+// the same transaction after the write (C4.0).
+func (m PropertyModel) Update(ctx context.Context, property *Property, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -261,7 +264,7 @@ func (m PropertyModel) Update(ctx context.Context, property *Property) error {
 		}
 
 		property.Version = version
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 

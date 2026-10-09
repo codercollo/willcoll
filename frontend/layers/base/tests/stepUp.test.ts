@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, parseApiError } from "~/utils/apiError";
-import { createStepUpPrompt, isStepUpRequired, STEP_UP_CODE } from "~/utils/stepUp";
+import {
+  createStepUpPrompt,
+  isStepUpRequired,
+  STEP_UP_CANCELLED_MESSAGE,
+  STEP_UP_CODE,
+  withStepUp,
+} from "~/utils/stepUp";
 
 // Authorization.md D5: the API answers 403 + code step_up_required and the
 // client asks for the password once, then retries.
@@ -74,5 +80,50 @@ describe("createStepUpPrompt", () => {
     const prompt = createStepUpPrompt(onChange);
     prompt.done(false);
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("withStepUp", () => {
+  const stepUpError = () => parseApiError(403, { error: "re-enter your password to continue", code: STEP_UP_CODE });
+
+  it("passes a request that needs no step-up straight through, without a prompt", async () => {
+    const ask = vi.fn();
+    await expect(withStepUp(async () => "done", ask)).resolves.toBe("done");
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("shows the prompt, then retries the original request exactly once", async () => {
+    const attempt = vi.fn().mockRejectedValueOnce(stepUpError()).mockResolvedValueOnce("saved");
+    const ask = vi.fn().mockResolvedValue(true);
+    await expect(withStepUp(attempt, ask)).resolves.toBe("saved");
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(attempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not loop when the retry is refused again", async () => {
+    const attempt = vi.fn().mockRejectedValue(stepUpError());
+    const ask = vi.fn().mockResolvedValue(true);
+    await expect(withStepUp(attempt, ask)).rejects.toMatchObject({ status: 403, code: STEP_UP_CODE });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(attempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the action undone and says so when the box is cancelled", async () => {
+    const attempt = vi.fn().mockRejectedValue(stepUpError());
+    const ask = vi.fn().mockResolvedValue(false);
+    const err = await withStepUp(attempt, ask).catch((e) => e);
+    expect(attempt).toHaveBeenCalledTimes(1); // never retried
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe(STEP_UP_CANCELLED_MESSAGE);
+    expect(isStepUpRequired(err)).toBe(false); // nothing re-prompts for the cancellation itself
+  });
+
+  it("does not prompt for an ordinary 403 or for a disabled caller (pay page token)", async () => {
+    const forbidden = parseApiError(403, { error: "no permission" });
+    const ask = vi.fn();
+    await expect(withStepUp(() => Promise.reject(forbidden), ask)).rejects.toBe(forbidden);
+    const stepUp = stepUpError();
+    await expect(withStepUp(() => Promise.reject(stepUp), ask, false)).rejects.toBe(stepUp);
+    expect(ask).not.toHaveBeenCalled();
   });
 });

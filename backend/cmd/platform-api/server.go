@@ -21,6 +21,11 @@ func (app *application) serve() error {
 		return fmt.Errorf("configuring routes: %w", err)
 	}
 
+	// Owner-alert email outbox worker (C3.7). Stops when jobsCtx is cancelled.
+	jobsCtx, stopJobs := context.WithCancel(context.Background())
+	defer stopJobs()
+	app.startOutboxWorker(jobsCtx)
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", app.config.port),
 		Handler:      router,

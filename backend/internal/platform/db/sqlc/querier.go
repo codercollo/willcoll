@@ -32,6 +32,11 @@ type Querier interface {
 	// raised from then on; invoices already issued keep the amount they carry.
 	// Product is fixed at creation, not editable here.
 	AdminUpdateSubscriptionPlan(ctx context.Context, arg AdminUpdateSubscriptionPlanParams) (SubscriptionPlan, error)
+	// ClaimDueEmails leases up to $1 due rows: attempts is counted up front and
+	// next_attempt_at pushed out by the lease ($2 seconds), so a worker that dies
+	// mid-send simply has the row retried when the lease lapses. SKIP LOCKED lets
+	// several workers (or instances) share the queue without double-sending.
+	ClaimDueEmails(ctx context.Context, arg ClaimDueEmailsParams) ([]EmailOutbox, error)
 	// payment_inbox: deduplicates every M-Pesa receipt exactly once, before any
 	// product-specific matching runs (system-design.txt A.6, build-phases.txt
 	// 3g-2's claim -> post -> mark posted flow). No RLS: a webhook arrives with
@@ -46,6 +51,7 @@ type Querier interface {
 	// (RLS by manager_id, migration 000012). actor_type/actor_id (migration
 	// 000018) identify who did it; staff_id is kept alongside for joins when
 	// actor_type = 'staff'. ip (migration 000019) is the resolved client address.
+	// actor_name (migration 000021) is the job name of a system actor.
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
 	// Managers: the SaaS tenant (system-design.txt A.1). Not tenant-scoped (no
 	// RLS), so these run on the Store directly, outside ExecTenantTx.
@@ -79,6 +85,11 @@ type Querier interface {
 	// (and, by cascade, its invoices). Used only by cmd/devtools' dev/reset-trial,
 	// never by the API.
 	DevDeleteSubscription(ctx context.Context, arg DevDeleteSubscriptionParams) (int64, error)
+	// Owner-alert outbox (migration 000022, C3.7). Enqueue runs in a tenant
+	// transaction; claim/settle/stats are cross-tenant and run on the admin pool.
+	// EnqueueEmail is idempotent per (manager_id, event_key): a second enqueue of
+	// the same event inserts nothing (no rows returned).
+	EnqueueEmail(ctx context.Context, arg EnqueueEmailParams) (int64, error)
 	// Super Admin (system-design.txt A.1). One row, platform-wide, outside the
 	// tenant boundary — these run on the API's willcoll_platform_app pool.
 	GetAdmin(ctx context.Context, id uuid.UUID) (Admin, error)
@@ -101,6 +112,11 @@ type Querier interface {
 	// claiming product's own tenant transaction (manager_id known from the claim
 	// step already, so RLS still applies).
 	GetPaymentChannel(ctx context.Context, arg GetPaymentChannelParams) (PaymentChannel, error)
+	// GetPaymentChannelByID resolves a webhook's channel_id to its claim with no
+	// tenant context (a webhook names a channel, not a manager), so it runs on
+	// the admin pool (BYPASSRLS). The claim, never the webhook payload, says
+	// which product and firm a payment belongs to (C3.2).
+	GetPaymentChannelByID(ctx context.Context, channelID string) (PaymentChannel, error)
 	// GetPaymentChannelByOwner backs the backfill's idempotency: a property
 	// already registered is skipped, never re-inserted.
 	GetPaymentChannelByOwner(ctx context.Context, arg GetPaymentChannelByOwnerParams) (PaymentChannel, error)
@@ -121,6 +137,7 @@ type Querier interface {
 	// GetSystemMetadata reads a platform fact recorded outside the API, e.g.
 	// 'last_backup' from scripts/db_backup_verify.sh.
 	GetSystemMetadata(ctx context.Context, key string) (SystemMetadatum, error)
+	GetUnclaimedReceipt(ctx context.Context, id uuid.UUID) (UnclaimedReceipt, error)
 	// ListActiveStaffByEmail resolves a login attempt: staff.email is only
 	// unique per manager, so a global lookup can return more than one ACTIVE
 	// row (a person invited under two different managers with the same email —
@@ -128,6 +145,8 @@ type Querier interface {
 	// The caller treats anything but exactly one match as "not found," never
 	// guessing which account.
 	ListActiveStaffByEmail(ctx context.Context, email string) ([]Staff, error)
+	// ListOpenUnclaimedReceipts is the System page's list, oldest first.
+	ListOpenUnclaimedReceipts(ctx context.Context, maxRows int32) ([]UnclaimedReceipt, error)
 	ListStaffForManager(ctx context.Context, managerID uuid.UUID) ([]Staff, error)
 	// ListStaleClaimedPaymentInbox is the 5-minute sweeper's (build-phases.txt
 	// 3g-3) own query: every row still 'claimed' for product, claimed before
@@ -146,6 +165,10 @@ type Querier interface {
 	// product: archived plans never show, and a TEST plan (is_test) only shows
 	// when include_test is set (the API sets it only in development).
 	ListSubscriptionPlansForProduct(ctx context.Context, arg ListSubscriptionPlansForProductParams) ([]SubscriptionPlan, error)
+	// MarkEmailFailed records a failed attempt. With attempts left the row stays
+	// pending and is retried after $3 seconds; with none left it becomes 'failed'.
+	MarkEmailFailed(ctx context.Context, arg MarkEmailFailedParams) error
+	MarkEmailSent(ctx context.Context, id uuid.UUID) error
 	// MarkPaymentInboxPosted is the "mark posted" step, after the claiming
 	// product successfully records the payment in its own database. Scoped to
 	// status = 'claimed' so marking an already-posted row (a race with the
@@ -157,6 +180,8 @@ type Querier interface {
 	// MarkSubscriptionInvoicePaid settles a pending or failed invoice. Zero rows
 	// means it was already paid: a redelivered callback.
 	MarkSubscriptionInvoicePaid(ctx context.Context, arg MarkSubscriptionInvoicePaidParams) (int64, error)
+	// OutboxStats backs the System page.
+	OutboxStats(ctx context.Context) (OutboxStatsRow, error)
 	// OversightGetManager is one manager with the same oversight columns.
 	OversightGetManager(ctx context.Context, id uuid.UUID) (OversightGetManagerRow, error)
 	OversightListManagerSubscriptions(ctx context.Context, managerIds []uuid.UUID) ([]OversightListManagerSubscriptionsRow, error)
@@ -181,6 +206,11 @@ type Querier interface {
 	// optionally filtered by product and/or status.
 	OversightListSubscriptions(ctx context.Context, arg OversightListSubscriptionsParams) ([]OversightListSubscriptionsRow, error)
 	OversightListUsage(ctx context.Context, managerIds []uuid.UUID) ([]ModuleUsage, error)
+	// unclaimed_receipts (migration 000023): money received on a channel nobody
+	// has claimed. No RLS and no tenant: a webhook has no tenant context.
+	// RecordUnclaimedReceipt is idempotent per M-Pesa receipt: a redelivery
+	// inserts nothing (0 rows affected).
+	RecordUnclaimedReceipt(ctx context.Context, arg RecordUnclaimedReceiptParams) (int64, error)
 	// payment_channels: every PayHero channel belongs to exactly one product and
 	// owner (system-design.txt A.6, build-phases.txt 3g-1). channel_id is the
 	// primary key, so a second registration of the same channel for a different
@@ -201,6 +231,9 @@ type Querier interface {
 	// webhook, which arrives with only the invoice reference. Runs on the
 	// willcoll_platform_admin pool (BYPASSRLS, SELECT only) and returns ids only.
 	ResolveSubscriptionInvoice(ctx context.Context, id uuid.UUID) (ResolveSubscriptionInvoiceRow, error)
+	// ResolveUnclaimedReceipt closes an open row. Scoped to status = 'open', so
+	// resolving twice returns no row and the first resolution is never overwritten.
+	ResolveUnclaimedReceipt(ctx context.Context, arg ResolveUnclaimedReceiptParams) (UnclaimedReceipt, error)
 	// SetManagerStatus moves a manager from one status to another: the Super
 	// Admin's suspend and reinstate. The from_status guard makes each move
 	// explicit: zero rows means the manager doesn't exist or wasn't in
@@ -217,6 +250,7 @@ type Querier interface {
 	// and the caller re-reads the existing one (GetManagerModule) instead of
 	// treating that as an error.
 	StartModuleTrial(ctx context.Context, arg StartModuleTrialParams) (ManagerModule, error)
+	UnclaimedReceiptStats(ctx context.Context) (UnclaimedReceiptStatsRow, error)
 	// UpdateManager: optimistic concurrency; zero rows means the version moved on.
 	UpdateManager(ctx context.Context, arg UpdateManagerParams) (int32, error)
 	// UpdateStaff: optimistic concurrency. Used both for an owner's edits

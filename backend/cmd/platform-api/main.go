@@ -67,6 +67,10 @@ type application struct {
 	// auditFailures counts audit_log write failures in the trailing 24h
 	// (build-phases.txt 3f-4).
 	auditFailures auditFailureTracker
+	// alertFailures counts owner alerts that could not even be queued in the
+	// email outbox, trailing 24h (C3.7). Delivery failures are in the outbox
+	// itself (email_outbox on the System page).
+	alertFailures auditFailureTracker
 }
 
 // resp builds the shared JSON-envelope/error-responder layer

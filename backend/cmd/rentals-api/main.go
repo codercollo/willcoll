@@ -94,9 +94,17 @@ type application struct {
 	// collections must never stop for this, but a sustained platform outage
 	// should be visible on the health page, not silent.
 	inboxFallbacks auditFailureTracker
+	// alertFailures counts owner alerts that could not be queued in the email
+	// outbox, trailing 24h (C3.7). Delivery failures show on the platform
+	// System page (email_outbox).
+	alertFailures auditFailureTracker
 	// unclaimedChannels lists the distinct channels a collections webhook
 	// arrived for that platform has no claim on, shown on the health page.
 	unclaimedChannels unclaimedChannelTracker
+	// unclaimedRecordFailures counts unclaimed payments that could not be
+	// written to platform's unclaimed_receipts, trailing 24h: money whose only
+	// trace is then the ERROR log.
+	unclaimedRecordFailures auditFailureTracker
 }
 
 // resp builds the shared JSON-envelope/error-responder layer

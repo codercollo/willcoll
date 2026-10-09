@@ -5,6 +5,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/auth"
+	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -81,6 +82,7 @@ func (app *application) requireResourceInScope() gin.HandlerFunc {
 			return
 		}
 		if !found {
+			httpx.MarkScopeDenied(c)
 			app.notFoundResponse(c)
 			c.Abort()
 			return

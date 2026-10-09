@@ -84,6 +84,8 @@ type Models struct {
 	UnitQR      UnitQRModel
 	Onboarding  OnboardingModel
 	Scope       ScopeModel
+	// Alerts is the owner-alert outbox's relay side (cross-tenant, admin pool).
+	Alerts AlertOutboxModel
 }
 
 // NewModels wires the models to their connection pools: conn is the API's
@@ -124,6 +126,7 @@ func newModels(store, adminStore db.Store, timeout time.Duration) Models {
 		UnitQR:      UnitQRModel{Store: store, Resolver: adminStore, Timeout: timeout},
 		Onboarding:  OnboardingModel{Store: store, Timeout: timeout},
 		Scope:       ScopeModel{Store: store, Timeout: timeout},
+		Alerts:      AlertOutboxModel{Store: adminStore, Timeout: timeout},
 	}
 }
 

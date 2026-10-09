@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
+	platformsqlc "github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/mock"
 	"github.com/codercollo/willcoll/backend/internal/rentals/db/sqlc"
 	"github.com/codercollo/willcoll/backend/internal/shared/auth"
@@ -22,39 +25,7 @@ import (
 
 // Step-up (authorization.md D5) as rentals-api sees it: platform-api opens
 // the window in the shared session; these gates read it, and the owner is
-// emailed about channel changes and reversals.
-
-type sentMail struct {
-	Recipient string
-	Template  string
-	Data      map[string]any
-}
-
-// captureMailer records every email instead of sending it.
-type captureMailer struct {
-	mu   sync.Mutex
-	sent []sentMail
-}
-
-func (m *captureMailer) Send(recipient, templateFile string, data any) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	d, _ := data.(map[string]any)
-	m.sent = append(m.sent, sentMail{Recipient: recipient, Template: templateFile, Data: d})
-	return nil
-}
-
-func (m *captureMailer) alerts() []sentMail {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []sentMail
-	for _, s := range m.sent {
-		if s.Template == mailer.SecurityAlertTemplate {
-			out = append(out, s)
-		}
-	}
-	return out
-}
+// told (through the email outbox) about channel changes and reversals.
 
 // steppedCookie is sessionCookie plus a step-up window ending at until, as
 // platform-api's POST /v1/sessions/step-up would leave it (0 = none).
@@ -255,10 +226,97 @@ func TestChannelChangeOnPropertiesNeedsStepUp(t *testing.T) {
 
 // --- owner alerts ---
 
+// queuedAlerts captures what rentals-api puts in the email outbox: it never
+// sends mail itself (C3.7). Enqueue is idempotent per (firm, event key), as the
+// table's unique constraint makes it.
+type queuedAlerts struct {
+	mu   sync.Mutex
+	rows []platformsqlc.EnqueueEmailParams
+	seen map[string]bool
+}
+
+func (q *queuedAlerts) enqueue(_ context.Context, a platformsqlc.EnqueueEmailParams) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	key := a.ManagerID.String() + "|" + a.EventKey
+	if q.seen[key] {
+		return 0, nil
+	}
+	if q.seen == nil {
+		q.seen = map[string]bool{}
+	}
+	q.seen[key] = true
+	q.rows = append(q.rows, a)
+	return 1, nil
+}
+
+func (q *queuedAlerts) all() []platformsqlc.EnqueueEmailParams {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]platformsqlc.EnqueueEmailParams(nil), q.rows...)
+}
+
+// capturedAlertOutbox stands in for the Rentals alert_outbox table: it records
+// what an action's transaction wrote there (idempotent per firm and event key,
+// as the table's unique constraint makes it).
+type capturedAlertOutbox struct {
+	mu   sync.Mutex
+	rows []sqlc.EnqueueAlertParams
+}
+
+func (c *capturedAlertOutbox) enqueue(_ context.Context, a sqlc.EnqueueAlertParams) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.rows {
+		if r.TenantID == a.TenantID && r.EventKey == a.EventKey {
+			return 0, nil
+		}
+	}
+	c.rows = append(c.rows, a)
+	return 1, nil
+}
+
+func (c *capturedAlertOutbox) all() []sqlc.EnqueueAlertParams {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]sqlc.EnqueueAlertParams(nil), c.rows...)
+}
+
+// pending is what the relay would read back from the table.
+func (c *capturedAlertOutbox) pending() []data.PendingAlert {
+	var out []data.PendingAlert
+	for _, r := range c.all() {
+		var p data.AlertPayload
+		if err := json.Unmarshal(r.Payload, &p); err != nil {
+			panic(err)
+		}
+		out = append(out, data.PendingAlert{ID: uuid.New(), TenantID: r.TenantID, Key: r.EventKey, Payload: p})
+	}
+	return out
+}
+
+// fakeAlertSource is the relay's Rentals side over a fixed list.
+type fakeAlertSource struct {
+	pending []data.PendingAlert
+	relayed []uuid.UUID
+}
+
+func (f *fakeAlertSource) ListPending(context.Context, int) ([]data.PendingAlert, error) {
+	return f.pending, nil
+}
+
+func (f *fakeAlertSource) MarkRelayed(_ context.Context, id uuid.UUID) error {
+	f.relayed = append(f.relayed, id)
+	return nil
+}
+
+func (f *fakeAlertSource) MarkFailed(context.Context, uuid.UUID, error) error { return nil }
+
 func TestReversalAlertsTheOwner(t *testing.T) {
 	m := newMiddlewareTestApp(t)
-	mail := &captureMailer{}
-	m.app.mailer = mail
+	queue := &queuedAlerts{}
+	m.pq.EXPECT().EnqueueEmail(gomock.Any(), gomock.Any()).DoAndReturn(queue.enqueue).AnyTimes()
+	m.app.config.frontendURL = "https://rentals.example.com"
 	m.pStore.EXPECT().GetManager(gomock.Any(), testManagerID).Return(managerRow(platformdata.ManagerStatusActive), nil).AnyTimes()
 	m.pq.EXPECT().CreateAuditLog(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
@@ -272,6 +330,10 @@ func TestReversalAlertsTheOwner(t *testing.T) {
 	}, nil)
 	q.EXPECT().CreateTransactionHeader(gomock.Any(), gomock.Any()).Return(uuid.New(), nil)
 	q.EXPECT().CreateLedgerEntry(gomock.Any(), gomock.Any()).Return(uuid.New(), nil)
+	// The alert is written to the Rentals alert_outbox in the reversal's own
+	// transaction (C4.0), not queued straight to the platform.
+	rentalsAlerts := &capturedAlertOutbox{}
+	q.EXPECT().EnqueueAlert(gomock.Any(), gomock.Any()).DoAndReturn(rentalsAlerts.enqueue).AnyTimes()
 
 	// Refused first (no window): nothing happens, nobody is alerted. The strict
 	// store mock would fail the test on any database call.
@@ -279,7 +341,7 @@ func TestReversalAlertsTheOwner(t *testing.T) {
 		t.Fatalf("without a window: status %d, want 403", w.Code)
 	}
 	m.app.wg.Wait()
-	if n := len(mail.alerts()); n != 0 {
+	if n := len(queue.all()); n != 0 {
 		t.Fatalf("%d alerts for a refused reversal, want 0", n)
 	}
 
@@ -289,30 +351,89 @@ func TestReversalAlertsTheOwner(t *testing.T) {
 	}
 	m.app.wg.Wait()
 
-	alerts := mail.alerts()
-	if len(alerts) != 1 {
-		t.Fatalf("%d alerts, want 1", len(alerts))
+	// Committed with the reversal, and not yet anywhere near the platform.
+	if n := len(queue.all()); n != 0 {
+		t.Fatalf("%d platform emails queued before the relay ran, want 0", n)
 	}
-	a := alerts[0]
-	if a.Recipient != "firm@example.com" {
-		t.Errorf("alert went to %q, want the firm login", a.Recipient)
+	if n := len(rentalsAlerts.all()); n != 1 {
+		t.Fatalf("%d alerts in the Rentals alert_outbox, want 1", n)
+	}
+	// The relay hands it to the platform outbox; running it again (a crash after
+	// the enqueue, a second instance) must not queue a second email.
+	src := &fakeAlertSource{pending: rentalsAlerts.pending()}
+	for range 2 {
+		if _, failed, err := relayAlerts(context.Background(), src, m.app.platform.Outbox, 10); err != nil || failed != 0 {
+			t.Fatalf("relay: failed=%d err=%v", failed, err)
+		}
+		src.pending = rentalsAlerts.pending() // the second pass sees it pending again, as after a crash before the mark
+	}
+
+	queued := queue.all()
+	if len(queued) != 1 {
+		t.Fatalf("%d alerts queued, want 1", len(queued))
+	}
+	row := queued[0]
+	if row.Recipient != "firm@example.com" || row.Template != mailer.SecurityAlertTemplate || row.ManagerID != testManagerID {
+		t.Errorf("queued for %q / %q / %s, want the firm login's alert template", row.Recipient, row.Template, row.ManagerID)
+	}
+	if row.EventKey != "ledger_entry.reversed:"+entryID.String() {
+		t.Errorf("event key = %q, want one keyed by the reversed entry", row.EventKey)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(row.Payload, &data); err != nil {
+		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
 		"Headline": "A ledger entry was reversed",
 		"Actor":    "Firm (firm login)",
 		"Target":   "KES 12,000.00",
+		"Link":     "https://rentals.example.com/units/" + unitIDFromLink(t, data),
 	} {
-		if got, _ := a.Data[key].(string); !strings.Contains(got, want) {
+		if got, _ := data[key].(string); !strings.Contains(got, want) {
 			t.Errorf("alert %s = %q, want it to contain %q", key, got, want)
 		}
 	}
-	if got, _ := a.Data["Target"].(string); !strings.Contains(got, entryID.String()) || !strings.Contains(got, "duplicate rent charge") {
+	if got, _ := data["Target"].(string); !strings.Contains(got, entryID.String()) || !strings.Contains(got, "duplicate rent charge") {
 		t.Errorf("alert target %q lacks the entry id or the reason", got)
 	}
 	for _, key := range []string{"IP", "When"} {
-		if got, _ := a.Data[key].(string); got == "" {
+		if got, _ := data[key].(string); got == "" {
 			t.Errorf("alert %s is empty", key)
 		}
+	}
+	// What was queued renders as the real email.
+	msg, err := mailer.Render(row.Template, data)
+	if err != nil {
+		t.Fatalf("the queued payload does not render: %v", err)
+	}
+	if !strings.Contains(msg.PlainBody, "KES 12,000.00") || !strings.Contains(msg.PlainBody, "https://rentals.example.com/units/") {
+		t.Errorf("rendered alert lacks the amount or the record link:\n%s", msg.PlainBody)
+	}
+}
+
+// unitIDFromLink returns the unit id at the end of the alert's link, so the
+// test can assert the link points at the unit's page without knowing the id.
+func unitIDFromLink(t *testing.T, data map[string]any) string {
+	t.Helper()
+	link, _ := data["Link"].(string)
+	_, id, ok := strings.Cut(link, "/units/")
+	if !ok {
+		t.Fatalf("alert link %q is not a unit page", link)
+	}
+	return id
+}
+
+// The same event queued twice is one alert (the outbox is idempotent per
+// firm and event key).
+func TestAlertForTheSameEventIsQueuedOnce(t *testing.T) {
+	queue := &queuedAlerts{}
+	key := "ledger_entry.reversed:" + uuid.NewString()
+	for range 3 {
+		_, _ = queue.enqueue(context.Background(), platformsqlc.EnqueueEmailParams{ManagerID: testManagerID, EventKey: key})
+	}
+	_, _ = queue.enqueue(context.Background(), platformsqlc.EnqueueEmailParams{ManagerID: testManagerID, EventKey: key + "x"})
+	if n := len(queue.all()); n != 2 {
+		t.Errorf("%d queued, want 2", n)
 	}
 }
 
@@ -324,6 +445,30 @@ func TestChannelChangeTarget(t *testing.T) {
 	} {
 		if got := channelChangeTarget("Runda Arcade", tc.old, tc.new); got != tc.want {
 			t.Errorf("channelChangeTarget(%q, %q) = %q, want %q", tc.old, tc.new, got, tc.want)
+		}
+	}
+}
+
+// Every rentals route guarded by a step-up permission must be one of the
+// routes TestMoneyActionsNeedStepUp proves are gated. A new route under
+// payment_channels.manage or charges.reverse (a future payments.reverse
+// included, via auth.StepUpPermissions) fails here until it is gated and
+// added to that table.
+func TestEveryStepUpPermissionRouteIsInTheGatedTable(t *testing.T) {
+	m := newMiddlewareTestApp(t)
+	gated := map[string]bool{
+		"POST /v1/ledger-entries/:id/reverse":          true,
+		"POST /v1/properties/:id/payment-channel":      true,
+		"POST /v1/properties/:id/payment-channel/test": true,
+	}
+	for key, g := range m.app.routeGuards.Entries() {
+		if slices.Contains(auth.StepUpPermissions, g.Permission) && !gated[key] {
+			t.Errorf("%s is guarded by %s (step-up) but is not in the gated-routes table", key, g.Permission)
+		}
+	}
+	for key := range gated {
+		if _, ok := m.app.routeGuards.Lookup(key); !ok {
+			t.Errorf("gated-routes table lists %s, which is not a registered route", key)
 		}
 	}
 }

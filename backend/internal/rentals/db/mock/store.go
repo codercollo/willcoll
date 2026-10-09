@@ -88,6 +88,21 @@ func (mr *MockStoreMockRecorder) AdvanceReceiptCounter(ctx, arg any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AdvanceReceiptCounter", reflect.TypeOf((*MockStore)(nil).AdvanceReceiptCounter), ctx, arg)
 }
 
+// AlertOutboxStats mocks base method.
+func (m *MockStore) AlertOutboxStats(ctx context.Context) (sqlc.AlertOutboxStatsRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AlertOutboxStats", ctx)
+	ret0, _ := ret[0].(sqlc.AlertOutboxStatsRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AlertOutboxStats indicates an expected call of AlertOutboxStats.
+func (mr *MockStoreMockRecorder) AlertOutboxStats(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AlertOutboxStats", reflect.TypeOf((*MockStore)(nil).AlertOutboxStats), ctx)
+}
+
 // ArchiveProperty mocks base method.
 func (m *MockStore) ArchiveProperty(ctx context.Context, arg sqlc.ArchivePropertyParams) (int64, error) {
 	m.ctrl.T.Helper()
@@ -501,6 +516,21 @@ func (m *MockStore) DeleteLeasePayer(ctx context.Context, arg sqlc.DeleteLeasePa
 func (mr *MockStoreMockRecorder) DeleteLeasePayer(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteLeasePayer", reflect.TypeOf((*MockStore)(nil).DeleteLeasePayer), ctx, arg)
+}
+
+// EnqueueAlert mocks base method.
+func (m *MockStore) EnqueueAlert(ctx context.Context, arg sqlc.EnqueueAlertParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EnqueueAlert", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// EnqueueAlert indicates an expected call of EnqueueAlert.
+func (mr *MockStoreMockRecorder) EnqueueAlert(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnqueueAlert", reflect.TypeOf((*MockStore)(nil).EnqueueAlert), ctx, arg)
 }
 
 // ExecTenantTx mocks base method.
@@ -1206,6 +1236,21 @@ func (mr *MockStoreMockRecorder) ListPaymentsForReview(ctx, arg any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPaymentsForReview", reflect.TypeOf((*MockStore)(nil).ListPaymentsForReview), ctx, arg)
 }
 
+// ListPendingAlerts mocks base method.
+func (m *MockStore) ListPendingAlerts(ctx context.Context, batch int32) ([]sqlc.ListPendingAlertsRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListPendingAlerts", ctx, batch)
+	ret0, _ := ret[0].([]sqlc.ListPendingAlertsRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListPendingAlerts indicates an expected call of ListPendingAlerts.
+func (mr *MockStoreMockRecorder) ListPendingAlerts(ctx, batch any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPendingAlerts", reflect.TypeOf((*MockStore)(nil).ListPendingAlerts), ctx, batch)
+}
+
 // ListPeriodPayments mocks base method.
 func (m *MockStore) ListPeriodPayments(ctx context.Context, arg sqlc.ListPeriodPaymentsParams) ([]sqlc.ListPeriodPaymentsRow, error) {
 	m.ctrl.T.Helper()
@@ -1489,6 +1534,34 @@ func (m *MockStore) LockWaterReading(ctx context.Context, arg sqlc.LockWaterRead
 func (mr *MockStoreMockRecorder) LockWaterReading(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LockWaterReading", reflect.TypeOf((*MockStore)(nil).LockWaterReading), ctx, arg)
+}
+
+// MarkAlertRelayFailed mocks base method.
+func (m *MockStore) MarkAlertRelayFailed(ctx context.Context, arg sqlc.MarkAlertRelayFailedParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkAlertRelayFailed", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkAlertRelayFailed indicates an expected call of MarkAlertRelayFailed.
+func (mr *MockStoreMockRecorder) MarkAlertRelayFailed(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertRelayFailed", reflect.TypeOf((*MockStore)(nil).MarkAlertRelayFailed), ctx, arg)
+}
+
+// MarkAlertRelayed mocks base method.
+func (m *MockStore) MarkAlertRelayed(ctx context.Context, id uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkAlertRelayed", ctx, id)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkAlertRelayed indicates an expected call of MarkAlertRelayed.
+func (mr *MockStoreMockRecorder) MarkAlertRelayed(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertRelayed", reflect.TypeOf((*MockStore)(nil).MarkAlertRelayed), ctx, id)
 }
 
 // OnboardingCounts mocks base method.

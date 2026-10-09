@@ -34,3 +34,35 @@ func TestSecurityAlertRenders(t *testing.T) {
 		t.Errorf("HTML body does not escape the actor name:\n%s", msg.HTMLBody)
 	}
 }
+
+func TestSecurityAlertShowsTheRecordLinkOnlyWhenThereIsOne(t *testing.T) {
+	at := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	with, err := Render(SecurityAlertTemplate, SecurityAlertData("Firm", SecurityAlert{Headline: "H", Actor: "A", IP: "1.2.3.4", Target: "T", At: at, Link: "https://rentals.example.com/properties/p1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(with.PlainBody, "https://rentals.example.com/properties/p1") || !strings.Contains(with.HTMLBody, `href="https://rentals.example.com/properties/p1"`) {
+		t.Errorf("link missing:\n%s\n%s", with.PlainBody, with.HTMLBody)
+	}
+	without, err := Render(SecurityAlertTemplate, SecurityAlertData("Firm", SecurityAlert{Headline: "H", Actor: "A", IP: "1.2.3.4", Target: "T", At: at}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(without.PlainBody, "Record:") || strings.Contains(without.HTMLBody, "View the record") {
+		t.Errorf("an empty link still rendered a line:\n%s", without.PlainBody)
+	}
+}
+
+func TestMaskPhone(t *testing.T) {
+	for in, want := range map[string]string{
+		"+254722000123":    "+254••••••123",
+		"+254 722 000 123": "+254••••••123",
+		"0722000123":       "072••••123",
+		"12345":            "••••",
+		"":                 "••••",
+	} {
+		if got := MaskPhone(in); got != want {
+			t.Errorf("MaskPhone(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

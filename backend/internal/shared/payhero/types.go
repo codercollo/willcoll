@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // STKPushRequest asks PayHero to prompt a phone for an M-Pesa payment. It is
@@ -169,6 +171,13 @@ type CollectionsWebhookPayload struct {
 	CheckoutRequestID string
 	ResultDescription string
 	Raw               []byte
+
+	// ClaimedManagerID is the firm that owns ChannelID according to the
+	// platform's payment_channels claim (C3.2). It is set by the handler after
+	// the inbox claim, never parsed from the callback: a payload field must
+	// not decide whose money this is. Zero when no claim was consulted
+	// (platform unreachable, or a failed push).
+	ClaimedManagerID uuid.UUID
 }
 
 // SubscriptionsWebhookPayload is one callback on the billing channel: the

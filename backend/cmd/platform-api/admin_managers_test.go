@@ -52,6 +52,7 @@ const (
 type fakePlatform struct {
 	app    *application
 	router *gin.Engine
+	store  *mock.MockStore // for tests that add their own table behind the fake
 
 	mu            sync.Mutex
 	managerStatus string
@@ -65,7 +66,26 @@ type fakePlatform struct {
 	firmName      string   // the manager's firm name, changed by UpdateManager
 	managerVer    int32
 	audit         []sqlc.CreateAuditLogParams
-	mail          *captureMailer // every email the app sent
+	mail          *captureMailer    // every email the app sent
+	outbox        *fakeOutbox       // the email_outbox table
+	modules       map[string]string // manager_modules: product -> status (rentals trialing unless a test sets it)
+}
+
+// firmActiveModules makes the firm hold exactly these products, all active.
+func (f *fakePlatform) firmActiveModules(products ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modules = map[string]string{}
+	for _, p := range products {
+		f.modules[p] = data.ModuleStatusActive
+	}
+}
+
+// deliver runs the outbox worker once (after the handlers' background enqueues
+// finished) and returns how many emails it sent.
+func (f *fakePlatform) deliver() int {
+	f.app.wg.Wait()
+	return f.app.deliverOutbox(context.Background())
 }
 
 func newFakePlatform(t *testing.T) *fakePlatform {
@@ -84,7 +104,7 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 		t.Fatal(err)
 	}
 
-	f := &fakePlatform{managerStatus: data.ManagerStatusActive, activated: true, staffRole: data.RoleOfficer, firmName: "Kimani & Associates", managerVer: 1, mail: &captureMailer{}}
+	f := &fakePlatform{store: store, managerStatus: data.ManagerStatusActive, activated: true, staffRole: data.RoleOfficer, firmName: "Kimani & Associates", managerVer: 1, mail: &captureMailer{}}
 	managerRow := func() sqlc.Manager {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -189,18 +209,38 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 		}).AnyTimes()
 	// Paywall standing for GET /v1/sessions?product=rentals: a running trial.
 	trialEnds := time.Now().Add(5 * 24 * time.Hour)
-	q.EXPECT().GetManagerModule(gomock.Any(), gomock.Any()).Return(sqlc.ManagerModule{
-		ManagerID: fakeManagerID, Product: data.ProductRentals, Status: data.ModuleStatusTrialing, TrialEndsAt: &trialEnds,
-	}, nil).AnyTimes()
+	f.modules = map[string]string{data.ProductRentals: data.ModuleStatusTrialing}
+	q.EXPECT().GetManagerModule(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, a sqlc.GetManagerModuleParams) (sqlc.ManagerModule, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			status, held := f.modules[a.Product]
+			if !held {
+				return sqlc.ManagerModule{}, sql.ErrNoRows
+			}
+			return sqlc.ManagerModule{ManagerID: fakeManagerID, Product: a.Product, Status: status, TrialEndsAt: &trialEnds}, nil
+		}).AnyTimes()
 	q.EXPECT().GetSubscriptionByManagerAndProduct(gomock.Any(), gomock.Any()).Return(sqlc.Subscription{}, sql.ErrNoRows).AnyTimes()
 	q.EXPECT().ListSubscriptionPlansForProduct(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	q.EXPECT().GetModuleUsage(gomock.Any(), gomock.Any()).Return(sqlc.ModuleUsage{BillableCount: 12}, nil).AnyTimes()
+	q.EXPECT().UpsertModuleUsage(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a sqlc.UpsertModuleUsageParams) (sqlc.ModuleUsage, error) {
+		return sqlc.ModuleUsage{ManagerID: a.ManagerID, Product: a.Product, BillableCount: a.BillableCount}, nil
+	}).AnyTimes()
 	q.EXPECT().CreateAuditLog(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a sqlc.CreateAuditLogParams) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.audit = append(f.audit, a)
 		return nil
 	}).AnyTimes()
+
+	// The owner-alert outbox (C3.7): enqueue in a tenant transaction, claim and
+	// settle on the admin store (the same mock here).
+	f.outbox = newFakeOutbox()
+	q.EXPECT().EnqueueEmail(gomock.Any(), gomock.Any()).DoAndReturn(f.outbox.enqueue).AnyTimes()
+	store.EXPECT().ClaimDueEmails(gomock.Any(), gomock.Any()).DoAndReturn(f.outbox.claim).AnyTimes()
+	store.EXPECT().MarkEmailSent(gomock.Any(), gomock.Any()).DoAndReturn(f.outbox.markSent).AnyTimes()
+	store.EXPECT().MarkEmailFailed(gomock.Any(), gomock.Any()).DoAndReturn(f.outbox.markFailed).AnyTimes()
+	store.EXPECT().OutboxStats(gomock.Any()).DoAndReturn(f.outbox.stats).AnyTimes()
 
 	sm := scs.New()
 	sm.Store = memstore.New()

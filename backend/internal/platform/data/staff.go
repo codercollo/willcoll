@@ -217,7 +217,11 @@ func staffWriteError(err error) error {
 // Invite creates a staff row under tenantID: status invited, an unusable
 // password (dummyPasswordHash — nobody can log in until Activate runs).
 // The caller emails an activation link the same way manager signup does.
-func (m StaffModel) Invite(ctx context.Context, tenantID uuid.UUID, s *Staff) error {
+//
+// hooks run inside the same transaction after the row is written (s is filled
+// in by then): an owner alert enqueued by one commits with the invite or not at
+// all (C4.0). A hook error rolls the whole invite back.
+func (m StaffModel) Invite(ctx context.Context, tenantID uuid.UUID, s *Staff, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -231,7 +235,7 @@ func (m StaffModel) Invite(ctx context.Context, tenantID uuid.UUID, s *Staff) er
 			return staffWriteError(err)
 		}
 		*s = *staffFromRow(row)
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 
@@ -289,8 +293,9 @@ func (m StaffModel) List(ctx context.Context, tenantID uuid.UUID) ([]Staff, erro
 
 // Update saves a staff row if its Version still matches (an owner's edits:
 // role, module_access, name, phone, status). Returns ErrEditConflict or
-// ErrDuplicateStaffEmail.
-func (m StaffModel) Update(ctx context.Context, tenantID uuid.UUID, s *Staff) error {
+// ErrDuplicateStaffEmail. hooks run inside the same transaction after the row
+// is saved, like Invite's: an owner alert for the change commits with it.
+func (m StaffModel) Update(ctx context.Context, tenantID uuid.UUID, s *Staff, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -304,7 +309,7 @@ func (m StaffModel) Update(ctx context.Context, tenantID uuid.UUID, s *Staff) er
 			return staffWriteError(editConflict(err))
 		}
 		s.Version = version
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 

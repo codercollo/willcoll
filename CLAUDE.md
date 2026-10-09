@@ -393,6 +393,7 @@ Run from `backend/`:
 - `make test/race` — **the race gate: run it for every gate/sub-step.** It runs
   `go test -race ./...` inside the golang Docker image (Docker must be up), with
   no `backend/.env` visible. Do not substitute `make test RACE=`.
+- **Frontend gate** (run from `frontend/`): `pnpm -r lint && pnpm -r typecheck && pnpm -r test`
 - `make audit` — tidy, `go vet`, staticcheck, golangci-lint
   (`backend/.golangci.yml`), then `make test`
 - `make test/integration` — every test, including the Postgres integration and
@@ -450,10 +451,39 @@ migration.
 - Step-up (C3, D5): `POST /v1/sessions/step-up` opens a 5-minute password
   re-entry window in the shared session (`internal/shared/auth/stepup.go`);
   `requireStepUp` gates channel changes, reversals and staff authority changes
-  (403 `step_up_required`, the frontend `useApi` prompts and retries). The firm
-  login is emailed on those events (`security_alert.tmpl`). Details:
-  `docs/security/authorization.md` "D5 as built"; the C3 brief is saved in
-  `docs/security/c3-spec.md`.
+  (403 `step_up_required`, the frontend `useApi` prompts and retries once via
+  `withStepUp` in `layers/base`; a cancelled prompt leaves the action undone
+  with a clear message). Conventions: put `requireStepUp()` AFTER the
+  permission guard (a caller who may never do it gets a plain 403, not a
+  prompt); every new permission that moves money or changes authority goes in
+  `auth.StepUpPermissions` (a test fails on a `*.reverse` permission that is
+  missing, and each API's route test fails on an ungated route); a new sign-in
+  path must go through `loginPrincipal`, which clears any inherited window.
+  Only the firm login grants or revokes the owner role (D3); `module_access`
+  must name products the firm holds (M8). Details:
+  `docs/security/authorization.md` "D5 as built" and section 4; the C3 brief is
+  saved in `docs/security/c3-spec.md`.
+- Owner alerts go through the DB-backed outbox, never straight to the mailer
+  (`willcoll_platform.email_outbox`, `platformdata.OutboxModel`): call
+  `app.alertOwner(...)` AFTER the action committed; it queues a row (idempotent
+  per firm + event key, so give a natural key such as the reversed entry id
+  when there is one) and platform-api's worker (`outbox_worker.go`) delivers
+  with backoff, so a mail outage or restart can't fail or lose it. Failures
+  show on the System page. Alerts carry no secrets and no raw phone numbers
+  (`mailer.MaskPhone`). Product APIs only enqueue; only platform-api sends.
+- Background jobs audit as `actor_type=system` with the job name in
+  `audit_log.actor_name` (`app.auditSystem(job, tenantID, ...)`), and touch a
+  firm's data only inside that firm's own tenant transaction.
+- Product-to-platform HTTP calls use the service credential
+  (`/internal/v1/*`, `SERVICE_TOKEN` / `SERVICE_TOKEN_PREVIOUS`,
+  `auth.ServiceCredentials`): never a session, never in a URL or log, never
+  routed by Caddy (the production Caddyfile, Phase 4c, must block `/internal/*`).
+- Webhooks: the product and firm of a payment come from the `payment_channels`
+  claim (`InboxModel.ClaimChannel`), never the payload; an unclaimed channel is
+  not posted.
+- Denied requests (401/403/scope-404) are logged by `httpx.DenialLog`
+  (rate limited per actor, application log only); call `app.logDenied(c, perm)`
+  before a hand-written 403 and `httpx.MarkScopeDenied(c)` before a scope 404.
 
 ## Money-channel rule
 

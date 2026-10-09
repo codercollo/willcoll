@@ -135,6 +135,12 @@ type CollectionPayment struct {
 	ChannelID        string
 	PayheroReference string
 	ReceivedAt       time.Time
+
+	// ClaimedManagerID, when set, is the firm the platform's channel claim
+	// says owns ChannelID. A payment that resolves (by intent reference or by
+	// channel) to any other firm is ErrUnroutable: the payload never overrides
+	// the claim (C3.2).
+	ClaimedManagerID uuid.UUID
 	Raw              json.RawMessage
 }
 
@@ -220,6 +226,9 @@ func (m CollectionsModel) Process(ctx context.Context, in CollectionPayment) (*I
 		if tenantID, err = m.Resolver.TenantForChannel(ctx, in.ChannelID); err != nil {
 			return nil, err
 		}
+	}
+	if in.ClaimedManagerID != uuid.Nil && tenantID != in.ClaimedManagerID {
+		return nil, fmt.Errorf("%w: the payment resolves to a different firm than the channel's claim", ErrUnroutable)
 	}
 
 	var result IngestResult

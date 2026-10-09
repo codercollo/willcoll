@@ -107,6 +107,7 @@ const (
 	AdminPlansRead         = "admin.plans.read"
 	AdminPlansManage       = "admin.plans.manage"
 	AdminSystemRead        = "admin.system.read"
+	AdminReceiptsResolve   = "admin.receipts.resolve" // close an unclaimed-channel receipt with a note
 )
 
 var viewerPermissions = []string{
@@ -134,7 +135,7 @@ var ownerPermissions = []string{
 
 var adminPermissions = []string{
 	AdminManagersRead, AdminManagersSuspend, AdminSubscriptionsRead,
-	AdminPlansRead, AdminPlansManage, AdminSystemRead,
+	AdminPlansRead, AdminPlansManage, AdminSystemRead, AdminReceiptsResolve,
 }
 
 var (

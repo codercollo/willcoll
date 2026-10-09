@@ -34,6 +34,25 @@ func (app *application) audit(c *gin.Context, action, entityType string, entityI
 	})
 }
 
+// System actor names (C3.4): a background job writes audit_log rows as
+// actor_type=system with its own name, never as a manager or staff member.
+const (
+	jobUsageRecount = "usage-recount"
+	jobInboxSweeper = "inbox-sweeper"
+)
+
+// auditSystem writes one audit_log row for tenantID as the named background
+// job. A job has no request and no principal: it names the firm explicitly,
+// and every database write it makes opens its own tenant transaction for that
+// firm (SET LOCAL app.tenant_id), so one firm's scope can never carry into the
+// next. Same fire-and-forget behaviour and failure counting as audit.
+func (app *application) auditSystem(job string, tenantID uuid.UUID, action, entityType string, entityID *uuid.UUID, summary string) {
+	app.writeAudit(tenantID, platformdata.AuditEntry{
+		ActorType: platformdata.ActorSystem, ActorName: job, Product: platformdata.ProductRentals,
+		Action: action, EntityType: entityType, EntityID: entityID, Summary: summary,
+	})
+}
+
 // writeAudit is what audit shares once they've worked out the
 // actor: fire-and-forget in the background, nil app.platform is a no-op,
 // and a failure is logged and counted (see auditFailures /

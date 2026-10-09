@@ -38,9 +38,12 @@ var auditCoverage = map[string]string{
 	"POST /v1/modules/:product/trial":              "audited",
 
 	"POST /v1/webhooks/payhero/subscriptions": "exempt: webhook, logged elsewhere (processSubscription)",
+	"POST /internal/v1/usage":                 "exempt: service-to-service usage count, not a user action (module_usage.reported_at records it)",
 
 	"POST /v1/admin/managers/:id/suspend":   "audited",
 	"POST /v1/admin/managers/:id/reinstate": "audited",
+
+	"POST /v1/admin/unclaimed-receipts/:id/resolve": "audited",
 
 	"POST /v1/admin/plans":             "exempt: global plan catalog, no manager tenant to scope an audit row to",
 	"PATCH /v1/admin/plans/:id":        "exempt: global plan catalog, no manager tenant to scope an audit row to",

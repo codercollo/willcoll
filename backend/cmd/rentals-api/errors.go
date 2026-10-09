@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/codercollo/willcoll/backend/internal/shared/auth"
+	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,6 +32,7 @@ func (app *application) codedErrorResponse(c *gin.Context, status int, message a
 // does not exist, so scope never reveals what exists beyond it.
 func (app *application) serverErrorResponse(c *gin.Context, err error) {
 	if errors.Is(err, auth.ErrOutOfScope) {
+		httpx.MarkScopeDenied(c)
 		app.responder().NotFoundResponse(c)
 		return
 	}

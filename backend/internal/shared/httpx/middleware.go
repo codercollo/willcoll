@@ -52,6 +52,7 @@ func LogRequest(logger *slog.Logger) gin.HandlerFunc {
 			"bytes", c.Writer.Size(),
 			"duration", time.Since(start).String(),
 			"ip", c.ClientIP(),
+			"request_id", RequestIDFrom(c),
 		)
 	}
 }

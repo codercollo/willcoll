@@ -27,6 +27,10 @@ app.willcoll.localhost:8443 {
 	# future route appeared on an API, the front door refuses it outright.
 	@debug path /debug /debug/*
 	respond @debug 404
+	# /internal/* is the product-to-platform service surface (C3.3): internal
+	# network only, never routed from the public front door.
+	@internal path /internal /internal/*
+	respond @internal 404
 	encode zstd gzip
 	reverse_proxy platform-web:3001 {
 		header_up X-Real-IP {remote_host}
@@ -40,6 +44,8 @@ rentals.willcoll.localhost:8443 {
 	# future route appeared on an API, the front door refuses it outright.
 	@debug path /debug /debug/*
 	respond @debug 404
+	@internal path /internal /internal/*
+	respond @internal 404
 	encode zstd gzip
 	reverse_proxy rentals-web:3000 {
 		header_up X-Real-IP {remote_host}

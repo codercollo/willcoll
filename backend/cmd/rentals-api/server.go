@@ -31,6 +31,10 @@ func (app *application) serve() error {
 	// no platform connection. Stops when jobsCtx is cancelled below.
 	app.startInboxSweeperJob(jobsCtx)
 
+	// Owner-alert relay (C4.0): moves alert_outbox rows to the platform's
+	// email outbox. Also a no-op without a platform connection.
+	app.startAlertRelayJob(jobsCtx)
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", app.config.port),
 		Handler:      router,

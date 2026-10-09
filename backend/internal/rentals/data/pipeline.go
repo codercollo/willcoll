@@ -40,6 +40,7 @@ func (m Models) ProcessCollectionsPayment(ctx context.Context, payload *payhero.
 		PayerName:        payload.PayerName,
 		AccountReference: payload.AccountReference,
 		ChannelID:        payload.ChannelID,
+		ClaimedManagerID: payload.ClaimedManagerID,
 		PayheroReference: payload.CheckoutRequestID,
 		Raw:              payload.Raw,
 	})

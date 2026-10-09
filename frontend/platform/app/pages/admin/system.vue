@@ -64,7 +64,18 @@ const otpCeilingFirms = computed(() => report.value?.otp_ceiling_firms ?? [])
           <UiKpiTile label="Database size" :value="formatBytes(h.services.platform.database.size_bytes ?? 0)" />
           <UiKpiTile label="Connections" :value="String(h.services.platform.database.connections ?? 0)" />
           <UiKpiTile label="Audit write failures (24h)" :value="String(h.services.platform.audit_failures_24h ?? 0)" :tone="h.services.platform.audit_failures_24h ? 'arrears' : 'paid'" />
+          <template v-if="h.services.platform.email_outbox">
+            <UiKpiTile label="Owner alerts waiting" :value="String(h.services.platform.email_outbox.pending ?? 0)" :tone="h.services.platform.email_outbox.pending ? 'arrears' : 'paid'" :delta="`${h.services.platform.email_outbox.sent_24h ?? 0} sent in 24h`" />
+            <UiKpiTile label="Owner alerts failed" :value="String(h.services.platform.email_outbox.failed ?? 0)" :tone="h.services.platform.email_outbox.failed ? 'arrears' : 'paid'" delta="ran out of retries" />
+            <UiKpiTile label="Alerts not queued (24h)" :value="String(h.services.platform.email_outbox.alert_enqueue_failures_24h)" :tone="h.services.platform.email_outbox.alert_enqueue_failures_24h ? 'arrears' : 'paid'" />
+          </template>
         </div>
+        <UiFormAlert v-if="h.services.platform.email_outbox?.status === 'unreachable'">The owner-alert email queue could not be read.</UiFormAlert>
+        <UiFormAlert v-else-if="h.services.platform.email_outbox?.failed || h.services.platform.email_outbox?.pending">
+          Owner security alerts are not being delivered
+          <template v-if="h.services.platform.email_outbox.last_error">(last error: {{ h.services.platform.email_outbox.last_error }})</template>.
+          Check the mail settings; waiting alerts are retried automatically.
+        </UiFormAlert>
       </section>
 
       <!-- Rentals -->

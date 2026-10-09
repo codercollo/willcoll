@@ -13,8 +13,8 @@ import (
 
 const createAuditLog = `-- name: CreateAuditLog :exec
 
-INSERT INTO audit_log (manager_id, staff_id, actor_type, actor_id, product, action, entity_type, entity_id, summary, ip)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO audit_log (manager_id, staff_id, actor_type, actor_id, actor_name, product, action, entity_type, entity_id, summary, ip)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type CreateAuditLogParams struct {
@@ -22,6 +22,7 @@ type CreateAuditLogParams struct {
 	StaffID    *uuid.UUID
 	ActorType  string
 	ActorID    *uuid.UUID
+	ActorName  *string
 	Product    *string
 	Action     string
 	EntityType string
@@ -34,12 +35,14 @@ type CreateAuditLogParams struct {
 // (RLS by manager_id, migration 000012). actor_type/actor_id (migration
 // 000018) identify who did it; staff_id is kept alongside for joins when
 // actor_type = 'staff'. ip (migration 000019) is the resolved client address.
+// actor_name (migration 000021) is the job name of a system actor.
 func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error {
 	_, err := q.db.ExecContext(ctx, createAuditLog,
 		arg.ManagerID,
 		arg.StaffID,
 		arg.ActorType,
 		arg.ActorID,
+		arg.ActorName,
 		arg.Product,
 		arg.Action,
 		arg.EntityType,

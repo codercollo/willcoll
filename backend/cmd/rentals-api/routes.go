@@ -31,8 +31,10 @@ func (app *application) routes() (*gin.Engine, error) {
 
 	// system-design.txt 4.2 chain; rateLimit is applied per group below.
 	router.Use(
+		app.requestID(),
 		app.recoverPanic(),
 		app.logRequest(),
+		app.denialLog(),
 		app.metrics(),
 		app.authenticate(),
 		app.enableCORS(),

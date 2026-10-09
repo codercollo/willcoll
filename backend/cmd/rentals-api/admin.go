@@ -54,8 +54,18 @@ func (app *application) adminSystemHealthHandler(c *gin.Context) {
 		status = "degraded"
 	}
 
+	// Alerts committed with their action but not yet handed to the platform
+	// outbox (C4.0): normally 0 for a moment; a number that stays up means the
+	// relay cannot reach platform-api's database.
+	alertOutbox, err := app.models.Alerts.Stats(ctx)
+	if err != nil {
+		app.serverErrorResponse(c, err)
+		return
+	}
+
 	body := envelope{
-		"status": status,
+		"alert_outbox": alertOutbox,
+		"status":       status,
 		"system_info": envelope{
 			"environment": app.config.env,
 			"version":     buildVersion(),
@@ -71,8 +81,12 @@ func (app *application) adminSystemHealthHandler(c *gin.Context) {
 		"usage_reporting":     app.usageReportingStatus(),
 		"audit_failures_24h":  app.auditFailures.count24h(time.Now()),
 		"inbox_fallbacks_24h": app.inboxFallbacks.count24h(time.Now()),
+		"alert_failures_24h":  app.alertFailures.count24h(time.Now()),
 		"unclaimed_channels":  app.unclaimedChannels.list(time.Now()),
 		"otp_ceiling_firms":   app.otpCeilings.list(time.Now()),
+		// Unclaimed payments that could not be written to platform's
+		// unclaimed_receipts: money whose only trace is the ERROR log.
+		"unclaimed_record_failures_24h": app.unclaimedRecordFailures.count24h(time.Now()),
 	}
 
 	if err := app.writeJSON(c, http.StatusOK, body, nil); err != nil {

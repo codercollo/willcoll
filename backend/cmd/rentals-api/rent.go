@@ -272,14 +272,16 @@ func (app *application) reverseLedgerEntryHandler(c *gin.Context) {
 		return
 	}
 
-	reversal, err := app.models.Rent.ReverseEntryDetailed(c.Request.Context(), tenantID, manager.ID, entryID, input.Reason)
+	// The owner alert is written in the reversal's own transaction (C4.0), keyed
+	// by the entry: an entry is reversed once, so it is queued once however many
+	// times the request is retried.
+	reversal, err := app.models.Rent.ReverseEntryDetailed(c.Request.Context(), tenantID, manager.ID, entryID, input.Reason,
+		app.reversalAlertHook(c, entryID, input.Reason))
 	if err != nil {
 		app.billingErrorResponse(c, err)
 		return
 	}
 	app.audit(c, "ledger_entry.reversed", "ledger_entry", &entryID, "reversed: "+input.Reason)
-	app.alertOwner(c, "A ledger entry was reversed",
-		"KES "+reversal.Amount.Display()+" (entry "+entryID.String()+"), reason: "+strings.TrimSpace(input.Reason))
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"reversal_entry_id": reversal.ID}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}

@@ -6,14 +6,15 @@ import (
 	"sync"
 	"time"
 
+	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/payhero"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 )
 
 // unclaimedChannel is one PayHero channel a collections webhook arrived for
-// that has no claim in willcoll_platform.payment_channels (the payment_inbox
-// FK failed). The payment is still posted locally, but the channel is a
-// misconfiguration somebody must fix, so it is listed on the health page.
+// that has no claim in willcoll_platform.payment_channels. The payment is NOT
+// posted (C3.2); the channel is a misconfiguration somebody must fix, so it is
+// listed on the health page.
 type unclaimedChannel struct {
 	ChannelID    string    `json:"channel_id"`
 	PropertyID   string    `json:"property_id,omitempty"`
@@ -73,9 +74,28 @@ func (t *unclaimedChannelTracker) prune(at time.Time) {
 	}
 }
 
-// alarmUnclaimedChannel logs at ERROR, with the channel id and the property
-// (or properties) using it, and records the channel for the health page. The
-// caller still posts the payment locally: money is never dropped for this.
+// recordUnclaimedReceipt writes the payment to willcoll_platform's
+// unclaimed_receipts so received money is never only a log line. Idempotent
+// per receipt (PayHero redelivers). A write that keeps failing is logged with
+// the full payload and counted on the health page's inbox fallbacks' sibling,
+// so it cannot pass unnoticed.
+func (app *application) recordUnclaimedReceipt(payload *payhero.CollectionsWebhookPayload, amount moneyfmt.Money) {
+	err := retryWebhook(func(ctx context.Context) error {
+		_, err := app.platform.Unclaimed.Record(ctx, payload.MpesaReceipt, payload.ChannelID, platformdata.ProductRentals, amount, payload.Msisdn, payload.Raw)
+		return err
+	})
+	if err != nil {
+		app.logger.Error("payment_inbox: ALERT could not record an unclaimed payment; payload follows for manual recovery",
+			"receipt", payload.MpesaReceipt, "channel_id", payload.ChannelID, "amount", payload.Amount,
+			"msisdn", payload.Msisdn, "payload", string(payload.Raw), "error", err)
+		app.unclaimedRecordFailures.record(time.Now())
+	}
+}
+
+// alarmUnclaimedChannel logs at ERROR, with the channel id, the property (or
+// properties) using it and the full payload (the recovery trail: nothing is
+// posted for an unclaimed channel), and records the channel for the health
+// page.
 func (app *application) alarmUnclaimedChannel(payload *payhero.CollectionsWebhookPayload) {
 	now := moneyfmt.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessTimeout)
@@ -86,15 +106,17 @@ func (app *application) alarmUnclaimedChannel(payload *payhero.CollectionsWebhoo
 	}
 
 	if len(props) == 0 {
-		app.logger.Error("payment_inbox: ALERT collections payment on a channel with no platform claim; posting locally",
-			"channel_id", payload.ChannelID, "receipt", payload.MpesaReceipt, "property_id", "")
+		app.logger.Error("payment_inbox: ALERT collections payment on a channel with no platform claim; NOT posted",
+			"channel_id", payload.ChannelID, "receipt", payload.MpesaReceipt, "amount", payload.Amount,
+			"msisdn", payload.Msisdn, "property_id", "", "payload", string(payload.Raw))
 		app.unclaimedChannels.record(now, payload.ChannelID, "", "")
 		return
 	}
 	for _, p := range props {
-		app.logger.Error("payment_inbox: ALERT collections payment on a channel with no platform claim; posting locally",
-			"channel_id", payload.ChannelID, "receipt", payload.MpesaReceipt,
-			"property_id", p.ID, "property", p.Name, "manager_id", p.TenantID)
+		app.logger.Error("payment_inbox: ALERT collections payment on a channel with no platform claim; NOT posted",
+			"channel_id", payload.ChannelID, "receipt", payload.MpesaReceipt, "amount", payload.Amount,
+			"msisdn", payload.Msisdn, "property_id", p.ID, "property", p.Name, "manager_id", p.TenantID,
+			"payload", string(payload.Raw))
 		app.unclaimedChannels.record(now, payload.ChannelID, p.ID.String(), p.Name)
 	}
 }

@@ -98,6 +98,13 @@ func (app *application) payheroCollectionsWebhookHandler(c *gin.Context) {
 // unreachable; an unreachable platform is only ever counted
 // (app.inboxFallbacks) for the health page, never a reason to drop money.
 func (app *application) processCollections(payload *payhero.CollectionsWebhookPayload) {
+	app.processCollectionsAs(payload, "")
+}
+
+// processCollectionsAs is processCollections on behalf of a background job
+// (the inbox sweeper): the firm it acts for is the channel claim's, and the
+// re-drive is audited for that firm as the named system actor (C3.4).
+func (app *application) processCollectionsAs(payload *payhero.CollectionsWebhookPayload, job string) {
 	if !payload.Success || app.platform == nil {
 		app.postCollectionsLocally(payload)
 		return
@@ -111,11 +118,17 @@ func (app *application) processCollections(payload *payhero.CollectionsWebhookPa
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessTimeout)
-	claimErr := app.platform.Inbox.Claim(ctx, payload.MpesaReceipt, payload.ChannelID, platformdata.ProductRentals, amount, payload.Msisdn, payload.Raw)
+	claim, claimErr := app.platform.Inbox.ClaimChannel(ctx, payload.MpesaReceipt, payload.ChannelID, platformdata.ProductRentals, amount, payload.Msisdn, payload.Raw)
 	cancel()
 
 	switch {
 	case claimErr == nil:
+		// The firm comes from the channel's claim, never from the payload
+		// (C3.2): the pipeline refuses a payment that resolves elsewhere.
+		payload.ClaimedManagerID = claim.ManagerID
+		if job != "" {
+			app.auditSystem(job, claim.ManagerID, "payment_inbox.redrive", "payment", nil, "re-drove a stale claim, receipt "+payload.MpesaReceipt)
+		}
 		// Claimed just now, or still 'claimed' from an earlier attempt
 		// that crashed before posting: proceed exactly as today, then
 		// mark posted so a redelivery or the sweeper never reprocesses it.
@@ -129,15 +142,18 @@ func (app *application) processCollections(payload *payhero.CollectionsWebhookPa
 	case errors.Is(claimErr, platformdata.ErrAlreadyPosted):
 		app.logger.Info("payment_inbox: already posted; acking without reprocessing", "receipt", payload.MpesaReceipt)
 	case errors.Is(claimErr, platformdata.ErrWrongProduct):
-		app.logger.Error("payment_inbox: ALERT receipt already claimed by a different product; refusing to post",
+		app.logger.Error("payment_inbox: ALERT receipt or channel claimed by a different product; refusing to post",
 			"receipt", payload.MpesaReceipt, "channel", payload.ChannelID)
 	case errors.Is(claimErr, platformdata.ErrChannelUnclaimed):
-		// The channel was never claimed in platform (a misconfiguration, e.g.
-		// a hand-seeded channel). Never drop the money: post locally, but
-		// raise the alarm (ERROR log + health page list) and count it.
+		// The channel has no claim in platform (a misconfiguration, e.g. a
+		// hand-seeded channel, or an attacker-chosen channel_id). Nothing is
+		// posted (C3.2): the posting product and firm come only from a claim.
+		// The money is recorded durably in platform's unclaimed_receipts first
+		// (recordUnclaimedReceipt: idempotent per receipt, open on the System
+		// page until a Super Admin resolves it). The alarm (ERROR log with the
+		// full payload, plus the health page list) is only the notice.
+		app.recordUnclaimedReceipt(payload, amount)
 		app.alarmUnclaimedChannel(payload)
-		app.inboxFallbacks.record(time.Now())
-		app.postCollectionsLocally(payload)
 	default:
 		app.logger.Warn("payment_inbox: claim unavailable; falling back to local-only posting",
 			"receipt", payload.MpesaReceipt, "error", claimErr)
@@ -294,6 +310,6 @@ func (app *application) sweepStaleInbox(ctx context.Context) {
 		payload.ChannelID = claim.ChannelID
 
 		app.logger.Info("payment_inbox sweep: re-driving a stale claim", "receipt", claim.MpesaReceipt, "claimed_at", claim.ClaimedAt)
-		app.processCollections(payload)
+		app.processCollectionsAs(payload, jobInboxSweeper)
 	}
 }

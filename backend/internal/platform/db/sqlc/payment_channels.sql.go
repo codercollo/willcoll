@@ -38,6 +38,28 @@ func (q *Queries) GetPaymentChannel(ctx context.Context, arg GetPaymentChannelPa
 	return i, err
 }
 
+const getPaymentChannelByID = `-- name: GetPaymentChannelByID :one
+SELECT channel_id, manager_id, product, owner_id, callback_url, created_at FROM payment_channels WHERE channel_id = $1
+`
+
+// GetPaymentChannelByID resolves a webhook's channel_id to its claim with no
+// tenant context (a webhook names a channel, not a manager), so it runs on
+// the admin pool (BYPASSRLS). The claim, never the webhook payload, says
+// which product and firm a payment belongs to (C3.2).
+func (q *Queries) GetPaymentChannelByID(ctx context.Context, channelID string) (PaymentChannel, error) {
+	row := q.db.QueryRowContext(ctx, getPaymentChannelByID, channelID)
+	var i PaymentChannel
+	err := row.Scan(
+		&i.ChannelID,
+		&i.ManagerID,
+		&i.Product,
+		&i.OwnerID,
+		&i.CallbackUrl,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPaymentChannelByOwner = `-- name: GetPaymentChannelByOwner :one
 SELECT channel_id, manager_id, product, owner_id, callback_url, created_at FROM payment_channels
 WHERE manager_id = $1 AND product = $2 AND owner_id = $3

@@ -5,7 +5,7 @@ ifndef NO_DOTENV
 export
 endif
 
-.PHONY: help dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/race test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero staging/up staging/down staging/logs staging/ps staging/seed staging/check-rls staging/export-ca staging/reset
+.PHONY: help staging/smoke dev/setup dev/up run/platform-api run/rentals-api build/rentals-api run/api build/api test audit test/race test/integration tidy db/psql db/roles db/migrations/new db/migrations/up db/migrations/down sqlc/generate dev/test-plan dev/expire-trial dev/reset-trial dev/set-plan db/backfill-platform rehearse/cutover dev/payhero staging/up staging/down staging/logs staging/ps staging/seed staging/check-rls staging/export-ca staging/reset
 
 help:
 	@echo "usage: make [target]"
@@ -33,7 +33,8 @@ help:
 	@echo "  staging/logs           follow logs; SVC=<service> for one (e.g. SVC=rentals-api)"
 	@echo "  staging/ps             service status"
 	@echo "  staging/seed           demo firm + TEST plan + Super Admin (RESEED=yes replaces an existing demo firm)"
-	@echo "  staging/check-rls      prove row-level security applies to the API roles"
+	@echo "  staging/smoke          check the running stack accepts what deploy/local/.env says (logins, signed webhook, health)"
+	@echo "  staging/check-rls     prove row-level security applies to the API roles"
 	@echo "  staging/export-ca      write Caddy's root CA to deploy/local/caddy-root.crt (to trust it: docs/dev-setup.md)"
 	@echo "  staging/reset          delete the database AND Caddy CA volumes; needs CONFIRM=yes"
 	@echo "  dev/payhero            result=<success|cancelled|insufficient|failed> [id=<ref>]: answer a pending fake STK push by hand"
@@ -132,7 +133,13 @@ rehearse/cutover:
 # containers never see backend/.env. MSYS_NO_PATHCONV keeps Git Bash from
 # rewriting container paths.
 STAGING_DIR = ../deploy/local
-STAGING_COMPOSE = MSYS_NO_PATHCONV=1 docker compose -f $(STAGING_DIR)/docker-compose.yml --env-file $(STAGING_DIR)/.env
+# The `-include .env` + `export` at the top of this file puts backend/.env in
+# every recipe's environment, and docker compose lets the process environment
+# beat --env-file: staging silently ran with backend/.env's ADMIN_EMAIL, webhook
+# secret and so on (C4.0). So every variable named in backend/.env or in the
+# staging env files is unset for the compose call; only deploy/local/.env is read.
+STAGING_UNSET = $(addprefix -u ,$(sort $(shell sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env $(STAGING_DIR)/.env.example $(STAGING_DIR)/.env 2>/dev/null)))
+STAGING_COMPOSE = env $(STAGING_UNSET) MSYS_NO_PATHCONV=1 docker compose -f $(STAGING_DIR)/docker-compose.yml --env-file $(STAGING_DIR)/.env
 
 staging/up:
 	@test -f $(STAGING_DIR)/.env || { cp $(STAGING_DIR)/.env.example $(STAGING_DIR)/.env && echo "created $(STAGING_DIR)/.env from .env.example"; }
@@ -150,10 +157,18 @@ staging/ps:
 	$(STAGING_COMPOSE) ps -a
 
 # The seeder fails if the demo firm already exists: RESEED=yes replaces it.
+# --build because `run` never rebuilds an existing image and `up --build` skips
+# the profile-only tool images: a stale seed image once failed against the
+# current RLS scope rules (C4.0).
 staging/seed:
-	$(STAGING_COMPOSE) run --rm seed $(if $(filter yes,$(RESEED)),-reset)
-	$(STAGING_COMPOSE) run --rm devtools test-plan
-	$(STAGING_COMPOSE) run --rm devtools claim-channels
+	$(STAGING_COMPOSE) run --rm --build --quiet-build seed $(if $(filter yes,$(RESEED)),-reset)
+	$(STAGING_COMPOSE) run --rm --build --quiet-build devtools test-plan
+	$(STAGING_COMPOSE) run --rm --build --quiet-build devtools claim-channels
+
+# Is the stack accepting exactly what deploy/local/.env says? (C4.0) Super Admin
+# and firm-owner logins, a signed webhook, every health endpoint, over HTTPS.
+staging/smoke:
+	sh ./scripts/staging_smoke.sh
 
 staging/check-rls:
 	$(STAGING_COMPOSE) exec -T postgres psql -U postgres -v ON_ERROR_STOP=1 -f /opt/willcoll/check_rls.sql

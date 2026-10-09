@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,11 +30,16 @@ type sentMail struct {
 type captureMailer struct {
 	mu   sync.Mutex
 	sent []sentMail
+	// err, when set, makes every Send fail (a mail outage).
+	err error
 }
 
 func (m *captureMailer) Send(recipient, templateFile string, data any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
 	d, _ := data.(map[string]any)
 	m.sent = append(m.sent, sentMail{Recipient: recipient, Template: templateFile, Data: d})
 	return nil
@@ -98,6 +105,7 @@ func TestStaffAuthorityChangeNeedsStepUp(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			f := newFakePlatform(t)
+			f.firmActiveModules(data.ProductRentals, data.ProductEstates) // M8: the firm holds what is granted
 			owner := f.session(t, principalManager, fakeManagerID)
 
 			code, resp := f.patchStaffAs(owner, body)
@@ -211,11 +219,12 @@ func TestStepUpIsPerSession(t *testing.T) {
 
 func TestStepUpUsesTheStaffMembersOwnPassword(t *testing.T) {
 	f := newFakePlatform(t)
+	f.firmActiveModules(data.ProductRentals, data.ProductEstates)
 	f.staffRole = data.RoleOwner // a staff owner may manage staff
 	staff := f.session(t, principalStaff, fakeStaffID)
 
 	f.stepUp(t, staff) // fakePassword is the staff member's password too
-	if code, resp := f.patchStaffAs(staff, `{"role":"viewer"}`); code != http.StatusOK {
+	if code, resp := f.patchStaffAs(staff, `{"module_access":["rentals","estates"]}`); code != http.StatusOK {
 		t.Fatalf("staff owner after step-up: %d %s", code, resp)
 	}
 }
@@ -266,14 +275,14 @@ func TestStaffRoleChangeAlertsTheOwner(t *testing.T) {
 
 	// Refused (no step-up): nothing happened, so nothing to alert.
 	f.patchStaffAs(owner, `{"role":"accountant"}`)
-	f.app.wg.Wait()
+	f.deliver()
 	if n := len(f.mail.alerts()); n != 0 {
 		t.Fatalf("%d alerts for a refused change, want 0", n)
 	}
 
 	f.stepUp(t, owner)
 	f.patchStaffAs(owner, `{"role":"accountant"}`)
-	f.app.wg.Wait()
+	f.deliver()
 
 	alerts := f.mail.alerts()
 	if len(alerts) != 1 {
@@ -298,10 +307,262 @@ func TestStaffRoleChangeAlertsTheOwner(t *testing.T) {
 		}
 	}
 
-	// A change that is not a role change (module scope) alerts nobody.
-	f.patchStaffAs(owner, `{"module_access":["rentals","estates"]}`)
-	f.app.wg.Wait()
+	if got, _ := a.Data["Link"].(string); !strings.HasSuffix(got, "/staff") {
+		t.Errorf("alert Link = %q, want a link to the staff list", got)
+	}
+
+	// A rename is not an authority change: nobody is alerted.
+	f.patchStaffAs(owner, `{"name":"Renamed Clerk"}`)
+	f.deliver()
 	if n := len(f.mail.alerts()); n != 1 {
-		t.Errorf("%d alerts after a module change, want still 1", n)
+		t.Errorf("%d alerts after a rename, want still 1", n)
+	}
+}
+
+// C3.7 triggers: every kind of authority change and a removal alerts the
+// owner, each with its own headline, the actor, the IP and a link.
+func TestStaffAuthorityChangesAlertTheOwner(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		headline string
+		target   string
+	}{
+		{"role", `{"role":"accountant"}`, "A staff member's role was changed", "officer to accountant"},
+		{"module access", `{"module_access":["rentals","estates"]}`, "A staff member's product access was changed", "rentals to estates, rentals"},
+		{"property access", `{"property_access":{"rentals":["` + propX.String() + `"]}}`, "A staff member's property access was changed", "all properties to limited to 1 property in rentals"},
+		{"removal", `{"status":"disabled"}`, "A staff member was removed", "was officer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakePlatform(t)
+			f.firmActiveModules(data.ProductRentals, data.ProductEstates)
+			owner := f.session(t, principalManager, fakeManagerID)
+			f.stepUp(t, owner)
+			if code, resp := f.patchStaffAs(owner, tc.body); code != http.StatusOK {
+				t.Fatalf("change: %d %s", code, resp)
+			}
+			f.deliver()
+
+			alerts := f.mail.alerts()
+			if len(alerts) != 1 {
+				t.Fatalf("%d alerts, want 1", len(alerts))
+			}
+			d := alerts[0].Data
+			if d["Headline"] != tc.headline {
+				t.Errorf("headline = %v, want %q", d["Headline"], tc.headline)
+			}
+			if got, _ := d["Target"].(string); !strings.Contains(got, tc.target) || !strings.Contains(got, fakeStaffEmail) {
+				t.Errorf("target = %q, want it to name %q and contain %q", got, fakeStaffEmail, tc.target)
+			}
+			if d["Actor"] != "Kimani & Associates (firm login)" || d["IP"] == "" || d["When"] == "" || d["Link"] == "" {
+				t.Errorf("alert lacks actor, IP, time or link: %v", d)
+			}
+		})
+	}
+}
+
+// The actor is named with their role when a staff member made the change, and
+// the alert still goes to the firm login.
+func TestAlertNamesTheStaffActorAndRole(t *testing.T) {
+	f := newFakePlatform(t)
+	f.firmActiveModules(data.ProductRentals, data.ProductEstates)
+	f.staffRole = data.RoleOwner // a staff owner may manage staff
+	staff := f.session(t, principalStaff, fakeStaffID)
+	f.stepUp(t, staff)
+	if code, resp := f.patchStaffAs(staff, `{"module_access":["rentals","estates"]}`); code != http.StatusOK {
+		t.Fatalf("change: %d %s", code, resp)
+	}
+	f.deliver()
+	alerts := f.mail.alerts()
+	if len(alerts) != 1 || alerts[0].Recipient != fakeManagerEmail || alerts[0].Data["Actor"] != "Clerk (owner)" {
+		t.Fatalf("alerts = %+v, want one to the firm login naming Clerk (owner)", alerts)
+	}
+}
+
+// Delivery is asynchronous and survives a mail outage: the action succeeded,
+// the alert waits in the outbox, is retried with backoff, and goes out once the
+// mailer recovers. Exactly one email per event.
+func TestAlertSurvivesAMailOutageAndIsSentOnce(t *testing.T) {
+	f := newFakePlatform(t)
+	f.mail.err = errors.New("smtp: connection refused")
+	owner := f.session(t, principalManager, fakeManagerID)
+	f.stepUp(t, owner)
+
+	if code, resp := f.patchStaffAs(owner, `{"role":"accountant"}`); code != http.StatusOK {
+		t.Fatalf("the action must succeed during a mail outage: %d %s", code, resp)
+	}
+	if sent := f.deliver(); sent != 0 {
+		t.Fatalf("sent %d during the outage", sent)
+	}
+	rows := f.outbox.snapshot()
+	if len(rows) != 1 || rows[0].Status != "pending" || rows[0].LastError == nil {
+		t.Fatalf("outbox = %+v, want one pending row carrying the error", rows)
+	}
+
+	// Not retried before its backoff elapses ...
+	f.mail.err = nil
+	if sent := f.deliver(); sent != 0 {
+		t.Errorf("retried at once (%d sent), want to wait out the backoff", sent)
+	}
+	// ... then delivered, once, and never again.
+	f.outbox.advance(data.OutboxRetryDelay(1) + time.Second)
+	if sent := f.deliver(); sent != 1 {
+		t.Fatalf("sent %d after recovery, want 1", sent)
+	}
+	f.outbox.advance(24 * time.Hour)
+	if sent := f.deliver(); sent != 0 {
+		t.Errorf("sent %d on a later pass, want the alert delivered exactly once", sent)
+	}
+	if n := len(f.mail.alerts()); n != 1 {
+		t.Errorf("%d emails, want 1", n)
+	}
+}
+
+// After the retries run out the row is left 'failed' and the System page says so.
+func TestAlertThatNeverDeliversShowsOnTheSystemPage(t *testing.T) {
+	f := newFakePlatform(t)
+	f.mail.err = errors.New("smtp: 550 mailbox unavailable")
+	owner := f.session(t, principalManager, fakeManagerID)
+	f.stepUp(t, owner)
+	f.patchStaffAs(owner, `{"role":"accountant"}`)
+
+	for range data.OutboxMaxAttempts {
+		f.deliver()
+		f.outbox.advance(5 * time.Hour)
+	}
+	rows := f.outbox.snapshot()
+	if len(rows) != 1 || rows[0].Status != "failed" || rows[0].Attempts != data.OutboxMaxAttempts {
+		t.Fatalf("outbox = %+v, want one failed row after %d attempts", rows, data.OutboxMaxAttempts)
+	}
+	if sent := f.deliver(); sent != 0 || f.outbox.snapshot()[0].Attempts != data.OutboxMaxAttempts {
+		t.Errorf("a failed row is still being retried")
+	}
+
+	status := f.app.emailOutboxStatus(context.Background())
+	if status["failed"] != 1 || status["pending"] != 0 {
+		t.Errorf("System page outbox = %v, want 1 failed and 0 pending", status)
+	}
+	if msg, _ := status["last_error"].(*string); msg == nil || !strings.Contains(*msg, "550") {
+		t.Errorf("System page does not show the delivery error: %v", status["last_error"])
+	}
+}
+
+// Idempotent per event: the same event enqueued twice is one row, one email.
+func TestAlertEnqueueIsIdempotentPerEvent(t *testing.T) {
+	f := newFakePlatform(t)
+	ctx := context.Background()
+	for range 3 {
+		if _, err := f.app.models.Outbox.Enqueue(ctx, fakeManagerID, "same-event", fakeManagerEmail, mailer.SecurityAlertTemplate, map[string]any{"Headline": "H"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.app.models.Outbox.Enqueue(ctx, fakeManagerID, "another-event", fakeManagerEmail, mailer.SecurityAlertTemplate, map[string]any{"Headline": "H"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.outbox.snapshot()); n != 2 {
+		t.Errorf("%d rows, want 2 (three enqueues of one event, plus another event)", n)
+	}
+}
+
+// Alerts carry no secrets, no raw phone numbers.
+func TestAlertPayloadHasNoSecretsOrPhoneNumbers(t *testing.T) {
+	f := newFakePlatform(t)
+	owner := f.session(t, principalManager, fakeManagerID)
+	f.stepUp(t, owner)
+	f.patchStaffAs(owner, `{"role":"accountant","phone":"+254722000123"}`)
+	f.deliver()
+
+	raw, _ := json.Marshal(f.outbox.snapshot())
+	for _, leak := range []string{"254722000123", fakePassword, "password", "$2a$"} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("the outbox holds %q: %s", leak, raw)
+		}
+	}
+}
+
+// C3.6 lifetime: the window is bound to the session id, and ends with it on
+// logout, on revocation and on a password change.
+
+func TestStepUpIsClearedOnLogout(t *testing.T) {
+	f := newFakePlatform(t)
+	owner, code := f.login(t, fakeManagerEmail)
+	if owner == nil {
+		t.Fatalf("login: %d", code)
+	}
+	f.stepUp(t, owner)
+	if code, resp := f.patchStaffAs(owner, `{"role":"viewer"}`); code != http.StatusOK {
+		t.Fatalf("inside the window: %d %s", code, resp)
+	}
+
+	if w := f.do(http.MethodDelete, "/v1/sessions", "", owner); w.Code != http.StatusOK {
+		t.Fatalf("logout = %d", w.Code)
+	}
+	// The window died with the session: the old cookie is simply signed out,
+	// not "still stepped up".
+	if code, _ := f.patchStaffAs(owner, `{"role":"viewer"}`); code != http.StatusUnauthorized {
+		t.Errorf("PATCH with the logged-out cookie = %d, want 401", code)
+	}
+	// And a new login starts with no window.
+	again, _ := f.login(t, fakeManagerEmail)
+	if code, resp := f.patchStaffAs(again, `{"role":"accountant"}`); code != http.StatusForbidden || errorCode(t, resp) != auth.StepUpCode {
+		t.Errorf("a fresh login inherited a window: %d %s", code, resp)
+	}
+}
+
+func TestStepUpIsClearedWhenAuthorityIsRevoked(t *testing.T) {
+	f := newFakePlatform(t)
+	f.staffRole = data.RoleOwner
+	staff, _ := f.login(t, fakeStaffEmail)
+	f.stepUp(t, staff)
+
+	// The firm login demotes the staff owner: their sessions, windows included, end.
+	firm := f.session(t, principalManager, fakeManagerID)
+	f.stepUp(t, firm)
+	if code, resp := f.patchStaffAs(firm, `{"role":"viewer"}`); code != http.StatusOK {
+		t.Fatalf("demotion: %d %s", code, resp)
+	}
+	if code, _ := f.patchStaffAs(staff, `{"role":"owner"}`); code != http.StatusUnauthorized {
+		t.Errorf("the demoted member's stepped-up session still works: %d, want 401", code)
+	}
+}
+
+func TestStepUpIsClearedOnPasswordChange(t *testing.T) {
+	f := newFakePlatform(t)
+	f.firmActiveModules(data.ProductRentals, data.ProductEstates)
+	f.staffRole = data.RoleOwner
+	staff, _ := f.login(t, fakeStaffEmail)
+	f.stepUp(t, staff)
+
+	w := f.do(http.MethodPut, "/v1/staff/me/password", changeBody(fakePassword, newStaffPassword), staff)
+	if w.Code != http.StatusOK {
+		t.Fatalf("change: %d %s", w.Code, w.Body)
+	}
+	const authorityChangeBody = `{"module_access":["rentals","estates"]}`
+	if code, _ := f.patchStaffAs(staff, authorityChangeBody); code != http.StatusUnauthorized {
+		t.Errorf("the old stepped-up session survived a password change: %d, want 401", code)
+	}
+	fresh := freshCookie(w.Result().Cookies())
+	if fresh == nil {
+		t.Fatal("no re-issued session")
+	}
+	if code, resp := f.patchStaffAs(fresh, authorityChangeBody); code != http.StatusForbidden || errorCode(t, resp) != auth.StepUpCode {
+		t.Errorf("the re-issued session carried a window over: %d %s", code, resp)
+	}
+}
+
+// The permissions that need a fresh step-up are listed once, in the catalog,
+// and a new permission that reverses or manages money must be added there or
+// to the explicit exemptions below.
+func TestEveryStepUpPermissionIsListedAndRoutesAreGated(t *testing.T) {
+	for _, perm := range auth.Catalog() {
+		if strings.HasSuffix(perm, ".reverse") && !slices.Contains(auth.StepUpPermissions, perm) {
+			t.Errorf("%s reverses money but is not in auth.StepUpPermissions", perm)
+		}
+	}
+	for _, perm := range auth.StepUpPermissions {
+		if !auth.Known(perm) {
+			t.Errorf("auth.StepUpPermissions lists %q, which is not a catalog permission", perm)
+		}
 	}
 }

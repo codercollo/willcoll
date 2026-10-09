@@ -12,6 +12,18 @@ import (
 	"github.com/google/uuid"
 )
 
+type AlertOutbox struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	EventKey  string
+	Payload   json.RawMessage
+	Status    string
+	Attempts  int32
+	LastError *string
+	CreatedAt time.Time
+	RelayedAt *time.Time
+}
+
 type ArrearsCommitment struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID

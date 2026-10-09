@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 )
 
 // config holds all configuration settings for platform-api. Values are
@@ -42,6 +43,11 @@ type config struct {
 		email    string
 		password string
 	}
+
+	// service is the product-to-platform credential guarding /internal/v1/*
+	// (internal/shared/auth/service.go). With none set those routes refuse
+	// every request.
+	service auth.ServiceCredentials
 
 	limiter struct {
 		rps     float64
@@ -219,6 +225,12 @@ func parseConfig() config {
 	// The password is read from the environment only, never a flag: flags
 	// show up in process listings.
 	cfg.admin.password = os.Getenv("ADMIN_PASSWORD")
+
+	// Service credential (C3.3): read from the environment only, never a flag
+	// (flags show up in process listings). SERVICE_TOKEN_PREVIOUS keeps the
+	// old secret valid while callers roll to a new one.
+	cfg.service.Current = os.Getenv("SERVICE_TOKEN")
+	cfg.service.Previous = os.Getenv("SERVICE_TOKEN_PREVIOUS")
 
 	var trustedProxies string
 	flag.StringVar(&trustedProxies, "trusted-proxies", envString("TRUSTED_PROXIES", ""), "Trusted reverse-proxy IPs/CIDRs (space separated)")

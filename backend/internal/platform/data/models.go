@@ -71,6 +71,11 @@ type Models struct {
 	Channels ChannelModel
 	// Inbox is payment_inbox's claim/post dedup (build-phases.txt 3g-2).
 	Inbox InboxModel
+	// Outbox is the owner-alert email queue (C3.7).
+	Outbox OutboxModel
+	// Unclaimed is the durable record of money received on an unclaimed
+	// channel (C3.2, migration 000023).
+	Unclaimed UnclaimedReceiptModel
 	// Oversight is the Super Admin's cross-tenant manager/subscription
 	// view and the suspend/reinstate status moves (build-phases.txt
 	// 3i-b). Admin pool only.
@@ -103,8 +108,10 @@ func newModels(store, adminStore db.Store, timeout time.Duration) Models {
 		Staff:    StaffModel{Store: store, AdminStore: adminStore, Timeout: timeout},
 		Audit:    AuditModel{Store: store, Timeout: timeout},
 		Channels: ChannelModel{Store: store, Timeout: timeout},
-		Inbox:    InboxModel{Store: store, Timeout: timeout},
+		Inbox:    InboxModel{Store: store, AdminStore: adminStore, Timeout: timeout},
 
+		Outbox:    OutboxModel{Store: store, AdminStore: adminStore, Timeout: timeout},
+		Unclaimed: UnclaimedReceiptModel{Store: store, AdminStore: adminStore, Timeout: timeout},
 		Oversight: OversightModel{Store: adminStore, Timeout: timeout},
 	}
 }

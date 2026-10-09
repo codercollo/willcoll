@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
 	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
-	"github.com/codercollo/willcoll/backend/internal/shared/mailer"
 	"github.com/gin-gonic/gin"
 )
 
@@ -121,24 +122,39 @@ func (app *application) stepUpRequiredResponse(c *gin.Context) {
 		"re-enter your password to continue", auth.StepUpCode, httpx.Envelope{})
 }
 
-// alertOwner emails the firm login about a security-relevant action by anyone
-// in the firm, itself included (D5). It runs in the background: a mail outage
-// must never fail or delay the action, and is logged.
-func (app *application) alertOwner(c *gin.Context, headline, target string) {
+// ownerAlertHook is the owner alert for a security-relevant action by anyone in
+// the firm, itself included (D5, C3.7), as a data.TxHook: pass it to the model
+// method that performs the action (StaffModel.Invite/Update) and the alert is
+// enqueued in email_outbox INSIDE that method's transaction (C4.0, the
+// transactional outbox). The action and its alert commit together or not at
+// all, so a crash between the two can no longer lose an alert, and a failed
+// action leaves none behind. platform-api's outbox worker delivers it with
+// retries; a delivery that finally fails shows on the System page.
+// kind and entity name the event (e.g. "staff.role", the staff id); with the
+// request id they make the alert idempotent, so a retried handler queues it
+// once. link is the record's absolute URL, or "".
+//
+// A hook that fails rolls the action back (500): an unalerted authority change
+// is the thing this control exists to prevent. The failure is counted for the
+// System page.
+func (app *application) ownerAlertHook(c *gin.Context, kind, entity, headline, target, link string) data.TxHook {
 	manager := contextGetManager(c)
-	if manager.IsAnonymous() {
-		return
+	if manager.IsAnonymous() || manager.Email == "" {
+		return func(context.Context, sqlc.Querier) error { return nil }
 	}
-	actor := manager.FirmName + " (firm login)"
-	if staff := contextGetStaff(c); !staff.IsAnonymous() {
-		actor = staff.Name + " (" + staff.Role + ")"
+	staff := contextGetStaff(c)
+	alert := data.OwnerAlert{
+		Key:      httpx.RequestIDFrom(c) + ":" + kind + ":" + entity,
+		Headline: headline, Target: target, Link: link,
 	}
-	alert := mailer.SecurityAlert{Headline: headline, Actor: actor, IP: c.ClientIP(), Target: target, At: time.Now()}
-	recipient, firm := manager.Email, manager.FirmName
+	ip := c.ClientIP()
 
-	app.background(func() {
-		if err := app.mailer.Send(recipient, mailer.SecurityAlertTemplate, mailer.SecurityAlertData(firm, alert)); err != nil {
-			app.logger.Error("sending security alert", "manager_id", manager.ID, "headline", headline, "error", err)
+	return func(ctx context.Context, q sqlc.Querier) error {
+		if _, err := data.EnqueueOwnerAlertIn(ctx, q, manager, staff, ip, alert); err != nil {
+			app.logger.Error("queueing security alert", "manager_id", manager.ID, "kind", kind, "error", err)
+			app.alertFailures.record(time.Now())
+			return err
 		}
-	})
+		return nil
+	}
 }

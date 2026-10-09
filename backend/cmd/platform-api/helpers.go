@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/httpx"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
@@ -86,6 +87,11 @@ func (app *application) loginPrincipal(c *gin.Context, principalType string, id 
 	if err := app.sessionManager.RenewToken(ctx); err != nil {
 		return err
 	}
+	// A step-up window belongs to the credential that earned it: a new sign-in
+	// (including the re-issue after a password change, which renews the token
+	// but keeps the in-memory session values) starts with none (C3.6).
+	app.sessionManager.Remove(ctx, auth.SessionKeyStepUpUntil)
+	app.sessionManager.Remove(ctx, auth.SessionKeyStepUpFailures)
 	app.sessionManager.Put(ctx, sessionKeyPrincipalType, principalType)
 	app.sessionManager.Put(ctx, sessionKeyPrincipalID, id.String())
 	// created_at anchors the absolute cap; renewals never move it.

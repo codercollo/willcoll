@@ -42,6 +42,14 @@ func (t *RouteTable) record(key string, g RouteGuard) {
 	t.entries[key] = g
 }
 
+// Lookup returns the entry for one route key.
+func (t *RouteTable) Lookup(key string) (RouteGuard, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g, ok := t.entries[key]
+	return g, ok
+}
+
 // Entries returns a copy of the table.
 func (t *RouteTable) Entries() map[string]RouteGuard {
 	t.mu.Lock()

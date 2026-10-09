@@ -112,6 +112,10 @@ type payTestApp struct {
 	pq     *platformmock.MockQuerier
 	push   *fakePush
 	sms    *fakeSMS
+
+	// channelClaim answers the platform's payment_channels lookup for a
+	// webhook's channel id (GetPaymentChannelByID).
+	channelClaim func(channelID string) (platformsqlc.PaymentChannel, error)
 }
 
 // newPayTestApp returns an app with mocked storage (the cross-tenant lookups
@@ -144,6 +148,16 @@ func newPayTestApp(t *testing.T) *payTestApp {
 	platformModels := platformdata.NewModelsFromStore(pStore, 0)
 
 	push, sms := &fakePush{}, &fakeSMS{}
+	tp := &payTestApp{store: store, q: q, pStore: pStore, pq: pq, push: push, sms: sms}
+	// Every webhook claim first resolves the channel's platform claim (C3.2).
+	// The default is a claim by the test firm under rentals; a test replaces
+	// tp.channelClaim to model an unclaimed channel or another owner.
+	tp.channelClaim = func(id string) (platformsqlc.PaymentChannel, error) {
+		return platformsqlc.PaymentChannel{ChannelID: id, ManagerID: testTenantID, Product: "rentals"}, nil
+	}
+	pStore.EXPECT().GetPaymentChannelByID(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string) (platformsqlc.PaymentChannel, error) { return tp.channelClaim(id) }).
+		AnyTimes()
 	app := &application{
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		models:   data.NewModelsFromStore(store, 0),
@@ -160,7 +174,8 @@ func newPayTestApp(t *testing.T) *payTestApp {
 	app.config.pay.otpTTL = 5 * time.Minute
 	app.config.pay.sessionTTL = 15 * time.Minute
 	app.config.pay.intentTTL = 10 * time.Minute
-	return &payTestApp{app: app, store: store, q: q, pStore: pStore, pq: pq, push: push, sms: sms}
+	tp.app = app
+	return tp
 }
 
 // do runs handler on a fresh context with the given request pieces.

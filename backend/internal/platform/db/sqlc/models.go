@@ -35,6 +35,22 @@ type AuditLog struct {
 	ActorType  string
 	ActorID    *uuid.UUID
 	Ip         *string
+	ActorName  *string
+}
+
+type EmailOutbox struct {
+	ID            uuid.UUID
+	ManagerID     uuid.UUID
+	EventKey      string
+	Recipient     string
+	Template      string
+	Payload       json.RawMessage
+	Status        string
+	Attempts      int32
+	NextAttemptAt time.Time
+	LastError     *string
+	CreatedAt     time.Time
+	SentAt        *time.Time
 }
 
 type HandoffInvoice struct {
@@ -212,4 +228,19 @@ type Token struct {
 	StaffID   *uuid.UUID
 	Expiry    time.Time
 	Scope     string
+}
+
+type UnclaimedReceipt struct {
+	ID             uuid.UUID
+	MpesaReceipt   string
+	ChannelID      string
+	Product        string
+	Amount         moneyfmt.Money
+	Msisdn         string
+	RawPayload     json.RawMessage
+	ReceivedAt     time.Time
+	Status         string
+	ResolvedBy     *uuid.UUID
+	ResolvedAt     *time.Time
+	ResolutionNote *string
 }

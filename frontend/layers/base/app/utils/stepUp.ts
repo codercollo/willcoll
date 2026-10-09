@@ -51,3 +51,32 @@ export function createStepUpPrompt(onChange: (open: boolean) => void): StepUpPro
     },
   };
 }
+
+/** Shown when the password box is dismissed: the action was NOT performed. */
+export const STEP_UP_CANCELLED_MESSAGE =
+  "You didn't confirm your password, so nothing was changed.";
+
+/** The error a dismissed password box leaves behind. It carries no step-up code, so nothing re-prompts for it. */
+export function stepUpCancelledError(): ApiError {
+  return new ApiError(403, STEP_UP_CANCELLED_MESSAGE);
+}
+
+/**
+ * Runs attempt; if the API answers "step up required", asks for the password
+ * once and retries the SAME request exactly once. A dismissed box leaves the
+ * action undone and throws stepUpCancelledError; a retry that is refused again
+ * surfaces that refusal as it is (no loop). Anything else passes through.
+ */
+export async function withStepUp<T>(
+  attempt: () => Promise<T>,
+  ask: () => Promise<boolean>,
+  enabled = true,
+): Promise<T> {
+  try {
+    return await attempt();
+  } catch (err) {
+    if (!enabled || !isStepUpRequired(err)) throw err;
+    if (!(await ask())) throw stepUpCancelledError();
+    return await attempt();
+  }
+}

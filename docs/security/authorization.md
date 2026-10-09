@@ -93,7 +93,8 @@ today, see section 5).
 | admin.managers.suspend | POST /admin/managers/:id/{suspend,reinstate} | Super Admin |
 | admin.subscriptions.read | GET /admin/subscriptions | Super Admin |
 | admin.plans.read / admin.plans.manage | GET / POST,PATCH /admin/plans... | Super Admin |
-| admin.system.read | GET /admin/system/health (platform), /admin/system/health + /admin/backups (rentals) | Super Admin |
+| admin.system.read | GET /admin/system/health (platform), /admin/system/health + /admin/backups (rentals), GET /admin/unclaimed-receipts (platform) | Super Admin |
+| admin.receipts.resolve | POST /admin/unclaimed-receipts/:id/resolve (platform): close money received on an unclaimed channel, note required; audited under the claiming firm when the channel has since been claimed | Super Admin |
 
 ### Public allowlist (no permission; each with its own protection)
 
@@ -175,21 +176,53 @@ cannot call any firm route (rentals chain rejects admin).
 - **Revocation**: platform `PATCH /staff/:id` ends all of the member's sessions
   when role, module_access, property_access or status changes.
 
-## 4. High-risk actions and recommended extra controls (recommend only)
+## 4. High-risk actions and their controls (as built in C3)
 
-| Action | Risk | Recommended control |
-|---|---|---|
-| payment_channels.manage | Redirects all rent to another till | Re-enter password; email the firm owner on every change; keep the existing "channel with receipts is never released" rule |
-| charges.reverse / payments reversal | Erases money evidence | Mandatory reason (exists); optional second approval above a threshold; alert owner on reversals by non-owner |
-| payments.record (cash) | Fake receipts | Officer allowed, but daily total summary to owner; audit with actor (exists) |
-| staff.manage — role change, enable, **granting owner** | Privilege escalation | Re-enter password; only the firm login (not a staff owner) may grant or revoke owner; never leave the firm with zero active sign-in path; email on role change |
-| account.password / PATCH account | Takeover | Current password (exists); notify email on change |
-| properties.delete | Hides property data | Re-enter password; archive only (exists) |
-| billing.manage | Spend | Owner-only (exists); no extra needed |
-| onboarding.import / units.import | Bulk overwrite | Accountant, audited (exists); row-count confirmation |
-| qr.manage rotate/bulk | Invalidates printed stickers | Accountant (exists) |
-| exports.create / bulk tenant data | PII exfiltration | Audit reads of exports (none today, M18); rate limit |
-| admin.managers.suspend | Outage | Audited (exists); consider reason field |
+"Step-up" = the caller re-enters their own password; a window of 5 minutes
+opens in the session (see "D5 as built"). "Alert" = an email to the firm login
+through the DB-backed outbox (see "C3.7 as built").
+
+| Action | Risk | Control as built | Still open |
+|---|---|---|---|
+| payment_channels.manage (register, test, and the channel field of a property create/update) | Redirects all rent to another till | Permission (owner), then step-up; alert on every change; a channel with receipts is never released | channel *test* is not alerted (no change) |
+| charges.reverse | Erases money evidence | Permission (accountant), then step-up; mandatory reason; alert on every reversal (amount via moneyfmt, entry, reason, link to the unit) | second-person approval, deferred to Phase 8 (opt-in per firm) |
+| staff.manage: invite, role / module_access / property_access change, removal (disable) | Privilege escalation | Permission (owner), then step-up (a rename or phone edit is not gated); sessions of the member ended; alert per kind of change; **owner role granted or revoked by the firm login only (D3)**, a staff owner gets a plain 403 before any prompt; `module_access` can only name products the firm holds (M8, 422); the firm login can never be locked out (it is not a staff row) | |
+| payments.record (cash) | Fake receipts | Officer allowed; audited with actor | daily total summary to the owner |
+| account.password / PATCH account | Takeover | Current password required; other sessions ended; any step-up window ends with the session | notify email on change |
+| properties.delete | Hides property data | Archive only; owner permission | step-up |
+| billing.manage | Spend | Owner-only | none needed |
+| onboarding.import / units.import | Bulk overwrite | Accountant, audited | row-count confirmation |
+| qr.manage rotate/bulk | Invalidates printed stickers | Accountant | |
+| exports.create / bulk tenant data | PII exfiltration | Accountant; viewer denied | audit reads of exports (M17) |
+| admin.managers.suspend | Outage | Audited as actor_type=admin; all sessions of the firm ended | reason field |
+
+### Other actors (C3.1-C3.5 as built)
+
+| Actor | Control |
+|---|---|
+| Tenant (pay link) | Token bound to the lease, lease re-checked on every pay route, another unit's URL is 404; OTP: 5 attempts per code, per-phone/unit/IP/firm ceilings; per-IP and per-intent request limits |
+| PayHero webhook | Source-IP allowlist and/or secret (`X-Webhook-Token`, `?token=`, or HMAC-SHA256 body signature, all constant-time); bad or missing = 401, logged, nothing written. Replay: the M-Pesa receipt is the idempotency key (inbox claim, then the ledger's own receipt uniqueness); PayHero's callback carries no timestamp this code reads, so there is no tolerance window. The channel decides ownership: the payment's product and firm come from the `payment_channels` claim (admin-pool lookup), never the payload; a channel with no claim is **not posted** (alarm with the full payload logged + System page "unclaimed channels"); a channel claimed by another product is refused; a payload whose intent resolves to another firm than the claim is refused |
+| Product API -> platform | `/internal/v1/*` on platform-api accepts only `Authorization: Bearer <SERVICE_TOKEN>` (constant-time, `SERVICE_TOKEN_PREVIOUS` accepted during rotation, never a session, never in a URL or log). Not routed by Caddy (local Caddyfile answers 404 for `/internal/*`; production Caddyfile is Phase 4c and must do the same). Endpoints: `GET /internal/v1/health`, `POST /internal/v1/usage`. Today rentals-api still writes `module_usage` through its database role (M16); the endpoint exists for the products that move to it |
+| Background jobs | `actor_type=system` with the job name in `audit_log.actor_name` (migration platform 000021; `actor_id` is a uuid and a job has none): `usage-recount`, `inbox-sweeper`. Each write opens its own tenant transaction for the firm it names, so one firm's scope never carries to the next |
+| Denied requests | 401, 403 and property-scope 404 are logged (application log only, never `audit_log`) with actor, permission, method, route template, IP and request id; rate limited per actor (10 lines/min, per IP when anonymous), with `suppressed_before` on the next window's first line. Every response carries `X-Request-Id` |
+
+### C3.7 as built (owner alerts)
+
+- Alerts are rows in `willcoll_platform.email_outbox` (migration 000022),
+  queued by whichever API raised them; platform-api's worker (every 15 s)
+  claims due rows with `FOR UPDATE SKIP LOCKED` and a 2-minute lease, sends,
+  and settles. Failures retry at 30 s, 2 m, 10 m, 30 m, 1 h, 2 h, 4 h, then
+  stay `failed`. A restart loses nothing; delivery is at least once.
+- Idempotent per event: `UNIQUE (manager_id, event_key)`. A reversal is keyed by
+  the entry, everything else by request id + kind + entity.
+- A failed email never fails or rolls back the action (the alert is queued
+  after it). Failures show on the Super Admin System page: waiting, failed, last
+  error, and alerts that could not even be queued.
+- Content: what happened, actor name and role (or "firm login"), IP, target,
+  amount (moneyfmt), time in Africa/Nairobi, link to the record. No secrets and
+  no phone numbers (`mailer.MaskPhone` exists for any future alert that needs one).
+- Triggers: payment channel change; any reversal; staff role, module_access or
+  property_access change; staff removal; staff invite.
 
 ## 5. Mismatches between matrix and today's behaviour
 
@@ -205,10 +238,10 @@ test in C3 anyway.
 | M2 | QR image/link readable by viewer | viewer | qr.read officer |
 | M3 | Garbage preview viewer, run accountant | viewer | charges.preview officer |
 | M4 | payers add officer vs lease edit accountant | split | keep, flag as D1 |
-| M5 | Reversal same tier as entry, no extra control | accountant | accountant + section 4 controls |
+| M5 | Reversal same tier as entry, no extra control | **DONE (C3)** | accountant + step-up + owner alert (section 4) |
 | M6 | channel test audit-exempt but sends a real prompt | exempt | audit it |
 | M7 | Unlisted routes silently get default tier | `routeMinRole` fallthrough | deny by default; test fails if a route has no permission |
-| M8 | `module_access` not validated against firm modules | any product name | validate against held modules |
+| M8 | `module_access` not validated against firm modules | **DONE (C3.8)** | 422 when invite names, or an update adds, a product the firm does not hold (trialing or active in `manager_modules`) |
 | M9 | No property scope | **DONE (C2)** | `staff.property_access`, enforced by RLS (see section 3a) |
 | M10 | Rentals UI never hides controls by role | all roles see all buttons | permission-driven UI (4-auth-3) |
 | M11 | Client principal conflates staff and manager | manager | `GET /v1/me` returns permissions |
@@ -216,7 +249,7 @@ test in C3 anyway.
 | M13 | `/debug/vars` unauthenticated in-app on both APIs | **DONE (C2)** | removed from both public routers; served only by the internal `METRICS_ADDR` listener (`httpx.NewMetricsServer`); tests assert 404 on the public router; Caddy blocks `/debug/*` too |
 | M14 | Activation endpoints (`PUT /managers/activated`, `PUT /staff/activated`) have no rate limit | none | add rate limit |
 | M15 | Webhook secret may ride `?token=` (log leakage), webhooks unthrottled | accepted | prefer header/HMAC; document |
-| M16 | No service credential between products and platform | shared DB roles | accept for now (same host/DB cluster); document; 4-auth-2 keeps signature checks and limits via DB grants |
+| M16 | No service credential between products and platform | **PARTLY DONE (C3.3)**: `/internal/v1/*` + `SERVICE_TOKEN` exist; products still write `module_usage` through their DB role | move each product's usage report onto the endpoint when the DB grant is tightened |
 | M17 | Reads never audited (PII, PDFs, staff list, exports) | none | audit exports.create at least |
 | M18 | Admin plan writes audit-exempt | exempt | optional: audit as actor_type=admin |
 | M19 | Audit coverage tests only prove a call exists in source | source check | acceptable; keep |
@@ -299,7 +332,10 @@ D1-D4 approved (see below). Matrix is final.
 - **D1**: lease create/edit stays accountant; officers add payers only.
 - **D2**: property scope stored in the platform DB as `staff.property_access`
   jsonb keyed by product; empty = all properties.
-- **D3**: only the firm login can grant the owner role.
+- **D3**: only the firm login can grant the owner role. **Enforced (C3.8):**
+  a staff session inviting an owner, or changing a member's role to or from
+  owner, gets a plain 403 (checked before the step-up prompt); tested in
+  `cmd/platform-api/staff_c38_test.go`.
 - **D4**: the four viewer reductions are accepted and move to **officer**:
   qr.read, payments.read, charges.preview, deposits.read.
 

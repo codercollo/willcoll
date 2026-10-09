@@ -103,6 +103,9 @@ func (app *application) checkPlatformService(parent context.Context, timeout tim
 			"last_failed_at":     h.LastFailedTime,
 		},
 		"audit_failures_24h": app.auditFailures.count24h(time.Now()),
+		"email_outbox":       app.emailOutboxStatus(ctx),
+		// Received money nobody has claimed: open rows need a Super Admin.
+		"unclaimed_receipts": app.unclaimedReceiptsStatus(ctx),
 	}
 }
 
@@ -176,4 +179,25 @@ func checkError(err error) string {
 	default:
 		return "connection failed"
 	}
+}
+
+// emailOutboxStatus is the owner-alert queue as the System page shows it
+// (C3.7): what is waiting, what ran out of retries, how long the oldest has
+// waited and why the latest failure failed, plus alerts that could not even be
+// queued. A failed delivery is never silent.
+func (app *application) emailOutboxStatus(ctx context.Context) envelope {
+	status := envelope{"alert_enqueue_failures_24h": app.alertFailures.count24h(time.Now())}
+	stats, err := app.models.Outbox.Stats(ctx)
+	if err != nil {
+		app.logger.Error("system health: reading the email outbox", "error", err)
+		status["status"] = "unreachable"
+		return status
+	}
+	status["status"] = "ok"
+	status["pending"] = stats.Pending
+	status["failed"] = stats.Failed
+	status["sent_24h"] = stats.Sent24h
+	status["oldest_pending_age_seconds"] = stats.OldestPendingAgeSeconds
+	status["last_error"] = stats.LastError
+	return status
 }

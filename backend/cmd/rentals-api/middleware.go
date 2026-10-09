@@ -30,6 +30,37 @@ func (app *application) recoverPanic() gin.HandlerFunc {
 	return httpx.RecoverPanic(app.serverErrorResponse)
 }
 
+// requestID stamps every request with a fresh id (log lines and the
+// X-Request-Id response header).
+func (app *application) requestID() gin.HandlerFunc { return httpx.RequestID() }
+
+// denialLog logs 401, 403 and scope-404 responses (C3.5): actor, permission,
+// route, IP and request id, rate limited per actor, application log only.
+func (app *application) denialLog() gin.HandlerFunc {
+	return httpx.DenialLog(httpx.DenialConfig{
+		Logger: app.logger,
+		Actor: func(c *gin.Context) string {
+			if admin, ok := contextGetAdmin(c); ok {
+				return "admin:" + admin.ID.String()
+			}
+			if staff := contextGetStaff(c); !staff.IsAnonymous() {
+				return "staff:" + staff.ID.String()
+			}
+			if manager := contextGetManager(c); !manager.IsAnonymous() {
+				return "manager:" + manager.ID.String()
+			}
+			return "anonymous"
+		},
+		Permission: func(c *gin.Context) string {
+			if app.routeGuards == nil {
+				return ""
+			}
+			g, _ := app.routeGuards.Lookup(auth.Key(c.Request.Method, c.FullPath()))
+			return g.Permission
+		},
+	})
+}
+
 // logRequest writes one structured log line per request.
 func (app *application) logRequest() gin.HandlerFunc {
 	return httpx.LogRequest(app.logger)

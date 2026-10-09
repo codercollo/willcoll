@@ -34,8 +34,10 @@ func (app *application) routes() (*gin.Engine, error) {
 
 	// system-design.txt A.5 chain; rateLimit is applied per group below.
 	router.Use(
+		app.requestID(),
 		app.recoverPanic(),
 		app.logRequest(),
+		app.denialLog(),
 		app.metrics(),
 		app.loadAndSaveSession(),
 		app.authenticate(),
@@ -122,12 +124,22 @@ func (app *application) routes() (*gin.Engine, error) {
 			guard(admin, "POST", "/managers/:id/reinstate", auth.AdminManagersSuspend, app.adminReinstateManagerHandler)
 			guard(admin, "GET", "/subscriptions", auth.AdminSubscriptionsRead, app.adminListSubscriptionsHandler)
 			guard(admin, "GET", "/system/health", auth.AdminSystemRead, app.adminSystemHealthHandler)
+			guard(admin, "GET", "/unclaimed-receipts", auth.AdminSystemRead, app.adminListUnclaimedReceiptsHandler)
+			guard(admin, "POST", "/unclaimed-receipts/:id/resolve", auth.AdminReceiptsResolve, app.adminResolveUnclaimedReceiptHandler)
 			guard(admin, "GET", "/plans", auth.AdminPlansRead, app.adminListPlansHandler)
 			guard(admin, "POST", "/plans", auth.AdminPlansManage, app.adminCreatePlanHandler)
 			guard(admin, "PATCH", "/plans/:id", auth.AdminPlansManage, app.adminUpdatePlanHandler)
 			guard(admin, "POST", "/plans/:id/archive", auth.AdminPlansManage, app.adminArchivePlanHandler)
 			guard(admin, "POST", "/plans/:id/restore", auth.AdminPlansManage, app.adminRestorePlanHandler)
 		}
+	}
+
+	// -- Service-to-service (C3.3): product APIs only, service credential only,
+	// internal network only (Caddy does not route /internal/*). --
+	internal := router.Group("/internal/v1", app.requireService())
+	{
+		public(internal, "GET", "/health", app.serviceHealthHandler)
+		public(internal, "POST", "/usage", app.serviceReportUsageHandler)
 	}
 
 	return router, nil

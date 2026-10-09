@@ -29,6 +29,37 @@ func (app *application) recoverPanic() gin.HandlerFunc {
 	return httpx.RecoverPanic(app.serverErrorResponse)
 }
 
+// requestID stamps every request with a fresh id (log lines and the
+// X-Request-Id response header).
+func (app *application) requestID() gin.HandlerFunc { return httpx.RequestID() }
+
+// denialLog logs 401, 403 and scope-404 responses (C3.5): actor, permission,
+// route, IP and request id, rate limited per actor, application log only.
+func (app *application) denialLog() gin.HandlerFunc {
+	return httpx.DenialLog(httpx.DenialConfig{
+		Logger: app.logger,
+		Actor: func(c *gin.Context) string {
+			if admin, ok := contextGetAdmin(c); ok {
+				return "admin:" + admin.ID.String()
+			}
+			if staff := contextGetStaff(c); !staff.IsAnonymous() {
+				return "staff:" + staff.ID.String()
+			}
+			if manager := contextGetManager(c); !manager.IsAnonymous() {
+				return "manager:" + manager.ID.String()
+			}
+			return "anonymous"
+		},
+		Permission: func(c *gin.Context) string {
+			if app.routeGuards == nil {
+				return ""
+			}
+			g, _ := app.routeGuards.Lookup(auth.Key(c.Request.Method, c.FullPath()))
+			return g.Permission
+		},
+	})
+}
+
 // logRequest writes one structured log line per request.
 func (app *application) logRequest() gin.HandlerFunc {
 	return httpx.LogRequest(app.logger)
@@ -349,18 +380,13 @@ func (app *application) permitted(c *gin.Context, perm string) bool {
 	return auth.StaffPermits(staff.Role, perm)
 }
 
-// logDenied records a refused request (actor, permission, route, IP) in the
-// application log only: a denied call is not a business event, and writing
-// each one to audit_log would let a misbehaving client flood it.
+// logDenied notes the permission a request is being refused for. The line
+// itself is written, rate limited per actor, by the denialLog middleware
+// (httpx.DenialLog, C3.5) in the application log only: a denied call is not a
+// business event, and writing each one to audit_log would let a misbehaving
+// client flood it.
 func (app *application) logDenied(c *gin.Context, perm string) {
-	actor := "manager"
-	if _, ok := contextGetAdmin(c); ok {
-		actor = "admin"
-	} else if staff := contextGetStaff(c); !staff.IsAnonymous() {
-		actor = "staff:" + staff.ID.String()
-	}
-	app.logger.Info("permission denied", "actor", actor, "permission", perm,
-		"method", c.Request.Method, "route", c.FullPath(), "ip", c.ClientIP())
+	httpx.NoteDeniedPermission(c, perm)
 }
 
 // requireAdmin guards /v1/admin/*: only a signed-in Super Admin.

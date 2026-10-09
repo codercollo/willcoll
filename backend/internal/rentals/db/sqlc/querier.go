@@ -30,6 +30,8 @@ type Querier interface {
 	// AdvanceReceiptCounter hands out the locked next_no and increments it.
 	// Call after LockReceiptCounter, in the same transaction.
 	AdvanceReceiptCounter(ctx context.Context, arg AdvanceReceiptCounterParams) error
+	// AlertOutboxStats backs the System page: how many are waiting, and for how long.
+	AlertOutboxStats(ctx context.Context) (AlertOutboxStatsRow, error)
 	// ArchiveProperty is the soft delete behind DELETE /v1/properties/:id. The
 	// API role has no DELETE on properties (000019); zero rows affected means
 	// the property doesn't exist or is already archived.
@@ -119,6 +121,12 @@ type Querier interface {
 	CreateUnitQRCode(ctx context.Context, arg CreateUnitQRCodeParams) (UnitQrCode, error)
 	// DeleteLeasePayer removes a co-payer. Zero rows means it is not on that lease.
 	DeleteLeasePayer(ctx context.Context, arg DeleteLeasePayerParams) (int64, error)
+	// Owner-alert outbox (migration 000049, C4.0). EnqueueAlert runs in the SAME
+	// tenant transaction as the action it reports; the relay's queries are
+	// cross-tenant and run on the admin pool.
+	// EnqueueAlert is idempotent per (tenant_id, event_key): a second enqueue of
+	// the same event inserts nothing (zero rows affected).
+	EnqueueAlert(ctx context.Context, arg EnqueueAlertParams) (int64, error)
 	// ExpireStaleIntents closes intents whose STK push window has passed.
 	ExpireStaleIntents(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// GarbageRunExists tells the preview whether the period is already billed.
@@ -280,6 +288,10 @@ type Querier interface {
 	// that are unmatched, matched but not placed, or placed by the engine on a
 	// guess that is not yet confirmed. Newest first.
 	ListPaymentsForReview(ctx context.Context, arg ListPaymentsForReviewParams) ([]ListPaymentsForReviewRow, error)
+	// ListPendingAlerts is the relay's batch: fewest failed attempts first, then
+	// oldest. An alert the platform keeps refusing (its firm is gone) therefore
+	// sinks behind new ones instead of filling every batch and starving them.
+	ListPendingAlerts(ctx context.Context, batch int32) ([]ListPendingAlertsRow, error)
 	// ListPeriodPayments is every allocation of a payment received in the
 	// period against a unit of the property: one line per allocation.
 	ListPeriodPayments(ctx context.Context, arg ListPeriodPaymentsParams) ([]ListPeriodPaymentsRow, error)
@@ -379,6 +391,10 @@ type Querier interface {
 	// LockWaterReading locks a draft as part of a run. Zero rows affected means
 	// it was already locked.
 	LockWaterReading(ctx context.Context, arg LockWaterReadingParams) (int64, error)
+	// MarkAlertRelayFailed leaves the row pending (it is retried on the next tick)
+	// and records why.
+	MarkAlertRelayFailed(ctx context.Context, arg MarkAlertRelayFailedParams) error
+	MarkAlertRelayed(ctx context.Context, id uuid.UUID) error
 	// OnboardingCounts feeds the setup checklist in one round trip.
 	OnboardingCounts(ctx context.Context, tenantID uuid.UUID) (OnboardingCountsRow, error)
 	// PropertyHasActiveLeases blocks archiving a property people still live in.

@@ -74,15 +74,19 @@ func (app *application) createPropertyHandler(c *gin.Context) {
 		}
 	}
 
-	if err := app.models.Properties.Insert(c.Request.Context(), tenantID, property); err != nil {
+	// A property created with a channel alerts the owner in the same transaction
+	// (C4.0). property.ID is pre-assigned above whenever there is a channel, so
+	// the link and event key are known before the insert.
+	var hooks []data.TxHook
+	if channelID := channelValue(property.PayheroChannelID); channelID != "" {
+		hooks = append(hooks, app.ownerAlertHook(c, "channel.created", property.ID.String(), "A payment channel was changed", channelChangeTarget(property.Name, "", channelID), "/properties/"+property.ID.String()))
+	}
+	if err := app.models.Properties.Insert(c.Request.Context(), tenantID, property, hooks...); err != nil {
 		app.releasePropertyChannel(c, tenantID, property.ID, claimedChannel)
 		app.propertyWriteErrorResponse(c, err)
 		return
 	}
 	app.audit(c, "property.created", "property", &property.ID, property.Name)
-	if channelID := channelValue(property.PayheroChannelID); channelID != "" {
-		app.alertOwner(c, "A payment channel was changed", channelChangeTarget(property.Name, "", channelID))
-	}
 
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"property": property}, nil); err != nil {
 		app.serverErrorResponse(c, err)
@@ -269,7 +273,12 @@ func (app *application) updatePropertyHandler(c *gin.Context) {
 		}
 	}
 
-	if err := app.models.Properties.Update(c.Request.Context(), property); err != nil {
+	// A channel change alerts the owner in the same transaction as the save (C4.0).
+	var hooks []data.TxHook
+	if oldChannel != newChannel {
+		hooks = append(hooks, app.ownerAlertHook(c, "channel.updated", property.ID.String(), "A payment channel was changed", channelChangeTarget(property.Name, oldChannel, newChannel), "/properties/"+property.ID.String()))
+	}
+	if err := app.models.Properties.Update(c.Request.Context(), property, hooks...); err != nil {
 		app.releasePropertyChannel(c, tenantID, property.ID, claimedChannel)
 		app.propertyWriteErrorResponse(c, err)
 		return
@@ -278,9 +287,6 @@ func (app *application) updatePropertyHandler(c *gin.Context) {
 		app.releasePropertyChannel(c, tenantID, property.ID, oldChannel)
 	}
 	app.audit(c, "property.updated", "property", &property.ID, property.Name)
-	if oldChannel != newChannel {
-		app.alertOwner(c, "A payment channel was changed", channelChangeTarget(property.Name, oldChannel, newChannel))
-	}
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{"property": property}, nil); err != nil {
 		app.serverErrorResponse(c, err)

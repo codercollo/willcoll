@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -61,8 +63,27 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 		return
 	}
 
+	// Only the firm login grants the owner role (D3). Before step-up, like every
+	// permission check: someone who may never do this is not asked for a password.
+	if staff.Role == data.RoleOwner && app.staffActorMayNotChangeOwner(c) {
+		return
+	}
+
 	ctx := c.Request.Context()
-	if err := app.models.Staff.Invite(ctx, tenantID, staff); err != nil {
+	// module_access can only name products the firm actually holds (M8).
+	if errs, err := app.moduleAccessErrors(ctx, tenantID, staff.ModuleAccess); err != nil {
+		app.serverErrorResponse(c, err)
+		return
+	} else if len(errs) > 0 {
+		app.failedValidationResponse(c, errs)
+		return
+	}
+	// The invite and its owner alert commit together (C4.0). The staff id is
+	// only assigned by the insert, so the event is keyed by the invitee's email.
+	inviteAlert := app.ownerAlertHook(c, "staff.invited", staff.Email, "A staff member was invited",
+		staff.Name+" ("+staff.Email+") as "+staff.Role+", access to "+strings.Join(staff.ModuleAccess, ", "),
+		app.staffLink())
+	if err := app.models.Staff.Invite(ctx, tenantID, staff, inviteAlert); err != nil {
 		switch {
 		case errors.Is(err, data.ErrDuplicateStaffEmail):
 			app.failedValidationResponse(c, map[string]string{"email": "a staff member with this email already exists"})
@@ -80,8 +101,6 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 
 	manager := contextGetManager(c)
 	app.sendStaffInviteEmail(manager, staff, token)
-	app.alertOwner(c, "A staff member was invited",
-		staff.Name+" ("+staff.Email+") as "+staff.Role)
 	app.audit(c, "", "staff.invited", "staff", &staff.ID, "invited "+staff.Email+" as "+staff.Role)
 
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"staff": staff}, nil); err != nil {
@@ -181,6 +200,30 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 		return
 	}
 
+	// Only the firm login grants or revokes the owner role (D3), a staff owner
+	// included. Permission first, then step-up (below), then M8.
+	if before.Role != staff.Role && (before.Role == data.RoleOwner || staff.Role == data.RoleOwner) &&
+		app.staffActorMayNotChangeOwner(c) {
+		return
+	}
+
+	// module_access can only gain products the firm actually holds (M8); a
+	// product the member already has is not re-checked, so an unrelated edit
+	// never fails because the firm's module lapsed.
+	var added []string
+	for _, module := range staff.ModuleAccess {
+		if !slices.Contains(before.ModuleAccess, module) {
+			added = append(added, module)
+		}
+	}
+	if errs, err := app.moduleAccessErrors(ctx, tenantID, added); err != nil {
+		app.serverErrorResponse(c, err)
+		return
+	} else if len(errs) > 0 {
+		app.failedValidationResponse(c, errs)
+		return
+	}
+
 	// Changing what a member may do, or removing them, needs step-up (D5); a
 	// rename or phone edit does not. Checked before anything is saved.
 	reason := authorityChange(before, *staff, statusChangedToDisabled)
@@ -189,7 +232,10 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 		return
 	}
 
-	if err := app.models.Staff.Update(ctx, tenantID, staff); err != nil {
+	// The change and its owner alerts commit together (C4.0): a crash can't
+	// leave an authority change the owner was never told about.
+	alerts := app.staffChangeAlerts(c, before, *staff, statusChangedToDisabled)
+	if err := app.models.Staff.Update(ctx, tenantID, staff, alerts...); err != nil {
 		switch {
 		case errors.Is(err, data.ErrEditConflict):
 			app.editConflictResponse(c)
@@ -206,10 +252,6 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 	// module or property scope changes. Authorization is also re-read on every
 	// request, so this is the second layer: no session issued under the old
 	// authority survives, and the person re-authenticates under the new one.
-	if before.Role != staff.Role {
-		app.alertOwner(c, "A staff member's role was changed",
-			staff.Name+" ("+staff.Email+"): "+before.Role+" to "+staff.Role)
-	}
 	if reason != "" {
 		if _, err := app.revokeStaffSessions(ctx, staff.ID); err != nil {
 			app.logger.Error("revoking staff member's sessions", "staff_id", staff.ID, "reason", reason, "error", err)
@@ -224,6 +266,107 @@ func (app *application) updateStaffHandler(c *gin.Context) {
 	if err := app.writeJSON(c, http.StatusOK, envelope{"staff": staff}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
+}
+
+// staffActorMayNotChangeOwner answers 403 and reports true when the caller is a
+// staff member (even a staff owner): granting or revoking the owner role is the
+// firm login's alone (authorization.md D3). The firm login can never be locked
+// out by this: it is not a staff row and cannot be demoted or disabled.
+func (app *application) staffActorMayNotChangeOwner(c *gin.Context) bool {
+	if contextGetStaff(c).IsAnonymous() {
+		return false
+	}
+	app.logDenied(c, "owner role (firm login only)")
+	app.notPermittedResponse(c)
+	return true
+}
+
+// moduleAccessErrors reports (as validation errors, 422) every product in
+// modules the firm does not hold: M8. A held product is one the firm is
+// trialing or has active in manager_modules; requested and suspended ones are
+// not. A product that does not exist at all is rejected earlier by
+// ValidateStaff.
+func (app *application) moduleAccessErrors(ctx context.Context, tenantID uuid.UUID, modules []string) (map[string]string, error) {
+	var missing []string
+	for _, product := range modules {
+		m, err := app.models.Modules.Get(ctx, tenantID, product)
+		switch {
+		case err == nil && (m.Status == data.ModuleStatusActive || m.Status == data.ModuleStatusTrialing):
+		case err == nil || errors.Is(err, data.ErrRecordNotFound):
+			missing = append(missing, product)
+		default:
+			return nil, err
+		}
+	}
+	if len(missing) == 0 {
+		return nil, nil
+	}
+	return map[string]string{"module_access": "the firm does not have an active " + strings.Join(missing, ", ") + " module"}, nil
+}
+
+// staffLink is where the owner sees the staff list.
+func (app *application) staffLink() string { return app.config.frontendURL + "/staff" }
+
+// staffChangeAlerts is the owner alert for every authority change (D5, C3.7), as
+// hooks for StaffModel.Update to run in its transaction: a role change, a
+// change of product (module_access) or property scope, and a removal
+// (disabling). One alert per kind of change, so a single save that changes two
+// things sends two clearly-headlined emails.
+func (app *application) staffChangeAlerts(c *gin.Context, before, after data.Staff, disabled bool) []data.TxHook {
+	who := after.Name + " (" + after.Email + ")"
+	id := after.ID.String()
+	if disabled {
+		// a removed member's other changes are moot
+		return []data.TxHook{app.ownerAlertHook(c, "staff.removed", id, "A staff member was removed",
+			who+", was "+before.Role+"; signed out everywhere", app.staffLink())}
+	}
+	var hooks []data.TxHook
+	if before.Role != after.Role {
+		hooks = append(hooks, app.ownerAlertHook(c, "staff.role", id, "A staff member's role was changed",
+			who+": "+before.Role+" to "+after.Role, app.staffLink()))
+	}
+	if !sameStrings(before.ModuleAccess, after.ModuleAccess) {
+		hooks = append(hooks, app.ownerAlertHook(c, "staff.modules", id, "A staff member's product access was changed",
+			who+": "+accessList(before.ModuleAccess)+" to "+accessList(after.ModuleAccess), app.staffLink()))
+	}
+	if !data.PropertyAccessEqual(before.PropertyAccess, after.PropertyAccess) {
+		hooks = append(hooks, app.ownerAlertHook(c, "staff.properties", id, "A staff member's property access was changed",
+			who+": "+propertyScopeSummary(before.PropertyAccess)+" to "+propertyScopeSummary(after.PropertyAccess), app.staffLink()))
+	}
+	return hooks
+}
+
+func accessList(modules []string) string {
+	if len(modules) == 0 {
+		return "no products"
+	}
+	sorted := slices.Clone(modules)
+	slices.Sort(sorted)
+	return strings.Join(sorted, ", ")
+}
+
+// propertyScopeSummary says how many properties a member is limited to, per
+// product; ids are not repeated in an email.
+func propertyScopeSummary(access map[string][]uuid.UUID) string {
+	access = data.NormalizePropertyAccess(access)
+	if len(access) == 0 {
+		return "all properties"
+	}
+	products := make([]string, 0, len(access))
+	for product := range access {
+		products = append(products, product)
+	}
+	slices.Sort(products)
+	parts := make([]string, 0, len(products))
+	for _, product := range products {
+		n := len(access[product])
+		noun := "properties"
+		if n == 1 {
+			noun = "property"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s in %s", n, noun, product))
+	}
+	return "limited to " + strings.Join(parts, ", ")
 }
 
 // authorityChange names why a staff update must end the member's sessions, or

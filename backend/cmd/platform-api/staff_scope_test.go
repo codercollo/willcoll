@@ -69,6 +69,7 @@ func TestStaffAuthorityChangeRevokesSessions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakePlatform(t)
+			f.firmActiveModules(data.ProductRentals, data.ProductEstates) // M8
 			if tc.setup != nil {
 				tc.setup(f)
 			}

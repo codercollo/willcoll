@@ -419,10 +419,20 @@ func (m RentModel) ReverseEntry(ctx context.Context, tenantID, managerID, entryI
 type Reversal struct {
 	ID     uuid.UUID
 	Amount moneyfmt.Money
+	// UnitID is the unit whose ledger the reversed entry belongs to, for the
+	// owner alert's link to the record.
+	UnitID uuid.UUID
 }
 
+// ReversalHook is extra work ReverseEntryDetailed runs inside the reversal's
+// own transaction, once the reversal is written (r describes it): how the
+// owner alert is enqueued atomically with the reversal (C4.0). An error rolls
+// the reversal back.
+type ReversalHook func(ctx context.Context, q sqlc.Querier, r Reversal) error
+
 // ReverseEntryDetailed is ReverseEntry that also reports the reversed amount.
-func (m RentModel) ReverseEntryDetailed(ctx context.Context, tenantID, managerID, entryID uuid.UUID, reason string) (Reversal, error) {
+// hooks run in the reversal's transaction, after its writes.
+func (m RentModel) ReverseEntryDetailed(ctx context.Context, tenantID, managerID, entryID uuid.UUID, reason string, hooks ...ReversalHook) (Reversal, error) {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -436,12 +446,13 @@ func (m RentModel) ReverseEntryDetailed(ctx context.Context, tenantID, managerID
 
 	var reversalID uuid.UUID
 	var amount moneyfmt.Money
+	var unitID uuid.UUID
 	err := m.Store.ExecTenantTx(ctx, tenantID, func(q sqlc.Querier) error {
 		orig, err := q.GetLedgerEntryForReversal(ctx, sqlc.GetLedgerEntryForReversalParams{TenantID: tenantID, ID: entryID})
 		if err != nil {
 			return notFound(err)
 		}
-		amount = orig.Amount
+		amount, unitID = orig.Amount, orig.UnitID
 		switch {
 		case orig.ReferenceType == ReferenceTypeReversal:
 			return ErrNotReversible
@@ -484,16 +495,27 @@ func (m RentModel) ReverseEntryDetailed(ctx context.Context, tenantID, managerID
 		// and every printed field stay exactly as issued, never reused,
 		// never deleted — the PDF renders "VOID" over it instead.
 		if orig.ReferenceType == ReferenceTypePaymentAllocation {
-			return q.VoidReceipt(ctx, sqlc.VoidReceiptParams{
+			if err := q.VoidReceipt(ctx, sqlc.VoidReceiptParams{
 				TenantID: tenantID, PaymentAllocationID: &orig.ReferenceID, VoidReason: &reason,
-			})
+			}); err != nil {
+				return err
+			}
+		}
+
+		// The owner alert commits with the reversal (C4.0): nothing between
+		// the two for a crash to fall into.
+		done := Reversal{ID: reversalID, Amount: amount, UnitID: unitID}
+		for _, h := range hooks {
+			if err := h(ctx, q, done); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return Reversal{}, err
 	}
-	return Reversal{ID: reversalID, Amount: amount}, nil
+	return Reversal{ID: reversalID, Amount: amount, UnitID: unitID}, nil
 }
 
 // LedgerView is a unit's rent ledger tab: the RENT ledger and the

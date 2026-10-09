@@ -401,6 +401,7 @@ func TestPropertyScope_EveryTenantTableHasAPolicyOrAnExemption(t *testing.T) {
 	conn := openTestDB(t)
 	exempt := map[string]string{
 		"transaction_headers": "groups ledger entries; carries no unit or tenant data. No staff route reads it except joined from ledger_entries (scoped): TestPropertyScopeProof_UnscopedTablesAreOnlyReadThroughScopedOnes",
+		"alert_outbox":        "firm-level owner alerts written by the acting request's own transaction (any scoped staff member's reversal or channel change must be able to alert the owner) and read only by the relay on the BYPASSRLS admin role; no manager route reads it (C4.0)",
 		"pay_otps":            "used only by the unauthenticated pay surface, which has no staff principal; no manager route can call its queries (same proof test)",
 	}
 	rows, err := conn.Query(`

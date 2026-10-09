@@ -1,7 +1,7 @@
 import { ApiError, defaultMessage, parseApiError } from "../utils/apiError";
 import { flashOf } from "../utils/flash";
 import { isPlatformPath, platformPath } from "../utils/apiTarget";
-import { isStepUpRequired } from "../utils/stepUp";
+import { withStepUp } from "../utils/stepUp";
 
 export interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -79,11 +79,26 @@ export function useApi() {
     });
   }
 
-  async function send(
-    path: string,
-    opts: ApiOptions = {},
-    afterStepUp = false,
-  ): Promise<Response> {
+  // Step-up (D5): an action that needs a recent password re-entry answers 403
+  // step_up_required. Ask once, then repeat the request exactly once; a
+  // dismissed box leaves the action undone with a clear message (withStepUp).
+  async function send(path: string, opts: ApiOptions = {}): Promise<Response> {
+    try {
+      return await withStepUp(
+        () => sendOnce(path, opts),
+        () => nuxt.runWithContext(() => useStepUp().ask()),
+        !opts.token && import.meta.client,
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        onFailure(err, opts);
+        onPaywall(err);
+      }
+      throw err;
+    }
+  }
+
+  async function sendOnce(path: string, opts: ApiOptions): Promise<Response> {
     const headers: Record<string, string> = { ...opts.headers };
     if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
     let body: BodyInit | undefined = opts.rawBody;
@@ -105,17 +120,7 @@ export function useApi() {
     if (!res.ok) {
       const parsed = await res.json().catch(() => null);
       showFlash(parsed);
-      const err = parseApiError(res.status, parsed);
-      // Step-up (D5): the action needs a recent password re-entry. Ask once,
-      // then repeat the request exactly once; dismissing the box, or still
-      // being refused, surfaces the original error.
-      if (isStepUpRequired(err) && !opts.token && !afterStepUp && import.meta.client) {
-        const stepped = await nuxt.runWithContext(() => useStepUp().ask());
-        if (stepped) return send(path, opts, true);
-      }
-      onFailure(err, opts);
-      onPaywall(err);
-      throw err;
+      throw parseApiError(res.status, parsed);
     }
     return res;
   }
