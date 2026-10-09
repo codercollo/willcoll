@@ -81,7 +81,7 @@ func (o *fakeOutbox) markFailed(_ context.Context, a sqlc.MarkEmailFailedParams)
 		if r.ID == a.ID {
 			r.LastError = a.LastError
 			if r.Attempts >= a.MaxAttempts {
-				r.Status = "failed"
+				r.Status = "dead"
 			}
 			r.NextAttemptAt = o.now.Add(time.Duration(a.RetrySeconds) * time.Second)
 		}
@@ -100,8 +100,8 @@ func (o *fakeOutbox) stats(context.Context) (sqlc.OutboxStatsRow, error) {
 			if age := o.now.Sub(r.CreatedAt).Seconds(); age > s.OldestPendingAgeSeconds {
 				s.OldestPendingAgeSeconds = age
 			}
-		case "failed":
-			s.Failed++
+		case "dead":
+			s.Dead++
 		case "sent":
 			s.Sent24h++
 		}

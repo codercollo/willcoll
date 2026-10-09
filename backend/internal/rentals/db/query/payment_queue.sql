@@ -10,10 +10,12 @@ SELECT
     p.id, p.source, p.mpesa_receipt, p.amount, p.msisdn, p.payer_name,
     p.account_reference, p.matched_unit_id, p.status,
     p.auto_applied_unconfirmed, p.review_note, p.received_at,
+    p.pending_ledger_type, p.recorded_by, p.recorded_by_role, p.created_at,
     u.unit_code
 FROM payments p
 LEFT JOIN units u ON u.id = p.matched_unit_id
 WHERE p.tenant_id = @tenant_id
+  AND p.status <> 'rejected'
   AND (p.status <> 'allocated' OR p.auto_applied_unconfirmed)
 ORDER BY p.received_at DESC, p.id ASC
 LIMIT @page_limit OFFSET @page_offset;
@@ -30,6 +32,7 @@ WHERE p.tenant_id = @tenant_id
   AND u.property_id = @property_id
   AND (p.received_at AT TIME ZONE 'Africa/Nairobi')::date >= sqlc.arg(period)::date
   AND (p.received_at AT TIME ZONE 'Africa/Nairobi')::date < (sqlc.arg(period)::date + interval '1 month')
+  AND p.status <> 'rejected'
   AND (p.status <> 'allocated' OR p.auto_applied_unconfirmed);
 
 -- name: GetPayment :one
@@ -45,6 +48,34 @@ UPDATE payments
 SET auto_applied_unconfirmed = false, review_note = NULL,
     status = CASE WHEN status = 'matched' THEN 'allocated' ELSE status END
 WHERE tenant_id = $1 AND id = $2 AND auto_applied_unconfirmed;
+
+-- MarkPaymentConfirmed records who confirmed a pending hand-entered payment
+-- and when, once it has been posted (same transaction).
+-- name: MarkPaymentConfirmed :exec
+UPDATE payments
+SET confirmed_by = @confirmed_by, confirmed_at = now()
+WHERE tenant_id = @tenant_id AND id = @id;
+
+-- RejectPendingPayment refuses a pending hand-entered payment: it never posts.
+-- Zero rows means it was not pending (already confirmed, already rejected, or
+-- not a hand-entered payment).
+-- name: RejectPendingPayment :execrows
+UPDATE payments
+SET status = 'rejected', rejected_by = @rejected_by, rejected_at = now(), reject_reason = @reject_reason
+WHERE tenant_id = @tenant_id AND id = @id AND status = 'pending';
+
+-- CountStalePendingPayments is the dashboard's "waiting too long" count: pending
+-- hand-entered payments recorded before the cutoff.
+-- name: CountStalePendingPayments :one
+SELECT count(*)
+FROM payments
+WHERE tenant_id = @tenant_id AND status = 'pending' AND created_at < @older_than;
+
+-- CountPendingPayments is every pending hand-entered payment awaiting a decision.
+-- name: CountPendingPayments :one
+SELECT count(*)
+FROM payments
+WHERE tenant_id = @tenant_id AND status = 'pending';
 
 -- ExpireStaleIntents closes intents whose STK push window has passed.
 -- name: ExpireStaleIntents :execrows

@@ -109,7 +109,7 @@ func (r *alertRig) relay(t *testing.T) (relayed int) {
 	t.Helper()
 	before := r.rentalsAlerts(t, "relayed")
 	fresh := data.NewModels(r.rentalsApp, r.rentalsAdm, 5*time.Second)
-	if _, _, err := relayAlerts(context.Background(), fresh.Alerts, r.platform.Outbox, 1000); err != nil {
+	if _, _, _, err := relayAlerts(context.Background(), fresh.Alerts, r.platform.Outbox, 1000); err != nil {
 		t.Fatalf("relay: %v", err)
 	}
 	var lastErr sql.NullString
@@ -264,6 +264,89 @@ func TestAlertOutboxDuplicateRelaySendsNoDuplicateEmail(t *testing.T) {
 	if n := r.platformEmails(t); n != 1 {
 		t.Fatalf("platform emails after three relays = %d, want 1", n)
 	}
+}
+
+// An alert the relay can never hand over (here: the platform has no such firm)
+// is retried with backoff, goes 'dead' on its AlertMaxAttempts-th failure, is
+// never picked up again, and is counted on the System page.
+func TestAlertOutboxDeadAfterMaxAttempts(t *testing.T) {
+	r := newAlertRig(t)
+	ctx := context.Background()
+	if err := r.rentalsTx(ctx, r.alertHook("dead:1")); err != nil {
+		t.Fatal(err)
+	}
+	// Point it at a firm the platform has never heard of, so every relay fails.
+	var tenant uuid.UUID
+	if err := r.rentalsAdm.QueryRow(`UPDATE alert_outbox SET tenant_id = gen_random_uuid() WHERE tenant_id = $1 RETURNING tenant_id`, r.firm.ID).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.rentalsAdm.Exec(`UPDATE alert_outbox SET status = 'dead' WHERE tenant_id = $1`, tenant)
+	})
+	status := func() (s string, attempts int) {
+		if err := r.rentalsAdm.QueryRow(`SELECT status, attempts FROM alert_outbox WHERE tenant_id = $1`, tenant).Scan(&s, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		return s, attempts
+	}
+	makeDue := func() {
+		if _, err := r.rentalsAdm.Exec(`UPDATE alert_outbox SET next_attempt_at = now() - interval '1 second' WHERE tenant_id = $1`, tenant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := func() bool {
+		pending, err := r.rentals.Alerts.ListPending(ctx, 10000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range pending {
+			if p.TenantID == tenant {
+				return true
+			}
+		}
+		return false
+	}
+	before, err := r.rentals.Alerts.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= data.AlertMaxAttempts; attempt++ {
+		makeDue()
+		if !listed() {
+			t.Fatalf("attempt %d: the alert was not offered to the relay", attempt)
+		}
+		if err := r.rentals.Alerts.MarkFailed(ctx, mustAlertID(t, r, tenant), time.Minute, errors.New("platform: no such firm")); err != nil {
+			t.Fatal(err)
+		}
+		s, n := status()
+		if want := map[bool]string{true: "dead", false: "pending"}[attempt == data.AlertMaxAttempts]; s != want || n != attempt {
+			t.Fatalf("after failure %d: status %s attempts %d, want %s and %d", attempt, s, n, want, attempt)
+		}
+		if attempt < data.AlertMaxAttempts && listed() {
+			t.Fatalf("attempt %d: offered again before its backoff elapsed", attempt)
+		}
+	}
+
+	makeDue()
+	if listed() {
+		t.Fatal("a dead alert was offered to the relay again")
+	}
+	after, err := r.rentals.Alerts.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Dead != before.Dead+1 {
+		t.Errorf("System page dead count %d -> %d, want +1", before.Dead, after.Dead)
+	}
+}
+
+func mustAlertID(t *testing.T, r *alertRig, tenant uuid.UUID) (id uuid.UUID) {
+	t.Helper()
+	if err := r.rentalsAdm.QueryRow(`SELECT id FROM alert_outbox WHERE tenant_id = $1`, tenant).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // rentalsTx runs hooks in a tenant transaction of their own.

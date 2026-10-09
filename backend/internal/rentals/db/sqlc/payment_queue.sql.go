@@ -37,6 +37,20 @@ func (q *Queries) ConfirmPayment(ctx context.Context, arg ConfirmPaymentParams) 
 	return result.RowsAffected()
 }
 
+const countPendingPayments = `-- name: CountPendingPayments :one
+SELECT count(*)
+FROM payments
+WHERE tenant_id = $1 AND status = 'pending'
+`
+
+// CountPendingPayments is every pending hand-entered payment awaiting a decision.
+func (q *Queries) CountPendingPayments(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingPayments, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPendingPaymentsForPeriod = `-- name: CountPendingPaymentsForPeriod :one
 SELECT count(*)
 FROM payments p
@@ -45,6 +59,7 @@ WHERE p.tenant_id = $1
   AND u.property_id = $2
   AND (p.received_at AT TIME ZONE 'Africa/Nairobi')::date >= $3::date
   AND (p.received_at AT TIME ZONE 'Africa/Nairobi')::date < ($3::date + interval '1 month')
+  AND p.status <> 'rejected'
   AND (p.status <> 'allocated' OR p.auto_applied_unconfirmed)
 `
 
@@ -60,6 +75,26 @@ type CountPendingPaymentsForPeriodParams struct {
 // confirmed allocation.
 func (q *Queries) CountPendingPaymentsForPeriod(ctx context.Context, arg CountPendingPaymentsForPeriodParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countPendingPaymentsForPeriod, arg.TenantID, arg.PropertyID, arg.Period)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countStalePendingPayments = `-- name: CountStalePendingPayments :one
+SELECT count(*)
+FROM payments
+WHERE tenant_id = $1 AND status = 'pending' AND created_at < $2
+`
+
+type CountStalePendingPaymentsParams struct {
+	TenantID  uuid.UUID
+	OlderThan time.Time
+}
+
+// CountStalePendingPayments is the dashboard's "waiting too long" count: pending
+// hand-entered payments recorded before the cutoff.
+func (q *Queries) CountStalePendingPayments(ctx context.Context, arg CountStalePendingPaymentsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countStalePendingPayments, arg.TenantID, arg.OlderThan)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -81,7 +116,7 @@ func (q *Queries) ExpireStaleIntents(ctx context.Context, tenantID uuid.UUID) (i
 }
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note FROM payments
+SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note, pending_ledger_type, recorded_by, recorded_by_role, confirmed_by, confirmed_at, rejected_by, rejected_at, reject_reason FROM payments
 WHERE tenant_id = $1 AND id = $2
 `
 
@@ -111,12 +146,20 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.CreatedAt,
 		&i.AutoAppliedUnconfirmed,
 		&i.ReviewNote,
+		&i.PendingLedgerType,
+		&i.RecordedBy,
+		&i.RecordedByRole,
+		&i.ConfirmedBy,
+		&i.ConfirmedAt,
+		&i.RejectedBy,
+		&i.RejectedAt,
+		&i.RejectReason,
 	)
 	return i, err
 }
 
 const getPaymentForIntent = `-- name: GetPaymentForIntent :one
-SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note FROM payments
+SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note, pending_ledger_type, recorded_by, recorded_by_role, confirmed_by, confirmed_at, rejected_by, rejected_at, reject_reason FROM payments
 WHERE tenant_id = $1 AND matched_intent_id = $2
 ORDER BY received_at DESC
 LIMIT 1
@@ -150,6 +193,14 @@ func (q *Queries) GetPaymentForIntent(ctx context.Context, arg GetPaymentForInte
 		&i.CreatedAt,
 		&i.AutoAppliedUnconfirmed,
 		&i.ReviewNote,
+		&i.PendingLedgerType,
+		&i.RecordedBy,
+		&i.RecordedByRole,
+		&i.ConfirmedBy,
+		&i.ConfirmedAt,
+		&i.RejectedBy,
+		&i.RejectedAt,
+		&i.RejectReason,
 	)
 	return i, err
 }
@@ -161,10 +212,12 @@ SELECT
     p.id, p.source, p.mpesa_receipt, p.amount, p.msisdn, p.payer_name,
     p.account_reference, p.matched_unit_id, p.status,
     p.auto_applied_unconfirmed, p.review_note, p.received_at,
+    p.pending_ledger_type, p.recorded_by, p.recorded_by_role, p.created_at,
     u.unit_code
 FROM payments p
 LEFT JOIN units u ON u.id = p.matched_unit_id
 WHERE p.tenant_id = $1
+  AND p.status <> 'rejected'
   AND (p.status <> 'allocated' OR p.auto_applied_unconfirmed)
 ORDER BY p.received_at DESC, p.id ASC
 LIMIT $3 OFFSET $2
@@ -190,6 +243,10 @@ type ListPaymentsForReviewRow struct {
 	AutoAppliedUnconfirmed bool
 	ReviewNote             *string
 	ReceivedAt             time.Time
+	PendingLedgerType      *string
+	RecordedBy             *uuid.UUID
+	RecordedByRole         *string
+	CreatedAt              time.Time
 	UnitCode               *string
 }
 
@@ -221,6 +278,10 @@ func (q *Queries) ListPaymentsForReview(ctx context.Context, arg ListPaymentsFor
 			&i.AutoAppliedUnconfirmed,
 			&i.ReviewNote,
 			&i.ReceivedAt,
+			&i.PendingLedgerType,
+			&i.RecordedBy,
+			&i.RecordedByRole,
+			&i.CreatedAt,
 			&i.UnitCode,
 		); err != nil {
 			return nil, err
@@ -234,6 +295,54 @@ func (q *Queries) ListPaymentsForReview(ctx context.Context, arg ListPaymentsFor
 		return nil, err
 	}
 	return items, nil
+}
+
+const markPaymentConfirmed = `-- name: MarkPaymentConfirmed :exec
+UPDATE payments
+SET confirmed_by = $1, confirmed_at = now()
+WHERE tenant_id = $2 AND id = $3
+`
+
+type MarkPaymentConfirmedParams struct {
+	ConfirmedBy *uuid.UUID
+	TenantID    uuid.UUID
+	ID          uuid.UUID
+}
+
+// MarkPaymentConfirmed records who confirmed a pending hand-entered payment
+// and when, once it has been posted (same transaction).
+func (q *Queries) MarkPaymentConfirmed(ctx context.Context, arg MarkPaymentConfirmedParams) error {
+	_, err := q.db.ExecContext(ctx, markPaymentConfirmed, arg.ConfirmedBy, arg.TenantID, arg.ID)
+	return err
+}
+
+const rejectPendingPayment = `-- name: RejectPendingPayment :execrows
+UPDATE payments
+SET status = 'rejected', rejected_by = $1, rejected_at = now(), reject_reason = $2
+WHERE tenant_id = $3 AND id = $4 AND status = 'pending'
+`
+
+type RejectPendingPaymentParams struct {
+	RejectedBy   *uuid.UUID
+	RejectReason *string
+	TenantID     uuid.UUID
+	ID           uuid.UUID
+}
+
+// RejectPendingPayment refuses a pending hand-entered payment: it never posts.
+// Zero rows means it was not pending (already confirmed, already rejected, or
+// not a hand-entered payment).
+func (q *Queries) RejectPendingPayment(ctx context.Context, arg RejectPendingPaymentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rejectPendingPayment,
+		arg.RejectedBy,
+		arg.RejectReason,
+		arg.TenantID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setPaymentIntentCheckout = `-- name: SetPaymentIntentCheckout :exec

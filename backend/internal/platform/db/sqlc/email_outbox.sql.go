@@ -107,7 +107,7 @@ func (q *Queries) EnqueueEmail(ctx context.Context, arg EnqueueEmailParams) (int
 const markEmailFailed = `-- name: MarkEmailFailed :exec
 UPDATE email_outbox
 SET last_error = $2,
-    status = CASE WHEN attempts >= $3::int THEN 'failed' ELSE 'pending' END,
+    status = CASE WHEN attempts >= $3::int THEN 'dead' ELSE 'pending' END,
     next_attempt_at = now() + make_interval(secs => $4::int)
 WHERE id = $1
 `
@@ -120,7 +120,8 @@ type MarkEmailFailedParams struct {
 }
 
 // MarkEmailFailed records a failed attempt. With attempts left the row stays
-// pending and is retried after $3 seconds; with none left it becomes 'failed'.
+// pending and is retried after $3 seconds; with none left it becomes 'dead'
+// and is never retried.
 func (q *Queries) MarkEmailFailed(ctx context.Context, arg MarkEmailFailedParams) error {
 	_, err := q.db.ExecContext(ctx, markEmailFailed,
 		arg.ID,
@@ -143,7 +144,7 @@ func (q *Queries) MarkEmailSent(ctx context.Context, id uuid.UUID) error {
 const outboxStats = `-- name: OutboxStats :one
 SELECT
     count(*) FILTER (WHERE status = 'pending')::int AS pending,
-    count(*) FILTER (WHERE status = 'failed')::int AS failed,
+    count(*) FILTER (WHERE status = 'dead')::int AS dead,
     count(*) FILTER (WHERE status = 'sent' AND sent_at > now() - interval '24 hours')::int AS sent_24h,
     COALESCE(EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status = 'pending')), 0)::float8 AS oldest_pending_age_seconds,
     (SELECT o2.last_error FROM email_outbox o2 WHERE o2.last_error IS NOT NULL
@@ -153,7 +154,7 @@ FROM email_outbox
 
 type OutboxStatsRow struct {
 	Pending                 int32
-	Failed                  int32
+	Dead                    int32
 	Sent24h                 int32
 	OldestPendingAgeSeconds float64
 	LastError               *string
@@ -165,7 +166,7 @@ func (q *Queries) OutboxStats(ctx context.Context) (OutboxStatsRow, error) {
 	var i OutboxStatsRow
 	err := row.Scan(
 		&i.Pending,
-		&i.Failed,
+		&i.Dead,
 		&i.Sent24h,
 		&i.OldestPendingAgeSeconds,
 		&i.LastError,

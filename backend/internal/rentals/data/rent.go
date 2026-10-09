@@ -273,6 +273,15 @@ type PaymentInput struct {
 	Reference  string // bank or cash-book reference; unique among manual payments
 	Note       string
 	LedgerType string // defaults to RENT
+
+	// Pending holds the payment for confirmation instead of posting it: it is
+	// stored with status 'pending' and touches no ledger, balance, report or
+	// receipt until ConfirmPending posts it. Set for a recorder who cannot
+	// confirm (an officer). RecordedBy/RecordedByRole say who entered it, from
+	// the session; the confirmer must be someone else.
+	Pending        bool
+	RecordedBy     uuid.UUID
+	RecordedByRole string
 }
 
 // ManualPayment identifies what PostPayment recorded.
@@ -281,12 +290,18 @@ type ManualPayment struct {
 	Receipt   string         `json:"receipt"`
 	Amount    moneyfmt.Money `json:"amount"`
 	Ledger    string         `json:"ledger_type"`
+	// Status is "allocated" for a payment posted at once, "pending" for one
+	// waiting for an accountant to confirm it.
+	Status string `json:"status"`
 }
 
 // PostPayment records a payment received outside PayHero (cash or bank
 // transfer) and credits the unit's ledger, in one serializable transaction
 // through the same posting path as PayHero payments, including the zero-sum
 // assertion. Paying more than is owed leaves the account in credit.
+//
+// With in.Pending it records the payment and posts NOTHING: the money is not
+// yet anyone's until a second person confirms it (ConfirmPending).
 func (m RentModel) PostPayment(ctx context.Context, tenantID, managerID, unitID uuid.UUID, in PaymentInput) (*ManualPayment, error) {
 	ctx, cancel := withTimeout(ctx, postingTimeout(m.Timeout))
 	defer cancel()
@@ -329,8 +344,12 @@ func (m RentModel) PostPayment(ctx context.Context, tenantID, managerID, unitID 
 			return err
 		}
 
+		recorder := in.RecordedBy
+		if recorder == uuid.Nil {
+			recorder = managerID
+		}
 		raw, err := json.Marshal(map[string]string{
-			"entered_by": managerID.String(), "kind": in.Source, "reference": in.Reference, "note": in.Note,
+			"entered_by": recorder.String(), "kind": in.Source, "reference": in.Reference, "note": in.Note,
 		})
 		if err != nil {
 			return err
@@ -341,21 +360,34 @@ func (m RentModel) PostPayment(ctx context.Context, tenantID, managerID, unitID 
 		}
 
 		receipt := "MANUAL-" + strings.ToUpper(uuid.NewString()[:13])
-		payment, err := q.CreatePayment(ctx, sqlc.CreatePaymentParams{
+		params := sqlc.CreatePaymentParams{
 			TenantID: tenantID, Source: "manual", MpesaReceipt: receipt, Amount: in.Amount,
 			Msisdn: msisdn, PayerName: payer, AccountReference: ref, Status: "matched",
 			RawPayload: raw, ReceivedAt: m.now(), MatchedUnitID: &unitID,
-		})
+		}
+		if in.Pending {
+			// Held for confirmation: it names the unit, the ledger it will credit
+			// and who entered it (the confirmer must be someone else), and nothing
+			// is posted.
+			role := in.RecordedByRole
+			params.Status = PaymentStatusPending
+			params.PendingLedgerType, params.RecordedBy, params.RecordedByRole = &in.LedgerType, &recorder, &role
+		}
+		payment, err := q.CreatePayment(ctx, params)
 		if err != nil {
 			return err
 		}
 
+		if in.Pending {
+			result = ManualPayment{PaymentID: payment.ID, Receipt: receipt, Amount: in.Amount, Ledger: in.LedgerType, Status: PaymentStatusPending}
+			return nil
+		}
 		if err := postPaymentAllocations(ctx, q, tenantID, payment, unitID,
 			[]Allocation{{LedgerType: in.LedgerType, Amount: in.Amount}}, managerID.String(),
 			PaymentOutcome{Status: PaymentStatusAllocated}); err != nil {
 			return err
 		}
-		result = ManualPayment{PaymentID: payment.ID, Receipt: receipt, Amount: in.Amount, Ledger: in.LedgerType}
+		result = ManualPayment{PaymentID: payment.ID, Receipt: receipt, Amount: in.Amount, Ledger: in.LedgerType, Status: PaymentStatusAllocated}
 		return nil
 	})
 	if err != nil {

@@ -22,6 +22,18 @@ type Admin struct {
 	IsSingleton  bool
 }
 
+type AdminAuditLog struct {
+	ID         uuid.UUID
+	AdminID    *uuid.UUID
+	ManagerID  *uuid.UUID
+	Action     string
+	EntityType string
+	EntityID   *uuid.UUID
+	Summary    string
+	Ip         *string
+	CreatedAt  time.Time
+}
+
 type AuditLog struct {
 	ID         uuid.UUID
 	ManagerID  uuid.UUID

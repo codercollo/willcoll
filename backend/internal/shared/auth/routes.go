@@ -29,6 +29,31 @@ type RouteGuard struct {
 
 func NewRouteTable() *RouteTable { return &RouteTable{entries: map[string]RouteGuard{}} }
 
+// ReachedHeader is the response header MarkReached sets. It exists for the golden
+// route x role matrix (docs/security/c4-matrix-fixes.md item 2), which must tell
+// "authorization refused this request" from "authorization let it through and the
+// handler then said 404/422/409". It is never set unless a test turned the marker
+// on.
+const ReachedHeader = "X-Test-Handler-Reached"
+
+// MarkReached returns handlers with the last one (the route's own handler, after
+// every guard and middleware) wrapped to set ReachedHeader before it runs, when on
+// is true. When on is false it returns handlers untouched: the marker adds no
+// wrapper, no header and no cost to a running API. Only tests turn it on (each API
+// has an unexported field that only its _test.go files set; a test pins that).
+func MarkReached(on bool, handlers []gin.HandlerFunc) []gin.HandlerFunc {
+	if !on || len(handlers) == 0 {
+		return handlers
+	}
+	out := append([]gin.HandlerFunc(nil), handlers...)
+	last := out[len(out)-1]
+	out[len(out)-1] = func(c *gin.Context) {
+		c.Header(ReachedHeader, "1")
+		last(c)
+	}
+	return out
+}
+
 // Key is the "METHOD /full/path" form used by the table, the public
 // allowlist and router.Routes().
 func Key(method, fullPath string) string { return method + " " + fullPath }

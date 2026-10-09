@@ -15,7 +15,7 @@ import (
 
 // The owner-alert outbox against a real willcoll_platform (C3.7): an alert
 // commits with the action that raised it or not at all, is queued once per
-// event, is retried with backoff and ends up 'failed' where the System page
+// event, is retried with backoff and ends up 'dead' where the System page
 // can see it, and one firm's rows are invisible to another.
 
 func newOutboxFirm(t *testing.T, models Models, appConn *sql.DB) *Manager {
@@ -210,25 +210,33 @@ func TestOutboxRetriesThenFailsVisibly(t *testing.T) {
 		if err := models.Outbox.MarkFailed(ctx, got[0].ID, attempt, errors.New("smtp: connection refused")); err != nil {
 			t.Fatal(err)
 		}
+		if attempt < OutboxMaxAttempts {
+			if err := adminConn.QueryRow(`SELECT status FROM email_outbox WHERE manager_id = $1`, firm.ID).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			if status != OutboxPending {
+				t.Fatalf("status after attempt %d = %s, want pending until attempt %d", attempt, status, OutboxMaxAttempts)
+			}
+		}
 	}
 
-	// Out of attempts: 'failed', never claimed again, and visible to the System page.
+	// Out of attempts: 'dead', never claimed again, and visible to the System page.
 	if err := adminConn.QueryRow(`SELECT status FROM email_outbox WHERE manager_id = $1`, firm.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != OutboxFailed {
-		t.Fatalf("status after %d failures = %s, want failed", OutboxMaxAttempts, status)
+	if status != OutboxDead {
+		t.Fatalf("status after %d failures = %s, want dead", OutboxMaxAttempts, status)
 	}
 	makeDue()
 	if got := claimMine(t, models, firm.ID); len(got) != 0 {
-		t.Fatalf("a failed email was claimed again: %+v", got)
+		t.Fatalf("a dead email was claimed again: %+v", got)
 	}
 	after, err := models.Outbox.Stats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Failed != before.Failed+1 {
-		t.Errorf("System page failed count %d -> %d, want +1", before.Failed, after.Failed)
+	if after.Dead != before.Dead+1 {
+		t.Errorf("System page dead count %d -> %d, want +1", before.Dead, after.Dead)
 	}
 	if after.LastError == nil || !strings.Contains(*after.LastError, "smtp: connection refused") {
 		t.Errorf("System page last_error = %v, want the reason for the failure", after.LastError)

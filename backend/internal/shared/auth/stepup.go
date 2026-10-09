@@ -6,9 +6,11 @@ import "time"
 //
 // A few actions are dangerous enough that a live session alone is not enough:
 // changing a payment channel, reversing a ledger entry, and changing or
-// removing a staff member's authority. For these the caller re-enters their
-// own password, which opens a short window (StepUpTTL) in which the gated
-// actions are allowed.
+// removing a staff member's authority, and the Super Admin's own consequential
+// actions (suspending a firm, resolving an unclaimed receipt, the plan
+// catalog). For these the caller re-enters their own password (the Super
+// Admin's, their own), which opens a short window (StepUpTTL) in which the
+// gated actions are allowed.
 //
 // The window is one value in the shared platform session
 // (SessionKeyStepUpUntil, unix seconds). Only platform-api writes sessions
@@ -26,7 +28,12 @@ const StepUpTTL = 5 * time.Minute
 // permission ending in ".reverse" (e.g. a future payments.reverse) is missing
 // from this list, and each product API's route test fails when a route
 // guarded by one of them has no gate.
-var StepUpPermissions = []string{PaymentChannelsManage, ChargesReverse, StaffManage}
+var StepUpPermissions = []string{
+	PaymentChannelsManage, ChargesReverse, StaffManage,
+	// The Super Admin account is the most valuable target in the system
+	// (c4-matrix-fixes.md item 6).
+	AdminManagersSuspend, AdminReceiptsResolve, AdminPlansManage,
+}
 
 // StepUpMaxFailures is how many wrong re-entries a session may make before it
 // is ended: someone holding a stolen session cookie must not be able to guess

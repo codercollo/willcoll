@@ -27,8 +27,10 @@ import (
 
 type scopeHTTP struct {
 	router http.Handler
+	app    *application
 	stub   *platformStub
 	conn   *sql.DB
+	models data.Models
 
 	firm, otherFirm uuid.UUID
 
@@ -38,9 +40,19 @@ type scopeHTTP struct {
 	leaseA, leaseB       *data.Lease
 	paymentB             uuid.UUID
 	entryB               uuid.UUID
+
+	// Only the route matrix seeds these (matrixReseed): a co-payer on lease B, a
+	// pending cash payment on unit B1, and property B's payment channel.
+	payerB   *data.LeasePayer
+	pendingB uuid.UUID
+	channelB string
 }
 
-func newScopeHTTP(t *testing.T) *scopeHTTP {
+func newScopeHTTP(t *testing.T) *scopeHTTP { return newScopeHTTPMarked(t, false) }
+
+// newScopeHTTPMarked is newScopeHTTP with the handler-reached marker on or off
+// (auth.MarkReached): only the route matrix needs it on.
+func newScopeHTTPMarked(t *testing.T, markHandlers bool) *scopeHTTP {
 	t.Helper()
 	dsns := testenv.Require(t, "WILLCOLL_TEST_DB_DSN", "WILLCOLL_TEST_ADMIN_DB_DSN")
 	open := func(dsn string) *sql.DB {
@@ -56,9 +68,33 @@ func newScopeHTTP(t *testing.T) *scopeHTTP {
 	}
 	conn, adminConn := open(dsns[0]), open(dsns[1])
 	models := data.NewModels(conn, adminConn, 5*time.Second)
-	ctx := t.Context()
 
-	s := &scopeHTTP{conn: conn, stub: newPlatformStub(t)}
+	s := &scopeHTTP{conn: conn, stub: newPlatformStub(t), models: models}
+	s.reseed(t)
+
+	app := &application{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), models: models, payhero: &fakePush{}, sms: &fakeSMS{}, markHandlers: markHandlers}
+	s.stub.attach(app)
+	app.config.env = "development"
+	app.config.pay.sessionSecret = testPaySecret
+	app.config.pay.otpTTL = 5 * time.Minute
+	app.config.pay.sessionTTL = 15 * time.Minute
+	app.config.pay.intentTTL = 10 * time.Minute
+	router, err := app.routes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.app, s.router = app, router
+	return s
+}
+
+// reseed seeds a brand-new fixture: two firms, and for the first firm two
+// landlords, two properties (A and B) each with a unit, an active lease, a
+// posted charge, and for B a payment and its ledger entry. The previous
+// fixture's rows stay where they are, under their own firm ids, so a test (the
+// route matrix) can call a destructive route against pristine data every time.
+func (s *scopeHTTP) reseed(t *testing.T) {
+	t.Helper()
+	models, ctx, conn := s.models, t.Context(), s.conn
 	s.firm, s.otherFirm = s.stub.newFirm(), s.stub.newFirm()
 
 	landlord := func(name string) uuid.UUID {
@@ -107,16 +143,6 @@ func newScopeHTTP(t *testing.T) *scopeHTTP {
 			t.Fatal(err)
 		}
 	})
-
-	app := &application{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), models: models}
-	s.stub.attach(app)
-	app.config.env = "development"
-	router, err := app.routes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.router = router
-	return s
 }
 
 func (s *scopeHTTP) do(method, target, cookie string) (int, string) {

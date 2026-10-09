@@ -90,6 +90,44 @@ func (app *application) updateWaterReadingsHandler(c *gin.Context) {
 		return
 	}
 
+	// A reading's own "rate" overrides the property's water rate for that bill, so
+	// a rate other than the one in force is a change to what the tenant is charged:
+	// accountant and above (the shared money-field guard). Echoing the rate in force,
+	// as the grid form does, is fine for an officer, and so is leaving it out.
+	if !app.permitted(c, moneyFieldPermission) {
+		withRate := false
+		for _, r := range input.Readings {
+			withRate = withRate || r.Rate != nil
+		}
+		if withRate {
+			grid, err := app.models.Water.Grid(c.Request.Context(), tenantID, propertyID, period)
+			if err != nil {
+				app.billingErrorResponse(c, err)
+				return
+			}
+			inForce := make(map[uuid.UUID]moneyfmt.Money, len(grid.Rows))
+			for _, row := range grid.Rows {
+				if row.HasReading {
+					inForce[row.UnitID] = row.Rate
+				}
+			}
+			var changes []moneyChange
+			for _, r := range input.Readings {
+				if r.Rate == nil {
+					continue
+				}
+				current, ok := inForce[r.UnitID]
+				if !ok {
+					current = grid.DefaultRate
+				}
+				changes = append(changes, moneyChange{Field: "rate", Sent: *r.Rate, Current: current})
+			}
+			if app.refuseMoneyChange(c, changes) {
+				return
+			}
+		}
+	}
+
 	inputs := make([]data.WaterReadingInput, len(input.Readings))
 	for i, r := range input.Readings {
 		inputs[i] = data.WaterReadingInput{

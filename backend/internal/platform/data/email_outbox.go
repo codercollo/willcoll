@@ -25,11 +25,11 @@ import (
 const (
 	OutboxPending = "pending"
 	OutboxSent    = "sent"
-	OutboxFailed  = "failed"
+	OutboxDead    = "dead"
 
-	// OutboxMaxAttempts is how many deliveries a row gets before it is left
-	// 'failed' for the System page.
-	OutboxMaxAttempts = 8
+	// OutboxMaxAttempts is how many deliveries a row gets before it is marked
+	// 'dead': never retried again, counted on the System page.
+	OutboxMaxAttempts = 10
 	// OutboxLease is how long a claimed row is hidden from other workers.
 	OutboxLease = 2 * time.Minute
 )
@@ -75,7 +75,7 @@ type OutboxEmail struct {
 // OutboxStats is the System page's view of the queue.
 type OutboxStats struct {
 	Pending                 int     `json:"pending"`
-	Failed                  int     `json:"failed"`
+	Dead                    int     `json:"dead"`
 	Sent24h                 int     `json:"sent_24h"`
 	OldestPendingAgeSeconds int     `json:"oldest_pending_age_seconds"`
 	LastError               *string `json:"last_error"`
@@ -157,7 +157,7 @@ func (m OutboxModel) MarkSent(ctx context.Context, id uuid.UUID) error {
 }
 
 // MarkFailed records a failed delivery of attempt number attempt: the row is
-// retried later, or left 'failed' once OutboxMaxAttempts is reached.
+// retried later, or marked 'dead' once OutboxMaxAttempts is reached.
 func (m OutboxModel) MarkFailed(ctx context.Context, id uuid.UUID, attempt int, sendErr error) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
@@ -182,7 +182,7 @@ func (m OutboxModel) Stats(ctx context.Context) (*OutboxStats, error) {
 		return nil, err
 	}
 	return &OutboxStats{
-		Pending: int(row.Pending), Failed: int(row.Failed), Sent24h: int(row.Sent24h),
+		Pending: int(row.Pending), Dead: int(row.Dead), Sent24h: int(row.Sent24h),
 		OldestPendingAgeSeconds: int(row.OldestPendingAgeSeconds), LastError: row.LastError,
 	}, nil
 }

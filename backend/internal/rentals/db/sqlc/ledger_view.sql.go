@@ -93,7 +93,8 @@ func (q *Queries) GetLedgerEntryForReversal(ctx context.Context, arg GetLedgerEn
 
 const getManualPaymentByReference = `-- name: GetManualPaymentByReference :one
 SELECT id FROM payments
-WHERE tenant_id = $1 AND source = 'manual' AND account_reference = $2
+WHERE tenant_id = $1 AND source = 'manual' AND account_reference = $2 AND status <> 'rejected'
+LIMIT 1
 `
 
 type GetManualPaymentByReferenceParams struct {
@@ -102,7 +103,9 @@ type GetManualPaymentByReferenceParams struct {
 }
 
 // GetManualPaymentByReference finds an earlier hand-entered payment with the
-// same reference, so a double submit is refused instead of credited twice.
+// same reference, so a double submit is refused instead of credited twice. A
+// pending entry counts (it will post); a rejected one does not, so the clerk can
+// enter the payment again once it has been put right.
 func (q *Queries) GetManualPaymentByReference(ctx context.Context, arg GetManualPaymentByReferenceParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, getManualPaymentByReference, arg.TenantID, arg.AccountReference)
 	var id uuid.UUID

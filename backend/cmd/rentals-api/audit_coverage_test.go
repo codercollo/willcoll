@@ -51,6 +51,7 @@ var auditCoverage = map[string]string{
 	"POST /v1/ledger-entries/:id/reverse":               "audited",
 	"POST /v1/payments/:id/allocate":                    "audited",
 	"POST /v1/payments/:id/confirm":                     "audited",
+	"POST /v1/payments/:id/reject":                      "audited",
 	"PUT /v1/properties/:id/water":                      "audited",
 	"POST /v1/properties/:id/water/generate":            "audited",
 	"POST /v1/properties/:id/garbage/generate":          "audited",

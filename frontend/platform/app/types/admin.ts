@@ -82,16 +82,18 @@ export interface RentalsReport {
   usage_reporting: { enabled: boolean; last_report_at: string | null }
   audit_failures_24h: number
   inbox_fallbacks_24h: number
+  /** Owner alerts committed in rentals and waiting to be relayed; `dead` ran out of relay attempts. */
+  alert_outbox?: { pending: number; dead: number; oldest_pending_age_seconds: number }
   unclaimed_channels?: UnclaimedChannel[]
   /** Firms that hit their daily pay-OTP SMS ceiling in the last 24h. */
   otp_ceiling_firms?: { tenant_id: string; last_hit_at: string }[]
 }
 
-/** The owner-alert email queue (C3.7). `failed` ran out of retries; `alert_enqueue_failures_24h` could not even be queued. */
+/** The owner-alert email queue (C3.7). `dead` ran out of retries (never retried again); `alert_enqueue_failures_24h` could not even be queued. */
 export interface EmailOutbox {
   status: 'ok' | 'unreachable'
   pending?: number
-  failed?: number
+  dead?: number
   sent_24h?: number
   oldest_pending_age_seconds?: number
   last_error?: string | null

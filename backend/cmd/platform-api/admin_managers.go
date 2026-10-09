@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
@@ -96,6 +98,10 @@ func (app *application) adminSuspendManagerHandler(c *gin.Context) {
 		return
 	}
 
+	reason, ok := app.optionalReason(c)
+	if !ok {
+		return
+	}
 	ctx := c.Request.Context()
 
 	if err := app.models.Oversight.SuspendManager(ctx, id); err != nil {
@@ -121,7 +127,9 @@ func (app *application) adminSuspendManagerHandler(c *gin.Context) {
 		app.serverErrorResponse(c, err)
 		return
 	}
-	app.auditAdmin(c, id, "", "manager.suspended", "manager", &id, "")
+	summary := "suspended; " + strconv.Itoa(revoked) + " sessions revoked" + reasonSuffix(reason)
+	app.auditAdmin(c, id, "", "manager.suspended", "manager", &id, summary)
+	app.auditAdminAction(c, &id, "manager.suspended", "manager", &id, summary)
 
 	err = app.writeJSON(c, http.StatusOK, envelope{"manager": manager, "sessions_revoked": revoked}, nil)
 	if err != nil {
@@ -141,6 +149,10 @@ func (app *application) adminReinstateManagerHandler(c *gin.Context) {
 		return
 	}
 
+	reason, ok := app.optionalReason(c)
+	if !ok {
+		return
+	}
 	ctx := c.Request.Context()
 
 	if err := app.models.Oversight.ReinstateManager(ctx, id); err != nil {
@@ -160,11 +172,46 @@ func (app *application) adminReinstateManagerHandler(c *gin.Context) {
 		app.serverErrorResponse(c, err)
 		return
 	}
-	app.auditAdmin(c, id, "", "manager.reinstated", "manager", &id, "")
+	summary := "reinstated" + reasonSuffix(reason)
+	app.auditAdmin(c, id, "", "manager.reinstated", "manager", &id, summary)
+	app.auditAdminAction(c, &id, "manager.reinstated", "manager", &id, summary)
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{"manager": manager}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
+}
+
+// maxAdminReasonLen bounds a Super Admin's free-text reason.
+const maxAdminReasonLen = 500
+
+// optionalReason reads the optional {"reason": "..."} body of a Super Admin
+// action. A request with no body has no reason; a body that is not JSON, or a
+// reason over maxAdminReasonLen, is answered (400/422) and ok is false.
+func (app *application) optionalReason(c *gin.Context) (reason string, ok bool) {
+	if c.Request.ContentLength == 0 {
+		return "", true
+	}
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	if err := app.readJSON(c, &input); err != nil {
+		app.badRequestResponse(c, err)
+		return "", false
+	}
+	reason = strings.TrimSpace(input.Reason)
+	if len(reason) > maxAdminReasonLen {
+		app.failedValidationResponse(c, map[string]string{"reason": "must not be more than 500 bytes long"})
+		return "", false
+	}
+	return reason, true
+}
+
+// reasonSuffix renders a reason for an audit summary ("" when there is none).
+func reasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
 }
 
 // revokeFirmSessions destroys every session signed in as the manager or as

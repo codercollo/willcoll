@@ -45,10 +45,12 @@ var auditCoverage = map[string]string{
 
 	"POST /v1/admin/unclaimed-receipts/:id/resolve": "audited",
 
-	"POST /v1/admin/plans":             "exempt: global plan catalog, no manager tenant to scope an audit row to",
-	"PATCH /v1/admin/plans/:id":        "exempt: global plan catalog, no manager tenant to scope an audit row to",
-	"POST /v1/admin/plans/:id/archive": "exempt: global plan catalog, no manager tenant to scope an audit row to",
-	"POST /v1/admin/plans/:id/restore": "exempt: global plan catalog, no manager tenant to scope an audit row to",
+	// The global plan catalog has no firm to scope audit_log to, so these write to
+	// the Super Admin's own trail (admin_audit_log, auditAdminAction).
+	"POST /v1/admin/plans":             "audited",
+	"PATCH /v1/admin/plans/:id":        "audited",
+	"POST /v1/admin/plans/:id/archive": "audited",
+	"POST /v1/admin/plans/:id/restore": "audited",
 }
 
 func isWriteMethod(m string) bool {
@@ -94,7 +96,7 @@ func handlerCallsAudit(t *testing.T, handler gin.HandlerFunc) bool {
 			if strings.HasPrefix(trimmed, "//") {
 				continue
 			}
-			if strings.Contains(line, "app.audit(") || strings.Contains(line, "app.auditAdmin(") {
+			if strings.Contains(line, "app.audit(") || strings.Contains(line, "app.auditAdmin(") || strings.Contains(line, "app.auditAdminAction(") {
 				return true
 			}
 		}

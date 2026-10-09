@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
@@ -93,6 +94,7 @@ func (app *application) adminCreatePlanHandler(c *gin.Context) {
 		app.serverErrorResponse(c, err)
 		return
 	}
+	app.auditAdminAction(c, nil, "plan.created", "plan", &plan.ID, "created plan "+plan.Name+" ("+plan.Product+")")
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"plan": plan}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
@@ -189,6 +191,7 @@ func (app *application) adminUpdatePlanHandler(c *gin.Context) {
 		}
 		return
 	}
+	app.auditAdminAction(c, nil, "plan.updated", "plan", &updated.ID, "updated plan "+updated.Name+" ("+updated.Product+"): "+planChangeSummary(plan, updated))
 	if err := app.writeJSON(c, http.StatusOK, envelope{"plan": updated}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
@@ -212,9 +215,42 @@ func (app *application) adminArchivePlanHandler(c *gin.Context) {
 		app.serverErrorResponse(c, err)
 		return
 	}
+	app.auditAdminAction(c, nil, "plan.archived", "plan", &plan.ID, "archived plan "+plan.Name+" ("+plan.Product+")")
 	if err := app.writeJSON(c, http.StatusOK, envelope{"plan": plan}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}
+}
+
+// planChangeSummary names which fields a PATCH changed, never their values for
+// anything but the price: the audit line says what moved, not the whole plan.
+func planChangeSummary(before, after *data.Plan) string {
+	var changed []string
+	if before.Name != after.Name {
+		changed = append(changed, "name")
+	}
+	if before.Price != after.Price {
+		changed = append(changed, "price "+before.Price.Display()+" to "+after.Price.Display())
+	}
+	if before.BillingInterval != after.BillingInterval {
+		changed = append(changed, "billing_interval")
+	}
+	if before.PricingType != after.PricingType || !sameMoneyPtr(before.PerUnitPrice, after.PerUnitPrice) || !sameMoneyPtr(before.MinPrice, after.MinPrice) {
+		changed = append(changed, "pricing")
+	}
+	if before.IsTest != after.IsTest {
+		changed = append(changed, "is_test")
+	}
+	if len(changed) == 0 {
+		return "no field changed"
+	}
+	return strings.Join(changed, ", ")
+}
+
+func sameMoneyPtr(a, b *moneyfmt.Money) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // adminRestorePlanHandler handles POST /v1/admin/plans/:id/restore.
@@ -233,6 +269,7 @@ func (app *application) adminRestorePlanHandler(c *gin.Context) {
 		app.serverErrorResponse(c, err)
 		return
 	}
+	app.auditAdminAction(c, nil, "plan.restored", "plan", &plan.ID, "restored plan "+plan.Name+" ("+plan.Product+")")
 	if err := app.writeJSON(c, http.StatusOK, envelope{"plan": plan}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}

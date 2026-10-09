@@ -17,27 +17,32 @@ import (
 const createPayment = `-- name: CreatePayment :one
 INSERT INTO payments (
     tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn,
-    payer_name, account_reference, status, raw_payload, received_at, matched_unit_id
+    payer_name, account_reference, status, raw_payload, received_at, matched_unit_id,
+    pending_ledger_type, recorded_by, recorded_by_role
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    $13, $14, $15
 )
 ON CONFLICT (mpesa_receipt) DO NOTHING
-RETURNING id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note
+RETURNING id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note, pending_ledger_type, recorded_by, recorded_by_role, confirmed_by, confirmed_at, rejected_by, rejected_at, reject_reason
 `
 
 type CreatePaymentParams struct {
-	TenantID         uuid.UUID
-	Source           string
-	MpesaReceipt     string
-	PayheroReference *string
-	Amount           moneyfmt.Money
-	Msisdn           string
-	PayerName        *string
-	AccountReference *string
-	Status           string
-	RawPayload       json.RawMessage
-	ReceivedAt       time.Time
-	MatchedUnitID    *uuid.UUID
+	TenantID          uuid.UUID
+	Source            string
+	MpesaReceipt      string
+	PayheroReference  *string
+	Amount            moneyfmt.Money
+	Msisdn            string
+	PayerName         *string
+	AccountReference  *string
+	Status            string
+	RawPayload        json.RawMessage
+	ReceivedAt        time.Time
+	MatchedUnitID     *uuid.UUID
+	PendingLedgerType *string
+	RecordedBy        *uuid.UUID
+	RecordedByRole    *string
 }
 
 // CreatePayment is idempotent on mpesa_receipt: a PayHero retry of the
@@ -46,6 +51,9 @@ type CreatePaymentParams struct {
 // payment a staff member records against a unit): a property-scoped caller can
 // only see, and so only insert, a payment that already names an in-scope unit
 // (migration 000047). The webhook paths leave it NULL and match afterwards.
+// A payment a caretaker records waits as 'pending' (migration 000051): the
+// ledger it will be credited to, and who and in what role recorded it, are
+// stored with it and stay NULL on every webhook-delivered payment.
 func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error) {
 	row := q.db.QueryRowContext(ctx, createPayment,
 		arg.TenantID,
@@ -60,6 +68,9 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		arg.RawPayload,
 		arg.ReceivedAt,
 		arg.MatchedUnitID,
+		arg.PendingLedgerType,
+		arg.RecordedBy,
+		arg.RecordedByRole,
 	)
 	var i Payment
 	err := row.Scan(
@@ -80,6 +91,14 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		&i.CreatedAt,
 		&i.AutoAppliedUnconfirmed,
 		&i.ReviewNote,
+		&i.PendingLedgerType,
+		&i.RecordedBy,
+		&i.RecordedByRole,
+		&i.ConfirmedBy,
+		&i.ConfirmedAt,
+		&i.RejectedBy,
+		&i.RejectedAt,
+		&i.RejectReason,
 	)
 	return i, err
 }
@@ -131,7 +150,7 @@ func (q *Queries) CreatePaymentIntent(ctx context.Context, arg CreatePaymentInte
 }
 
 const getPaymentByMpesaReceipt = `-- name: GetPaymentByMpesaReceipt :one
-SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note FROM payments
+SELECT id, tenant_id, source, mpesa_receipt, payhero_reference, amount, msisdn, payer_name, account_reference, matched_unit_id, matched_intent_id, status, raw_payload, received_at, created_at, auto_applied_unconfirmed, review_note, pending_ledger_type, recorded_by, recorded_by_role, confirmed_by, confirmed_at, rejected_by, rejected_at, reject_reason FROM payments
 WHERE tenant_id = $1 AND mpesa_receipt = $2
 `
 
@@ -161,6 +180,14 @@ func (q *Queries) GetPaymentByMpesaReceipt(ctx context.Context, arg GetPaymentBy
 		&i.CreatedAt,
 		&i.AutoAppliedUnconfirmed,
 		&i.ReviewNote,
+		&i.PendingLedgerType,
+		&i.RecordedBy,
+		&i.RecordedByRole,
+		&i.ConfirmedBy,
+		&i.ConfirmedAt,
+		&i.RejectedBy,
+		&i.RejectedAt,
+		&i.RejectReason,
 	)
 	return i, err
 }

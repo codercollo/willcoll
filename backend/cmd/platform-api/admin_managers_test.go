@@ -66,9 +66,10 @@ type fakePlatform struct {
 	firmName      string   // the manager's firm name, changed by UpdateManager
 	managerVer    int32
 	audit         []sqlc.CreateAuditLogParams
-	mail          *captureMailer    // every email the app sent
-	outbox        *fakeOutbox       // the email_outbox table
-	modules       map[string]string // manager_modules: product -> status (rentals trialing unless a test sets it)
+	adminAudit    []sqlc.CreateAdminAuditLogParams // the Super Admin's trail
+	mail          *captureMailer                   // every email the app sent
+	outbox        *fakeOutbox                      // the email_outbox table
+	modules       map[string]string                // manager_modules: product -> status (rentals trialing unless a test sets it)
 }
 
 // firmActiveModules makes the firm hold exactly these products, all active.
@@ -176,7 +177,14 @@ func newFakePlatform(t *testing.T) *fakePlatform {
 		return f.staffVersion, nil
 	}).AnyTimes()
 	store.EXPECT().ListActiveStaffByEmail(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	store.EXPECT().GetAdmin(gomock.Any(), fakeAdminID).Return(sqlc.Admin{ID: fakeAdminID, Name: "Root"}, nil).AnyTimes()
+	store.EXPECT().GetAdmin(gomock.Any(), fakeAdminID).Return(sqlc.Admin{ID: fakeAdminID, Name: "Root", PasswordHash: hash}, nil).AnyTimes()
+	// The Super Admin's own trail (migration 000026).
+	store.EXPECT().CreateAdminAuditLog(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a sqlc.CreateAdminAuditLogParams) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.adminAudit = append(f.adminAudit, a)
+		return nil
+	}).AnyTimes()
 
 	// The oversight reads and the status move.
 	overview := func(context.Context, uuid.UUID) (sqlc.OversightGetManagerRow, error) {
@@ -300,6 +308,15 @@ func (f *fakePlatform) login(t *testing.T, email string) (*http.Cookie, int) {
 		}
 	}
 	return nil, w.Code
+}
+
+// adminAuditRows waits for the background writes and returns the Super Admin's
+// trail so far.
+func (f *fakePlatform) adminAuditRows() []sqlc.CreateAdminAuditLogParams {
+	f.app.wg.Wait()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sqlc.CreateAdminAuditLogParams(nil), f.adminAudit...)
 }
 
 func (f *fakePlatform) auditActions() []string {
@@ -446,6 +463,7 @@ func TestAdminListSubscriptionsFilters(t *testing.T) {
 func TestSuspendAndReinstate(t *testing.T) {
 	f := newFakePlatform(t)
 	admin := f.session(t, principalAdmin, fakeAdminID)
+	f.stepUp(t, admin) // suspending and reinstating a firm need the admin's password (item 6)
 	suspend := "/v1/admin/managers/" + fakeManagerID.String() + "/suspend"
 	reinstate := "/v1/admin/managers/" + fakeManagerID.String() + "/reinstate"
 
@@ -569,6 +587,7 @@ func TestReinstateNeverActivatedFirmGoesToPending(t *testing.T) {
 	f := newFakePlatform(t)
 	f.managerStatus, f.activated = data.ManagerStatusPending, false
 	admin := f.session(t, principalAdmin, fakeAdminID)
+	f.stepUp(t, admin)
 
 	suspend := "/v1/admin/managers/" + fakeManagerID.String() + "/suspend"
 	if w := f.do(http.MethodPost, suspend, "", admin); w.Code != http.StatusOK {

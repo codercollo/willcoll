@@ -75,6 +75,8 @@ func (app *application) billingErrorResponse(c *gin.Context, err error) {
 		errors.Is(err, data.ErrNotReversible),
 		errors.Is(err, data.ErrDuplicatePayment):
 		app.errorResponse(c, http.StatusConflict, err.Error())
+	case errors.Is(err, data.ErrSelfConfirm):
+		app.errorResponse(c, http.StatusForbidden, err.Error())
 	case errors.Is(err, data.ErrPaymentParticularsMissing):
 		app.codedErrorResponse(c, http.StatusUnprocessableEntity, err.Error(), "payment_particulars_missing", nil)
 	case errors.Is(err, data.ErrNoUnitsBilledForGarbage):

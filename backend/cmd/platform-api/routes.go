@@ -19,10 +19,10 @@ func (app *application) routes() (*gin.Engine, error) {
 	// other way fails TestEveryRouteIsGuardedOrPublic.
 	app.routeGuards = auth.NewRouteTable()
 	guard := func(rg *gin.RouterGroup, method, path, perm string, handlers ...gin.HandlerFunc) {
-		auth.Guard(app.routeGuards, rg, method, path, perm, app.requirePermission, handlers...)
+		auth.Guard(app.routeGuards, rg, method, path, perm, app.requirePermission, auth.MarkReached(app.markHandlers, handlers)...)
 	}
 	public := func(rg *gin.RouterGroup, method, path string, handlers ...gin.HandlerFunc) {
-		auth.Public(app.routeGuards, rg, publicRoutes, method, path, handlers...)
+		auth.Public(app.routeGuards, rg, publicRoutes, method, path, auth.MarkReached(app.markHandlers, handlers)...)
 	}
 
 	// Only X-Forwarded-For from these proxies (Caddy) is believed by
@@ -91,9 +91,10 @@ func (app *application) routes() (*gin.Engine, error) {
 			// (system-design.txt A.1, build-phases.txt 3f-1). The manager's
 			// own login is always the implicit owner. --
 			{
-				// Inviting grants a role, so it needs step-up (D5); PATCH checks
-				// it in the handler, only when authority actually changes.
-				guard(manager, "POST", "/staff", auth.StaffManage, app.requireStepUp(), app.inviteStaffHandler)
+				// Inviting grants a role, so it needs step-up (D5); both routes
+				// check it in the handler, after the owner-role rule (D3): invite
+				// always, PATCH only when authority actually changes.
+				guard(manager, "POST", "/staff", auth.StaffManage, app.inviteStaffHandler)
 				guard(manager, "GET", "/staff", auth.StaffRead, app.listStaffHandler)
 				guard(manager, "POST", "/modules/:product/trial", auth.ModulesManage, app.startModuleTrialHandler)
 				guard(manager, "PATCH", "/staff/:id", auth.StaffManage, app.updateStaffHandler)
@@ -120,17 +121,20 @@ func (app *application) routes() (*gin.Engine, error) {
 		{
 			guard(admin, "GET", "/managers", auth.AdminManagersRead, app.adminListManagersHandler)
 			guard(admin, "GET", "/managers/:id", auth.AdminManagersRead, app.adminShowManagerHandler)
-			guard(admin, "POST", "/managers/:id/suspend", auth.AdminManagersSuspend, app.adminSuspendManagerHandler)
-			guard(admin, "POST", "/managers/:id/reinstate", auth.AdminManagersSuspend, app.adminReinstateManagerHandler)
+			// The Super Admin's consequential actions need a recent re-entry of
+			// the ADMIN password (D5, c4-matrix-fixes.md item 6), after the
+			// permission guard.
+			guard(admin, "POST", "/managers/:id/suspend", auth.AdminManagersSuspend, app.requireStepUp(), app.adminSuspendManagerHandler)
+			guard(admin, "POST", "/managers/:id/reinstate", auth.AdminManagersSuspend, app.requireStepUp(), app.adminReinstateManagerHandler)
 			guard(admin, "GET", "/subscriptions", auth.AdminSubscriptionsRead, app.adminListSubscriptionsHandler)
 			guard(admin, "GET", "/system/health", auth.AdminSystemRead, app.adminSystemHealthHandler)
 			guard(admin, "GET", "/unclaimed-receipts", auth.AdminSystemRead, app.adminListUnclaimedReceiptsHandler)
-			guard(admin, "POST", "/unclaimed-receipts/:id/resolve", auth.AdminReceiptsResolve, app.adminResolveUnclaimedReceiptHandler)
+			guard(admin, "POST", "/unclaimed-receipts/:id/resolve", auth.AdminReceiptsResolve, app.requireStepUp(), app.adminResolveUnclaimedReceiptHandler)
 			guard(admin, "GET", "/plans", auth.AdminPlansRead, app.adminListPlansHandler)
-			guard(admin, "POST", "/plans", auth.AdminPlansManage, app.adminCreatePlanHandler)
-			guard(admin, "PATCH", "/plans/:id", auth.AdminPlansManage, app.adminUpdatePlanHandler)
-			guard(admin, "POST", "/plans/:id/archive", auth.AdminPlansManage, app.adminArchivePlanHandler)
-			guard(admin, "POST", "/plans/:id/restore", auth.AdminPlansManage, app.adminRestorePlanHandler)
+			guard(admin, "POST", "/plans", auth.AdminPlansManage, app.requireStepUp(), app.adminCreatePlanHandler)
+			guard(admin, "PATCH", "/plans/:id", auth.AdminPlansManage, app.requireStepUp(), app.adminUpdatePlanHandler)
+			guard(admin, "POST", "/plans/:id/archive", auth.AdminPlansManage, app.requireStepUp(), app.adminArchivePlanHandler)
+			guard(admin, "POST", "/plans/:id/restore", auth.AdminPlansManage, app.requireStepUp(), app.adminRestorePlanHandler)
 		}
 	}
 

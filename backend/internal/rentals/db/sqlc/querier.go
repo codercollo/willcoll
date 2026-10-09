@@ -30,7 +30,8 @@ type Querier interface {
 	// AdvanceReceiptCounter hands out the locked next_no and increments it.
 	// Call after LockReceiptCounter, in the same transaction.
 	AdvanceReceiptCounter(ctx context.Context, arg AdvanceReceiptCounterParams) error
-	// AlertOutboxStats backs the System page: how many are waiting, and for how long.
+	// AlertOutboxStats backs the System page: how many are waiting, for how long,
+	// and how many ran out of attempts.
 	AlertOutboxStats(ctx context.Context) (AlertOutboxStatsRow, error)
 	// ArchiveProperty is the soft delete behind DELETE /v1/properties/:id. The
 	// API role has no DELETE on properties (000019); zero rows affected means
@@ -55,12 +56,17 @@ type Querier interface {
 	// CountPayOTPsSince is every code the firm has had texted since a moment: the
 	// input to the per-firm daily SMS ceiling.
 	CountPayOTPsSince(ctx context.Context, arg CountPayOTPsSinceParams) (int32, error)
+	// CountPendingPayments is every pending hand-entered payment awaiting a decision.
+	CountPendingPayments(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// CountPendingPaymentsForPeriod is the sanity check's "no unallocated or
 	// review-queue payments left for the period": payments matched to one of
 	// the property's units, received within the period, that are not a
 	// confirmed allocation.
 	CountPendingPaymentsForPeriod(ctx context.Context, arg CountPendingPaymentsForPeriodParams) (int64, error)
 	CountRecentPayOTPs(ctx context.Context, arg CountRecentPayOTPsParams) (int32, error)
+	// CountStalePendingPayments is the dashboard's "waiting too long" count: pending
+	// hand-entered payments recorded before the cutoff.
+	CountStalePendingPayments(ctx context.Context, arg CountStalePendingPaymentsParams) (int64, error)
 	CreateArrearsCommitment(ctx context.Context, arg CreateArrearsCommitmentParams) (CreateArrearsCommitmentRow, error)
 	// Charges: WHAT IS OWED (system-design.txt 3.3). Append-only: INSERT and
 	// SELECT only. A wrong charge is corrected by a negative-amount 'manual'
@@ -90,6 +96,9 @@ type Querier interface {
 	// payment a staff member records against a unit): a property-scoped caller can
 	// only see, and so only insert, a payment that already names an in-scope unit
 	// (migration 000047). The webhook paths leave it NULL and match afterwards.
+	// A payment a caretaker records waits as 'pending' (migration 000051): the
+	// ledger it will be credited to, and who and in what role recorded it, are
+	// stored with it and stay NULL on every webhook-delivered payment.
 	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
 	// CreatePaymentAllocation links a payment to the ledger entry that credited
 	// it. The caller picks the id up front because the credit entry reference_id
@@ -146,7 +155,9 @@ type Querier interface {
 	// and whether it has already been reversed.
 	GetLedgerEntryForReversal(ctx context.Context, arg GetLedgerEntryForReversalParams) (GetLedgerEntryForReversalRow, error)
 	// GetManualPaymentByReference finds an earlier hand-entered payment with the
-	// same reference, so a double submit is refused instead of credited twice.
+	// same reference, so a double submit is refused instead of credited twice. A
+	// pending entry counts (it will post); a rejected one does not, so the clerk can
+	// enter the payment again once it has been put right.
 	GetManualPaymentByReference(ctx context.Context, arg GetManualPaymentByReferenceParams) (uuid.UUID, error)
 	// The append-only ledger core (system-design.txt 3.3/3.4, ADR 0002).
 	// transaction_headers and ledger_entries are INSERT and SELECT only: there
@@ -391,10 +402,14 @@ type Querier interface {
 	// LockWaterReading locks a draft as part of a run. Zero rows affected means
 	// it was already locked.
 	LockWaterReading(ctx context.Context, arg LockWaterReadingParams) (int64, error)
-	// MarkAlertRelayFailed leaves the row pending (it is retried on the next tick)
-	// and records why.
+	// MarkAlertRelayFailed records a failed attempt and why. With attempts left the
+	// row stays pending and is retried after retry_seconds; once max_attempts have
+	// failed it becomes 'dead' and is never retried.
 	MarkAlertRelayFailed(ctx context.Context, arg MarkAlertRelayFailedParams) error
 	MarkAlertRelayed(ctx context.Context, id uuid.UUID) error
+	// MarkPaymentConfirmed records who confirmed a pending hand-entered payment
+	// and when, once it has been posted (same transaction).
+	MarkPaymentConfirmed(ctx context.Context, arg MarkPaymentConfirmedParams) error
 	// OnboardingCounts feeds the setup checklist in one round trip.
 	OnboardingCounts(ctx context.Context, tenantID uuid.UUID) (OnboardingCountsRow, error)
 	// PropertyHasActiveLeases blocks archiving a property people still live in.
@@ -404,6 +419,10 @@ type Querier interface {
 	// check ignores RLS, and archived properties (000019) take no new units.
 	PropertyIsActive(ctx context.Context, arg PropertyIsActiveParams) (bool, error)
 	PurgePayOTPs(ctx context.Context, arg PurgePayOTPsParams) error
+	// RejectPendingPayment refuses a pending hand-entered payment: it never posts.
+	// Zero rows means it was not pending (already confirmed, already rejected, or
+	// not a hand-entered payment).
+	RejectPendingPayment(ctx context.Context, arg RejectPendingPaymentParams) (int64, error)
 	// ResolveChannelProperties names the propert(ies) using a collections
 	// channel, for the unclaimed-channel alarm's log and health entry only (never
 	// used to route a payment).

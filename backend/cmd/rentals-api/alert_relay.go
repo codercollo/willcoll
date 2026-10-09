@@ -25,7 +25,7 @@ const (
 type alertSource interface {
 	ListPending(ctx context.Context, batch int) ([]data.PendingAlert, error)
 	MarkRelayed(ctx context.Context, id uuid.UUID) error
-	MarkFailed(ctx context.Context, id uuid.UUID, relayErr error) error
+	MarkFailed(ctx context.Context, id uuid.UUID, retryAfter time.Duration, relayErr error) error
 }
 
 // alertSink is the platform side (platformdata.OutboxModel).
@@ -35,12 +35,20 @@ type alertSink interface {
 
 // relayAlerts moves one batch of pending alerts. It returns how many were
 // settled as relayed. An alert the platform will not take stays pending, with
-// the reason recorded, and is retried on the next tick; one failure does not
-// stop the others.
-func relayAlerts(ctx context.Context, src alertSource, sink alertSink, batch int) (relayed int, failed int, err error) {
+// the reason recorded, and is retried with backoff (platformdata.OutboxRetryDelay);
+// its data.AlertMaxAttempts-th failure makes it dead (counted in dead, and also
+// in failed): never retried again. One failure does not stop the others.
+func relayAlerts(ctx context.Context, src alertSource, sink alertSink, batch int) (relayed, failed, dead int, err error) {
 	pending, err := src.ListPending(ctx, batch)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
+	}
+	fail := func(a data.PendingAlert, cause error) {
+		failed++
+		if a.Attempts+1 >= data.AlertMaxAttempts {
+			dead++
+		}
+		_ = src.MarkFailed(ctx, a.ID, platformdata.OutboxRetryDelay(a.Attempts+1), cause)
 	}
 	for _, a := range pending {
 		_, enqErr := sink.EnqueueRelayed(ctx, a.TenantID, platformdata.RelayedAlert{
@@ -48,8 +56,7 @@ func relayAlerts(ctx context.Context, src alertSource, sink alertSink, batch int
 			IP: a.Payload.IP, Headline: a.Payload.Headline, Target: a.Payload.Target, Link: a.Payload.Link, At: a.Payload.At,
 		})
 		if enqErr != nil {
-			failed++
-			_ = src.MarkFailed(ctx, a.ID, enqErr)
+			fail(a, enqErr)
 			continue
 		}
 		// queued=false means the platform already holds it (an earlier relay
@@ -57,13 +64,12 @@ func relayAlerts(ctx context.Context, src alertSource, sink alertSink, batch int
 		if err := src.MarkRelayed(ctx, a.ID); err != nil {
 			// Still pending, so the next tick enqueues again (a no-op) and
 			// retries the mark; record why for the System page.
-			failed++
-			_ = src.MarkFailed(ctx, a.ID, err)
+			fail(a, err)
 			continue
 		}
 		relayed++
 	}
-	return relayed, failed, nil
+	return relayed, failed, dead, nil
 }
 
 // startAlertRelayJob runs the relay every alertRelayInterval until ctx ends.
@@ -91,7 +97,10 @@ func (app *application) startAlertRelayJob(ctx context.Context) {
 func (app *application) runAlertRelay(ctx context.Context) {
 	passCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	relayed, failed, err := relayAlerts(passCtx, app.models.Alerts, app.platform.Outbox, alertRelayBatch)
+	relayed, failed, dead, err := relayAlerts(passCtx, app.models.Alerts, app.platform.Outbox, alertRelayBatch)
+	if dead > 0 {
+		app.logger.Error("alert relay: owner alerts are dead, out of attempts and will not be retried", "dead", dead)
+	}
 	switch {
 	case err != nil:
 		app.logger.Error("alert relay: listing pending alerts", "error", err)

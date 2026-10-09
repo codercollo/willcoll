@@ -141,6 +141,7 @@ STAGING_DIR = ../deploy/local
 STAGING_UNSET = $(addprefix -u ,$(sort $(shell sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env $(STAGING_DIR)/.env.example $(STAGING_DIR)/.env 2>/dev/null)))
 STAGING_COMPOSE = env $(STAGING_UNSET) MSYS_NO_PATHCONV=1 docker compose -f $(STAGING_DIR)/docker-compose.yml --env-file $(STAGING_DIR)/.env
 
+# Always --build: staging must never run stale code (docs/dev-setup.md).
 staging/up:
 	@test -f $(STAGING_DIR)/.env || { cp $(STAGING_DIR)/.env.example $(STAGING_DIR)/.env && echo "created $(STAGING_DIR)/.env from .env.example"; }
 	$(STAGING_COMPOSE) up -d --build --wait

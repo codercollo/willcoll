@@ -1,8 +1,13 @@
 package auth
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestRolesAreCumulative(t *testing.T) {
@@ -35,7 +40,10 @@ func TestMatrixDenials(t *testing.T) {
 		role  string
 		perms []string
 	}{
-		{RoleViewer, []string{ExportsCreate, SMSSend, QRRead, PaymentsRead, ChargesPreview, DepositsRead, PaymentsRecord, WaterWrite, ChargesReverse}},
+		// D6: the viewer reads the report on screen, but cannot generate, confirm or
+		// download anything (reports.confirm, receipts.read, invoices.read, exports.create).
+		{RoleViewer, []string{ExportsCreate, SMSSend, QRRead, PaymentsRead, ChargesPreview, DepositsRead, PaymentsRecord, WaterWrite, ChargesReverse,
+			ReportsConfirm, ReceiptsRead, InvoicesRead}},
 		{RoleOfficer, []string{ChargesReverse, PaymentChannelsManage, StaffRead, StaffManage, BillingRead, BillingManage, LeasesWrite, ExportsCreate}},
 		{RoleAccountant, []string{PaymentChannelsManage, StaffManage, StaffRead, BillingManage, BillingRead, AccountManage, ModulesManage, PropertiesDelete, AuditRead, AccountPassword}},
 		{RoleOwner, []string{AccountPassword, AdminManagersRead, AdminPlansManage}}, // staff owner is not the firm login
@@ -51,7 +59,8 @@ func TestMatrixDenials(t *testing.T) {
 		{RoleOfficer, PaymentsRecord}, {RoleOfficer, WaterWrite}, {RoleOfficer, TenantsWrite},
 		{RoleAccountant, ChargesReverse}, {RoleAccountant, PaymentsRecord}, {RoleAccountant, ExportsCreate},
 		{RoleOwner, PaymentChannelsManage}, {RoleOwner, StaffManage}, {RoleOwner, BillingManage},
-		{RoleViewer, PropertiesRead}, {RoleViewer, StaffSelfPassword},
+		{RoleViewer, PropertiesRead}, {RoleViewer, StaffSelfPassword}, {RoleViewer, ReportsRead}, {RoleOfficer, ReportsRead},
+		{RoleAccountant, ReportsConfirm},
 	}
 	for _, a := range allow {
 		if !StaffPermits(a.role, a.perm) {
@@ -83,6 +92,44 @@ func TestFirmLoginAndAdmin(t *testing.T) {
 		if isAdmin && (FirmLoginPermits(p) || StaffPermits(RoleOwner, p)) {
 			t.Errorf("firm principals must not hold %s", p)
 		}
+	}
+}
+
+// The handler-reached marker is off unless a test turns it on: off, it returns the
+// very same handlers (no wrapper) and no response ever carries the header.
+func TestMarkReachedIsOffByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ran := 0
+	handlers := []gin.HandlerFunc{func(c *gin.Context) { c.Next() }, func(c *gin.Context) { ran++; c.Status(http.StatusNotFound) }}
+
+	serve := func(hs []gin.HandlerFunc) *httptest.ResponseRecorder {
+		r := gin.New()
+		r.GET("/x", hs...)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+		return w
+	}
+
+	off := MarkReached(false, handlers)
+	if len(off) != len(handlers) || reflect.ValueOf(off[1]).Pointer() != reflect.ValueOf(handlers[1]).Pointer() {
+		t.Fatal("MarkReached(false) wrapped a handler")
+	}
+	if w := serve(off); w.Header().Get(ReachedHeader) != "" || ran != 1 {
+		t.Errorf("marker off: header %q after %d runs, want none after 1", w.Header().Get(ReachedHeader), ran)
+	}
+
+	on := MarkReached(true, handlers)
+	if w := serve(on); w.Header().Get(ReachedHeader) != "1" || w.Code != http.StatusNotFound || ran != 2 {
+		t.Errorf("marker on: header %q code %d runs %d, want 1, 404, 2", w.Header().Get(ReachedHeader), w.Code, ran)
+	}
+
+	// A request stopped before the handler (a guard aborts) never carries it.
+	guarded := []gin.HandlerFunc{func(c *gin.Context) { c.AbortWithStatus(http.StatusForbidden) }, handlers[1]}
+	if w := serve(MarkReached(true, guarded)); w.Header().Get(ReachedHeader) != "" || w.Code != http.StatusForbidden {
+		t.Errorf("a refused request carried the marker: %q %d", w.Header().Get(ReachedHeader), w.Code)
+	}
+	if got := MarkReached(true, nil); got != nil {
+		t.Error("MarkReached on no handlers returned handlers")
 	}
 }
 

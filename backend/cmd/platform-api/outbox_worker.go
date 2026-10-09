@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"time"
+
+	"github.com/codercollo/willcoll/backend/internal/platform/data"
 )
 
 // Outbox worker (docs/security/c3-spec.md C3.7). Owner alerts are queued in
 // email_outbox by whichever API raised them (platform-api or a product API)
 // and delivered here, the one binary with the mailer. A failed send is
 // retried with backoff (data.OutboxRetryDelay) up to data.OutboxMaxAttempts,
-// then left 'failed' on the System page. A crash between sending and settling
+// then marked 'dead' (never retried, logged, counted on the System page). A crash between sending and settling
 // re-sends once the claim's lease lapses: delivery is at least once, enqueue is
 // idempotent per event.
 
@@ -67,6 +69,9 @@ func (app *application) deliverOutbox(ctx context.Context) int {
 				"template", e.Template, "attempt", e.Attempts, "error", sendErr)
 			if err := app.models.Outbox.MarkFailed(settleCtx, e.ID, e.Attempts, sendErr); err != nil {
 				app.logger.Error("email outbox: recording a failed delivery", "outbox_id", e.ID, "error", err)
+			} else if e.Attempts >= data.OutboxMaxAttempts {
+				app.logger.Error("email outbox: alert is dead, out of attempts and will not be retried",
+					"outbox_id", e.ID, "manager_id", e.ManagerID, "template", e.Template, "attempts", e.Attempts)
 			}
 		}
 		settleCancel()

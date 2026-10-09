@@ -41,7 +41,7 @@ type LandlordModel struct {
 }
 
 // Insert creates landlord for tenantID, filling in ID, CreatedAt and Version.
-func (m LandlordModel) Insert(ctx context.Context, tenantID uuid.UUID, landlord *Landlord) error {
+func (m LandlordModel) Insert(ctx context.Context, tenantID uuid.UUID, landlord *Landlord, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -60,7 +60,7 @@ func (m LandlordModel) Insert(ctx context.Context, tenantID uuid.UUID, landlord 
 		}
 
 		*landlord = landlordFromRow(row)
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 
@@ -128,7 +128,7 @@ func (m LandlordModel) GetAll(ctx context.Context, tenantID uuid.UUID, filters F
 
 // Update saves landlord if its Version still matches the stored row, and
 // bumps Version on success. Returns ErrEditConflict otherwise.
-func (m LandlordModel) Update(ctx context.Context, landlord *Landlord) error {
+func (m LandlordModel) Update(ctx context.Context, landlord *Landlord, hooks ...TxHook) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -149,7 +149,7 @@ func (m LandlordModel) Update(ctx context.Context, landlord *Landlord) error {
 		}
 
 		landlord.Version = version
-		return nil
+		return runTxHooks(ctx, q, hooks)
 	})
 }
 

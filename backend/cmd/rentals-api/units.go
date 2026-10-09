@@ -6,6 +6,7 @@ import (
 
 	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
+	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,6 +21,13 @@ func (app *application) createUnitHandler(c *gin.Context) {
 	propertyID, err := app.readIDParam(c)
 	if err != nil {
 		app.notFoundResponse(c)
+		return
+	}
+
+	// A unit is created with no money on it: an officer may add one, but a rent or
+	// a deposit in the request is a change they may not make (403); a nonzero one
+	// from an accountant is told where it belongs (422). A zero is an echo.
+	if !app.guardUnitMoneyFields(c, nil) {
 		return
 	}
 
@@ -172,6 +180,14 @@ func (app *application) updateUnitHandler(c *gin.Context) {
 		default:
 			app.serverErrorResponse(c, err)
 		}
+		return
+	}
+
+	// Money fields in the request run the shared guard against the unit's active
+	// lease (where its rent and deposits live) before anything is read or written.
+	if !app.guardUnitMoneyFields(c, func() (map[string]moneyfmt.Money, error) {
+		return app.activeLeaseMoney(c.Request.Context(), tenantID, id)
+	}) {
 		return
 	}
 

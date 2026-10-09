@@ -310,7 +310,9 @@ func (f *fakeAlertSource) MarkRelayed(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeAlertSource) MarkFailed(context.Context, uuid.UUID, error) error { return nil }
+func (f *fakeAlertSource) MarkFailed(context.Context, uuid.UUID, time.Duration, error) error {
+	return nil
+}
 
 func TestReversalAlertsTheOwner(t *testing.T) {
 	m := newMiddlewareTestApp(t)
@@ -362,7 +364,7 @@ func TestReversalAlertsTheOwner(t *testing.T) {
 	// the enqueue, a second instance) must not queue a second email.
 	src := &fakeAlertSource{pending: rentalsAlerts.pending()}
 	for range 2 {
-		if _, failed, err := relayAlerts(context.Background(), src, m.app.platform.Outbox, 10); err != nil || failed != 0 {
+		if _, failed, _, err := relayAlerts(context.Background(), src, m.app.platform.Outbox, 10); err != nil || failed != 0 {
 			t.Fatalf("relay: failed=%d err=%v", failed, err)
 		}
 		src.pending = rentalsAlerts.pending() // the second pass sees it pending again, as after a crash before the mark
@@ -449,6 +451,15 @@ func TestChannelChangeTarget(t *testing.T) {
 	}
 }
 
+// stepUpGatedRoutes are the Rentals routes that demand a recent password
+// re-entry on top of their permission. The test below and the golden route
+// matrix (route_matrix_integration_test.go) both hold the code to this list.
+var stepUpGatedRoutes = map[string]bool{
+	"POST /v1/ledger-entries/:id/reverse":          true,
+	"POST /v1/properties/:id/payment-channel":      true,
+	"POST /v1/properties/:id/payment-channel/test": true,
+}
+
 // Every rentals route guarded by a step-up permission must be one of the
 // routes TestMoneyActionsNeedStepUp proves are gated. A new route under
 // payment_channels.manage or charges.reverse (a future payments.reverse
@@ -456,11 +467,7 @@ func TestChannelChangeTarget(t *testing.T) {
 // added to that table.
 func TestEveryStepUpPermissionRouteIsInTheGatedTable(t *testing.T) {
 	m := newMiddlewareTestApp(t)
-	gated := map[string]bool{
-		"POST /v1/ledger-entries/:id/reverse":          true,
-		"POST /v1/properties/:id/payment-channel":      true,
-		"POST /v1/properties/:id/payment-channel/test": true,
-	}
+	gated := stepUpGatedRoutes
 	for key, g := range m.app.routeGuards.Entries() {
 		if slices.Contains(auth.StepUpPermissions, g.Permission) && !gated[key] {
 			t.Errorf("%s is guarded by %s (step-up) but is not in the gated-routes table", key, g.Permission)

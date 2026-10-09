@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	platformdata "github.com/codercollo/willcoll/backend/internal/platform/data"
 	platformmock "github.com/codercollo/willcoll/backend/internal/platform/db/mock"
 	platformsqlc "github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"
 )
@@ -34,6 +36,8 @@ type platformStub struct {
 	mu    sync.Mutex
 	firms map[uuid.UUID]*stubFirm
 	staff map[uuid.UUID]platformsqlc.Staff
+	// admins are the Super Admin ids a login was issued for.
+	admins map[uuid.UUID]bool
 }
 
 // stubFirm is one manager's willcoll_platform state.
@@ -54,10 +58,14 @@ func newPlatformStub(t *testing.T) *platformStub {
 		DoAndReturn(func(_ context.Context, _ uuid.UUID, fn func(platformsqlc.Querier) error) error { return fn(pq) }).
 		AnyTimes()
 	pq.EXPECT().CreateAuditLog(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	// A channel typed onto a property is claimed in platform first (3i-d); the
+	// route matrix repeats such a request after step-up.
+	pq.EXPECT().RegisterPaymentChannel(gomock.Any(), gomock.Any()).Return(platformsqlc.PaymentChannel{}, nil).AnyTimes()
+	pq.EXPECT().ReleasePaymentChannel(gomock.Any(), gomock.Any()).Return(int64(1), nil).AnyTimes()
 	// The usage reporter (usage.go) fires after unit changes; accept it.
 	pq.EXPECT().UpsertModuleUsage(gomock.Any(), gomock.Any()).Return(platformsqlc.ModuleUsage{}, nil).AnyTimes()
 
-	s := &platformStub{firms: map[uuid.UUID]*stubFirm{}, staff: map[uuid.UUID]platformsqlc.Staff{}}
+	s := &platformStub{firms: map[uuid.UUID]*stubFirm{}, staff: map[uuid.UUID]platformsqlc.Staff{}, admins: map[uuid.UUID]bool{}}
 
 	pStore.EXPECT().GetStaff(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id uuid.UUID) (platformsqlc.Staff, error) {
 		s.mu.Lock()
@@ -67,6 +75,16 @@ func newPlatformStub(t *testing.T) *platformStub {
 			return platformsqlc.Staff{}, sql.ErrNoRows
 		}
 		return st, nil
+	}).AnyTimes()
+
+	// The Super Admin: any id the stub issued a login for.
+	pStore.EXPECT().GetAdmin(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id uuid.UUID) (platformsqlc.Admin, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.admins[id] {
+			return platformsqlc.Admin{}, sql.ErrNoRows
+		}
+		return platformsqlc.Admin{ID: id, Name: "Root", Email: "root@stub.example.com"}, nil
 	}).AnyTimes()
 
 	pStore.EXPECT().GetManager(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id uuid.UUID) (platformsqlc.Manager, error) {
@@ -150,9 +168,38 @@ func (s *platformStub) login(t *testing.T, principalType string, principalID uui
 	return (&http.Cookie{Name: platformSessionCookieName, Value: token}).String()
 }
 
+// openStepUp opens a step-up window on the session behind cookieHeader, the state
+// a successful POST /v1/sessions/step-up leaves in the shared platform session.
+func (s *platformStub) openStepUp(t *testing.T, cookieHeader string) {
+	t.Helper()
+	token := strings.TrimPrefix(cookieHeader, platformSessionCookieName+"=")
+	if cookieHeader == "" || token == cookieHeader {
+		return
+	}
+	ctx, err := s.session.Load(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.session.Put(ctx, auth.SessionKeyStepUpUntil, auth.StepUpUntil(time.Now()))
+	if _, _, err := s.session.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // loginManager is login for a manager principal.
 func (s *platformStub) loginManager(t *testing.T, id uuid.UUID) string {
 	return s.login(t, principalManager, id)
+}
+
+// loginAdmin returns the Cookie header of a Super Admin signed in through
+// platform-api.
+func (s *platformStub) loginAdmin(t *testing.T) string {
+	t.Helper()
+	id := uuid.New()
+	s.mu.Lock()
+	s.admins[id] = true
+	s.mu.Unlock()
+	return s.login(t, principalAdmin, id)
 }
 
 // newStaff registers an active staff member of firm with role, module access

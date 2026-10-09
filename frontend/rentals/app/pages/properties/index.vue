@@ -2,6 +2,7 @@
 definePageMeta({ title: 'Properties' })
 
 const store = useProperties()
+const payments = usePayments()
 const auth = useAuthStore()
 const toast = useToast()
 const loading = ref(true)
@@ -13,6 +14,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try { await store.fetchList(period) } catch (e) { error.value = e instanceof Error ? e.message : 'Could not load properties.' } finally { loading.value = false }
+  // Cash payments waiting too long for a decision show as a notice below. A viewer may not read the queue; that is fine.
+  payments.refreshCount().catch(() => {})
   // A firm with no properties starts in the setup guide, once per sign-in.
   if (!error.value && shouldSendToSetup(store.list.length, auth.manager?.id, readSetupRedirected())) {
     markSetupRedirected(auth.manager!.id)
@@ -46,6 +49,11 @@ async function created(p: { id: string }) {
     </div>
 
     <UiFormAlert v-if="error">{{ error }} <button type="button" class="font-semibold text-accent-text" @click="load">Retry</button></UiFormAlert>
+
+    <UiFormAlert v-if="payments.pendingOver48h" data-testid="stale-pending-notice">
+      {{ payments.pendingOver48h }} cash {{ payments.pendingOver48h === 1 ? 'payment has' : 'payments have' }} waited more than 48 hours for a decision.
+      <NuxtLink to="/payments" class="font-semibold text-accent-text">Review them</NuxtLink>
+    </UiFormAlert>
 
     <div v-if="loading" class="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3"><UiSkeleton v-for="i in 3" :key="i" block /></div>
 

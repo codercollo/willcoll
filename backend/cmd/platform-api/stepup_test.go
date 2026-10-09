@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
+	"github.com/codercollo/willcoll/backend/internal/platform/db/sqlc"
 	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/mailer"
+	"github.com/google/uuid"
 )
 
 // Step-up (authorization.md D5): password re-entry opens a 5-minute window
@@ -245,13 +247,92 @@ func TestStepUpRefusals(t *testing.T) {
 	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{"password":"x"}`, nil); w.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous = %d, want 401", w.Code)
 	}
-	admin := f.session(t, principalAdmin, fakeAdminID)
-	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{"password":"x"}`, admin); w.Code != http.StatusForbidden {
-		t.Errorf("Super Admin = %d, want 403", w.Code)
-	}
 	owner := f.session(t, principalManager, fakeManagerID)
 	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{}`, owner); w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("empty password = %d, want 422", w.Code)
+	}
+}
+
+// The Super Admin's consequential actions (c4-matrix-fixes.md item 6) need a
+// re-entry of the ADMIN password, and each one lands in the admin trail with
+// the actor, the target and the reason.
+func TestSuperAdminActionsNeedStepUp(t *testing.T) {
+	f := newFakePlatform(t)
+	admin := f.session(t, principalAdmin, fakeAdminID)
+	suspend := "/v1/admin/managers/" + fakeManagerID.String() + "/suspend"
+	reinstate := "/v1/admin/managers/" + fakeManagerID.String() + "/reinstate"
+	plan := "/v1/admin/plans/" + uuid.NewString()
+	resolve := "/v1/admin/unclaimed-receipts/" + uuid.NewString() + "/resolve"
+
+	gated := []struct{ method, path string }{
+		{http.MethodPost, suspend}, {http.MethodPost, reinstate}, {http.MethodPost, resolve},
+		{http.MethodPost, "/v1/admin/plans"}, {http.MethodPatch, plan},
+		{http.MethodPost, plan + "/archive"}, {http.MethodPost, plan + "/restore"},
+	}
+	for _, g := range gated {
+		w := f.do(g.method, g.path, `{}`, admin)
+		if w.Code != http.StatusForbidden || errorCode(t, w.Body.String()) != auth.StepUpCode {
+			t.Errorf("%s %s without step-up = %d %s, want 403 %s", g.method, g.path, w.Code, w.Body.String(), auth.StepUpCode)
+		}
+	}
+	if f.managerStatus != data.ManagerStatusActive {
+		t.Fatalf("a refused suspend changed the firm to %q", f.managerStatus)
+	}
+
+	// A wrong password opens nothing, and it is the ADMIN's password that counts.
+	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{"password":"not-it"}`, admin); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("admin wrong password = %d, want 422: %s", w.Code, w.Body.String())
+	}
+	if w := f.do(http.MethodPost, suspend, `{}`, admin); w.Code != http.StatusForbidden {
+		t.Fatalf("suspend after a wrong password = %d, want 403", w.Code)
+	}
+
+	f.stepUp(t, admin)
+	if w := f.do(http.MethodPost, suspend, `{"reason":"chargeback dispute"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("suspend after step-up = %d %s", w.Code, w.Body.String())
+	}
+	if f.managerStatus != data.ManagerStatusSuspended {
+		t.Errorf("status = %q, want suspended", f.managerStatus)
+	}
+	if w := f.do(http.MethodPost, reinstate, ``, admin); w.Code != http.StatusOK {
+		t.Fatalf("reinstate (no body) after step-up = %d %s", w.Code, w.Body.String())
+	}
+
+	rows := f.adminAuditRows()
+	byAction := map[string]sqlc.CreateAdminAuditLogParams{}
+	for _, r := range rows {
+		byAction[r.Action] = r
+	}
+	for _, want := range []string{"session.step_up_failed", "session.step_up", "manager.suspended", "manager.reinstated"} {
+		r, ok := byAction[want]
+		if !ok {
+			t.Errorf("admin trail has no %q row: %+v", want, rows)
+			continue
+		}
+		if r.AdminID == nil || *r.AdminID != fakeAdminID {
+			t.Errorf("%s: actor = %v, want the Super Admin", want, r.AdminID)
+		}
+		if r.Ip == nil || *r.Ip == "" {
+			t.Errorf("%s: no client IP recorded", want)
+		}
+	}
+	if r := byAction["manager.suspended"]; r.ManagerID == nil || *r.ManagerID != fakeManagerID || !strings.Contains(r.Summary, "chargeback dispute") {
+		t.Errorf("manager.suspended = %+v, want the target firm and the reason", r)
+	}
+}
+
+// A firm's own step-up window is not the Super Admin's, and a staff or firm
+// session cannot reach an admin route to use one.
+func TestSuperAdminStepUpUsesTheAdminPasswordOnly(t *testing.T) {
+	f := newFakePlatform(t)
+	admin := f.session(t, principalAdmin, fakeAdminID)
+	// fakePassword is every fake principal's password; the point is that the check
+	// runs against the admin row (GetAdmin) and a signed-out caller gets 401.
+	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{"password":"`+fakePassword+`"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("Super Admin step-up = %d %s, want 200", w.Code, w.Body.String())
+	}
+	if w := f.do(http.MethodPost, "/v1/sessions/step-up", `{"password":"`+fakePassword+`"}`, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous step-up = %d, want 401", w.Code)
 	}
 }
 
@@ -419,7 +500,8 @@ func TestAlertSurvivesAMailOutageAndIsSentOnce(t *testing.T) {
 	}
 }
 
-// After the retries run out the row is left 'failed' and the System page says so.
+// After the retries run out the row is 'dead' (never retried again) and the
+// System page counts it.
 func TestAlertThatNeverDeliversShowsOnTheSystemPage(t *testing.T) {
 	f := newFakePlatform(t)
 	f.mail.err = errors.New("smtp: 550 mailbox unavailable")
@@ -432,16 +514,19 @@ func TestAlertThatNeverDeliversShowsOnTheSystemPage(t *testing.T) {
 		f.outbox.advance(5 * time.Hour)
 	}
 	rows := f.outbox.snapshot()
-	if len(rows) != 1 || rows[0].Status != "failed" || rows[0].Attempts != data.OutboxMaxAttempts {
-		t.Fatalf("outbox = %+v, want one failed row after %d attempts", rows, data.OutboxMaxAttempts)
+	if len(rows) != 1 || rows[0].Status != "dead" || rows[0].Attempts != data.OutboxMaxAttempts {
+		t.Fatalf("outbox = %+v, want one dead row after %d attempts", rows, data.OutboxMaxAttempts)
 	}
+	// Even with the mailer healthy again, a dead row is never picked up.
+	f.mail.err = nil
+	f.outbox.advance(24 * time.Hour)
 	if sent := f.deliver(); sent != 0 || f.outbox.snapshot()[0].Attempts != data.OutboxMaxAttempts {
-		t.Errorf("a failed row is still being retried")
+		t.Errorf("a dead row is still being retried")
 	}
 
 	status := f.app.emailOutboxStatus(context.Background())
-	if status["failed"] != 1 || status["pending"] != 0 {
-		t.Errorf("System page outbox = %v, want 1 failed and 0 pending", status)
+	if status["dead"] != 1 || status["pending"] != 0 {
+		t.Errorf("System page outbox = %v, want 1 dead and 0 pending", status)
 	}
 	if msg, _ := status["last_error"].(*string); msg == nil || !strings.Contains(*msg, "550") {
 		t.Errorf("System page does not show the delivery error: %v", status["last_error"])

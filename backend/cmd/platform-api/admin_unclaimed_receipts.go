@@ -9,6 +9,7 @@ import (
 	"github.com/codercollo/willcoll/backend/internal/platform/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // maxUnclaimedList bounds the System page's list; the stats carry the true
@@ -84,6 +85,14 @@ func (app *application) adminResolveUnclaimedReceiptHandler(c *gin.Context) {
 
 	app.logger.Info("unclaimed receipt resolved", "receipt_id", receipt.ID, "mpesa_receipt", receipt.MpesaReceipt,
 		"channel_id", receipt.ChannelID, "admin_id", admin.ID)
+	// The Super Admin's own trail always gets the entry; the firm's log only when
+	// a firm now claims the channel.
+	var claimant *uuid.UUID
+	if firm, claimed, err := app.models.Unclaimed.ClaimantFirm(ctx, receipt.ChannelID); err == nil && claimed {
+		claimant = &firm
+	}
+	app.auditAdminAction(c, claimant, "unclaimed_receipt.resolved", "unclaimed_receipt", &receipt.ID,
+		"resolved receipt "+receipt.MpesaReceipt+" on channel "+receipt.ChannelID+": "+note)
 	if firm, claimed, err := app.models.Unclaimed.ClaimantFirm(ctx, receipt.ChannelID); err != nil {
 		app.logger.Error("unclaimed receipt: looking up the channel's firm for the audit entry", "receipt_id", receipt.ID, "error", err)
 	} else if claimed {

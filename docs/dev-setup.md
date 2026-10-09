@@ -234,6 +234,10 @@ service and Mailpit. It is separate from the plain-Go dev stack above and runs b
 | Stop (keeps data) | `make staging/down` |
 | Wipe databases **and** Caddy's CA | `make staging/reset CONFIRM=yes` |
 
+`staging/up` always rebuilds the images (`docker compose up --build`, Docker's layer cache keeps an
+unchanged tree fast), so staging never runs stale code; `staging/seed` rebuilds its tool image the
+same way. There is no "up without build" target on purpose.
+
 The first `staging/up` copies `deploy/local/.env.example` to `deploy/local/.env` (git-ignored;
 throwaway local passwords). That is the only env file the stack reads: `backend/.env` is never
 passed to a container, and nothing is bind-mounted (init scripts, the Caddyfile and migrations are

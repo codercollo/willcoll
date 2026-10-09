@@ -46,7 +46,11 @@ func buildVersion() string { return vcs.Combine(releaseVersion, vcs.Version()) }
 type application struct {
 	// routeGuards records every route's permission or public reason, filled
 	// by routes() (internal/shared/auth); the deny-by-default test reads it.
-	routeGuards    *auth.RouteTable
+	routeGuards *auth.RouteTable
+	// markHandlers makes every response say whether the route's own handler ran
+	// (auth.MarkReached). Only the route-matrix tests set it; it is false in every
+	// running binary, and a test pins both facts.
+	markHandlers   bool
 	config         config
 	logger         *slog.Logger
 	db             *sql.DB

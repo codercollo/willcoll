@@ -22,6 +22,7 @@
 //	make dev/reset-trial  EMAIL=demo@willcoll.test
 //	make dev/set-plan     EMAIL=demo@willcoll.test PLAN="TEST - KES 10"
 //	make db/backfill-platform
+//	go run ./cmd/devtools authz-backfill --dry-run | --apply   (C4.1, any ENV)
 //
 // claim-channels (run by make dev/setup) claims and verifies every
 // property's payment channel in platform; see claim_channels.go.
@@ -51,7 +52,7 @@ const TestPlanName = "TEST - KES 10"
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: devtools <test-plan|expire-trial|reset-trial|set-plan|claim-channels|backfill-platform> [flags]")
+		log.Fatal("usage: devtools <test-plan|expire-trial|reset-trial|set-plan|claim-channels|backfill-platform|authz-backfill> [flags]")
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 
@@ -62,6 +63,13 @@ func main() {
 	// the usual DB_DSN/DB_ADMIN_DSN pair.
 	if cmd == "backfill-platform" {
 		runBackfillPlatform(args)
+		return
+	}
+	// authz-backfill (C4.1) also runs in any ENV, for the same reason: it is
+	// for real data. It is dry-run-first and only ever narrows access; see
+	// authz_backfill.go.
+	if cmd == "authz-backfill" {
+		runAuthzBackfill(args)
 		return
 	}
 

@@ -114,6 +114,9 @@ var viewerPermissions = []string{
 	LandlordsRead, PropertiesRead, OnboardingRead, PaymentChannelsRead,
 	UnitsRead, TenantsRead, RentRead, LedgerRead, WaterRead, PlotMeterRead,
 	AccountRead, ModulesRead, StaffSelfPassword,
+	// D6: a landlord or auditor with a viewer account reads the monthly report on
+	// screen. Generating, confirming and every download/export stay accountant+.
+	ReportsRead,
 }
 
 var officerPermissions = []string{
@@ -124,7 +127,7 @@ var officerPermissions = []string{
 var accountantPermissions = []string{
 	LandlordsWrite, PropertiesWrite, OnboardingImport, UnitsImport, LeasesWrite,
 	QRManage, RentScheduleWrite, ChargesGenerate, ChargesWrite, ChargesReverse,
-	ArrearsWrite, PaymentsAllocate, InvoicesRead, ReportsRead, ReportsConfirm,
+	ArrearsWrite, PaymentsAllocate, InvoicesRead, ReportsConfirm,
 	ReceiptsRead, ExportsCreate, SMSSend,
 }
 

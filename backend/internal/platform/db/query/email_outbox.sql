@@ -29,11 +29,12 @@ RETURNING *;
 UPDATE email_outbox SET status = 'sent', sent_at = now(), last_error = NULL WHERE id = $1;
 
 -- MarkEmailFailed records a failed attempt. With attempts left the row stays
--- pending and is retried after $3 seconds; with none left it becomes 'failed'.
+-- pending and is retried after $3 seconds; with none left it becomes 'dead'
+-- and is never retried.
 -- name: MarkEmailFailed :exec
 UPDATE email_outbox
 SET last_error = $2,
-    status = CASE WHEN attempts >= sqlc.arg(max_attempts)::int THEN 'failed' ELSE 'pending' END,
+    status = CASE WHEN attempts >= sqlc.arg(max_attempts)::int THEN 'dead' ELSE 'pending' END,
     next_attempt_at = now() + make_interval(secs => sqlc.arg(retry_seconds)::int)
 WHERE id = $1;
 
@@ -41,7 +42,7 @@ WHERE id = $1;
 -- name: OutboxStats :one
 SELECT
     count(*) FILTER (WHERE status = 'pending')::int AS pending,
-    count(*) FILTER (WHERE status = 'failed')::int AS failed,
+    count(*) FILTER (WHERE status = 'dead')::int AS dead,
     count(*) FILTER (WHERE status = 'sent' AND sent_at > now() - interval '24 hours')::int AS sent_24h,
     COALESCE(EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status = 'pending')), 0)::float8 AS oldest_pending_age_seconds,
     (SELECT o2.last_error FROM email_outbox o2 WHERE o2.last_error IS NOT NULL

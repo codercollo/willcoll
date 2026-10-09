@@ -16,10 +16,10 @@ func (app *application) routes() (*gin.Engine, error) {
 	// other way fails TestEveryRouteIsGuardedOrPublic.
 	app.routeGuards = auth.NewRouteTable()
 	guard := func(rg *gin.RouterGroup, method, path, perm string, handlers ...gin.HandlerFunc) {
-		auth.Guard(app.routeGuards, rg, method, path, perm, app.requirePermission, handlers...)
+		auth.Guard(app.routeGuards, rg, method, path, perm, app.requirePermission, auth.MarkReached(app.markHandlers, handlers)...)
 	}
 	public := func(rg *gin.RouterGroup, method, path string, handlers ...gin.HandlerFunc) {
-		auth.Public(app.routeGuards, rg, publicRoutes, method, path, handlers...)
+		auth.Public(app.routeGuards, rg, publicRoutes, method, path, auth.MarkReached(app.markHandlers, handlers)...)
 	}
 
 	// Only X-Forwarded-For from these proxies (Caddy) is believed by
@@ -129,6 +129,7 @@ func (app *application) routes() (*gin.Engine, error) {
 			guard(manager, "GET", "/payments/review", auth.PaymentsRead, app.listPaymentsForReviewHandler)
 			guard(manager, "POST", "/payments/:id/allocate", auth.PaymentsAllocate, app.allocatePaymentHandler)
 			guard(manager, "POST", "/payments/:id/confirm", auth.PaymentsAllocate, app.confirmPaymentHandler)
+			guard(manager, "POST", "/payments/:id/reject", auth.PaymentsAllocate, app.rejectPaymentHandler)
 
 			guard(manager, "GET", "/properties/:id/water", auth.WaterRead, app.showWaterReadingsHandler)
 			guard(manager, "PUT", "/properties/:id/water", auth.WaterWrite, app.updateWaterReadingsHandler)

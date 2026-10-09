@@ -47,6 +47,9 @@ type Querier interface {
 	// never claims twice — the caller re-reads the existing row instead
 	// (GetPaymentInboxByReceipt) to decide what already happened.
 	ClaimPaymentInbox(ctx context.Context, arg ClaimPaymentInboxParams) (PaymentInbox, error)
+	// The Super Admin's append-only trail (migration 000026). No RLS: the table is
+	// not tenant data. manager_id is the firm an action concerned, when it did.
+	CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) error
 	// Append-only audit trail (system-design.txt A.1, A.8). Tenant-scoped
 	// (RLS by manager_id, migration 000012). actor_type/actor_id (migration
 	// 000018) identify who did it; staff_id is kept alongside for joins when
@@ -145,6 +148,7 @@ type Querier interface {
 	// The caller treats anything but exactly one match as "not found," never
 	// guessing which account.
 	ListActiveStaffByEmail(ctx context.Context, email string) ([]Staff, error)
+	ListAdminAuditLog(ctx context.Context, limit int32) ([]AdminAuditLog, error)
 	// ListOpenUnclaimedReceipts is the System page's list, oldest first.
 	ListOpenUnclaimedReceipts(ctx context.Context, maxRows int32) ([]UnclaimedReceipt, error)
 	ListStaffForManager(ctx context.Context, managerID uuid.UUID) ([]Staff, error)
@@ -166,7 +170,8 @@ type Querier interface {
 	// when include_test is set (the API sets it only in development).
 	ListSubscriptionPlansForProduct(ctx context.Context, arg ListSubscriptionPlansForProductParams) ([]SubscriptionPlan, error)
 	// MarkEmailFailed records a failed attempt. With attempts left the row stays
-	// pending and is retried after $3 seconds; with none left it becomes 'failed'.
+	// pending and is retried after $3 seconds; with none left it becomes 'dead'
+	// and is never retried.
 	MarkEmailFailed(ctx context.Context, arg MarkEmailFailedParams) error
 	MarkEmailSent(ctx context.Context, id uuid.UUID) error
 	// MarkPaymentInboxPosted is the "mark posted" step, after the claiming

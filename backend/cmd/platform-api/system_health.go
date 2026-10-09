@@ -184,7 +184,7 @@ func checkError(err error) string {
 // emailOutboxStatus is the owner-alert queue as the System page shows it
 // (C3.7): what is waiting, what ran out of retries, how long the oldest has
 // waited and why the latest failure failed, plus alerts that could not even be
-// queued. A failed delivery is never silent.
+// queued. A dead alert is never silent.
 func (app *application) emailOutboxStatus(ctx context.Context) envelope {
 	status := envelope{"alert_enqueue_failures_24h": app.alertFailures.count24h(time.Now())}
 	stats, err := app.models.Outbox.Stats(ctx)
@@ -195,7 +195,7 @@ func (app *application) emailOutboxStatus(ctx context.Context) envelope {
 	}
 	status["status"] = "ok"
 	status["pending"] = stats.Pending
-	status["failed"] = stats.Failed
+	status["dead"] = stats.Dead
 	status["sent_24h"] = stats.Sent24h
 	status["oldest_pending_age_seconds"] = stats.OldestPendingAgeSeconds
 	status["last_error"] = stats.LastError

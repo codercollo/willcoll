@@ -16,20 +16,23 @@ import (
 const alertOutboxStats = `-- name: AlertOutboxStats :one
 SELECT
     count(*) FILTER (WHERE status = 'pending')::int AS pending,
+    count(*) FILTER (WHERE status = 'dead')::int AS dead,
     coalesce(extract(epoch FROM now() - min(created_at) FILTER (WHERE status = 'pending')), 0)::int AS oldest_pending_age_seconds
 FROM alert_outbox
 `
 
 type AlertOutboxStatsRow struct {
 	Pending                 int32
+	Dead                    int32
 	OldestPendingAgeSeconds int32
 }
 
-// AlertOutboxStats backs the System page: how many are waiting, and for how long.
+// AlertOutboxStats backs the System page: how many are waiting, for how long,
+// and how many ran out of attempts.
 func (q *Queries) AlertOutboxStats(ctx context.Context) (AlertOutboxStatsRow, error) {
 	row := q.db.QueryRowContext(ctx, alertOutboxStats)
 	var i AlertOutboxStatsRow
-	err := row.Scan(&i.Pending, &i.OldestPendingAgeSeconds)
+	err := row.Scan(&i.Pending, &i.Dead, &i.OldestPendingAgeSeconds)
 	return i, err
 }
 
@@ -62,7 +65,7 @@ func (q *Queries) EnqueueAlert(ctx context.Context, arg EnqueueAlertParams) (int
 const listPendingAlerts = `-- name: ListPendingAlerts :many
 SELECT id, tenant_id, event_key, payload, attempts, created_at
 FROM alert_outbox
-WHERE status = 'pending'
+WHERE status = 'pending' AND next_attempt_at <= now()
 ORDER BY attempts, created_at
 LIMIT $1::int
 `
@@ -111,19 +114,30 @@ func (q *Queries) ListPendingAlerts(ctx context.Context, batch int32) ([]ListPen
 
 const markAlertRelayFailed = `-- name: MarkAlertRelayFailed :exec
 UPDATE alert_outbox
-SET attempts = attempts + 1, last_error = $2
-WHERE id = $1 AND status = 'pending'
+SET attempts = attempts + 1,
+    last_error = $1,
+    status = CASE WHEN attempts + 1 >= $2::int THEN 'dead' ELSE 'pending' END,
+    next_attempt_at = now() + make_interval(secs => $3::int)
+WHERE id = $4 AND status = 'pending'
 `
 
 type MarkAlertRelayFailedParams struct {
-	ID        uuid.UUID
-	LastError *string
+	LastError    *string
+	MaxAttempts  int32
+	RetrySeconds int32
+	ID           uuid.UUID
 }
 
-// MarkAlertRelayFailed leaves the row pending (it is retried on the next tick)
-// and records why.
+// MarkAlertRelayFailed records a failed attempt and why. With attempts left the
+// row stays pending and is retried after retry_seconds; once max_attempts have
+// failed it becomes 'dead' and is never retried.
 func (q *Queries) MarkAlertRelayFailed(ctx context.Context, arg MarkAlertRelayFailedParams) error {
-	_, err := q.db.ExecContext(ctx, markAlertRelayFailed, arg.ID, arg.LastError)
+	_, err := q.db.ExecContext(ctx, markAlertRelayFailed,
+		arg.LastError,
+		arg.MaxAttempts,
+		arg.RetrySeconds,
+		arg.ID,
+	)
 	return err
 }
 

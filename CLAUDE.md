@@ -425,6 +425,19 @@ migration.
   future session in this repo, no exceptions, even if a task's wording
   implies otherwise. If a file needs to go back, ask the user.
 
+## Bash guard hook
+
+`.claude/settings.json` registers a PreToolUse hook on the Bash tool
+(`.claude/hooks/guard-bash.mjs`, needs `node`). It prints why and exits 2 for:
+`sed -i` / `--in-place`; `perl -i` / `-pi`; heredocs in a command that touches
+`backend/` or `frontend/`; `>` / `>>` / `tee` into files under `backend/` or
+`frontend/` (`/dev/null`, `/dev/std*`, `$TMPDIR`-style targets and scratch/tmp
+directories are fine; an unresolvable `$VAR` target is refused); and
+state-changing git: `add commit push checkout restore reset stash merge rebase
+rm mv`, plus `switch pull cherry-pick revert clean apply am`. Read-only git and
+ordinary commands pass. Edit files with the Edit/Write tools. It checks the
+Bash tool only. Tests: `node --test .claude/hooks/guard-bash.test.mjs`.
+
 ## Phase 4b decisions (local staging)
 
 - Local staging serves apps on `*.willcoll.localhost`, with Caddy using

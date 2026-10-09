@@ -66,12 +66,12 @@ const otpCeilingFirms = computed(() => report.value?.otp_ceiling_firms ?? [])
           <UiKpiTile label="Audit write failures (24h)" :value="String(h.services.platform.audit_failures_24h ?? 0)" :tone="h.services.platform.audit_failures_24h ? 'arrears' : 'paid'" />
           <template v-if="h.services.platform.email_outbox">
             <UiKpiTile label="Owner alerts waiting" :value="String(h.services.platform.email_outbox.pending ?? 0)" :tone="h.services.platform.email_outbox.pending ? 'arrears' : 'paid'" :delta="`${h.services.platform.email_outbox.sent_24h ?? 0} sent in 24h`" />
-            <UiKpiTile label="Owner alerts failed" :value="String(h.services.platform.email_outbox.failed ?? 0)" :tone="h.services.platform.email_outbox.failed ? 'arrears' : 'paid'" delta="ran out of retries" />
+            <UiKpiTile label="Owner alerts dead" :value="String(h.services.platform.email_outbox.dead ?? 0)" :tone="h.services.platform.email_outbox.dead ? 'arrears' : 'paid'" delta="ran out of retries, not retried" />
             <UiKpiTile label="Alerts not queued (24h)" :value="String(h.services.platform.email_outbox.alert_enqueue_failures_24h)" :tone="h.services.platform.email_outbox.alert_enqueue_failures_24h ? 'arrears' : 'paid'" />
           </template>
         </div>
         <UiFormAlert v-if="h.services.platform.email_outbox?.status === 'unreachable'">The owner-alert email queue could not be read.</UiFormAlert>
-        <UiFormAlert v-else-if="h.services.platform.email_outbox?.failed || h.services.platform.email_outbox?.pending">
+        <UiFormAlert v-else-if="h.services.platform.email_outbox?.dead || h.services.platform.email_outbox?.pending">
           Owner security alerts are not being delivered
           <template v-if="h.services.platform.email_outbox.last_error">(last error: {{ h.services.platform.email_outbox.last_error }})</template>.
           Check the mail settings; waiting alerts are retried automatically.
@@ -95,6 +95,7 @@ const otpCeilingFirms = computed(() => report.value?.otp_ceiling_firms ?? [])
             <UiKpiTile label="Connections" :value="String(report.database.connections ?? 0)" />
             <UiKpiTile label="WAL failures" :value="String(report.backups.wal_archiving.failed_count)" :tone="report.backups.wal_archiving.failed_count ? 'arrears' : 'paid'" :delta="`${report.backups.wal_archiving.archived_count} archived`" />
             <UiKpiTile label="Audit write failures (24h)" :value="String(report.audit_failures_24h)" :tone="report.audit_failures_24h ? 'arrears' : 'paid'" />
+            <UiKpiTile v-if="report.alert_outbox" label="Rentals alerts dead" :value="String(report.alert_outbox.dead)" :tone="report.alert_outbox.dead ? 'arrears' : 'paid'" :delta="`${report.alert_outbox.pending} waiting to relay`" />
             <UiKpiTile label="Inbox fallbacks (24h)" :value="String(report.inbox_fallbacks_24h)" :tone="report.inbox_fallbacks_24h ? 'arrears' : 'paid'" delta="payments posted without platform's inbox" />
             <UiKpiTile label="Usage reporting" :value="report.usage_reporting.enabled ? 'On' : 'Off'" :tone="report.usage_reporting.enabled ? 'paid' : 'arrears'" :delta="report.usage_reporting.last_report_at ? `last ${formatDateTime(report.usage_reporting.last_report_at)}` : 'no report yet'" />
             <UiKpiTile label="Unclaimed channels" :value="String(unclaimed.count)" :tone="unclaimed.count ? 'arrears' : 'paid'" :delta="unclaimed.text" />

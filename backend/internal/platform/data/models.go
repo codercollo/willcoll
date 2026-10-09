@@ -66,6 +66,9 @@ type Models struct {
 	Staff StaffModel
 	// Audit is the append-only audit trail (build-phases.txt 3f-4).
 	Audit AuditModel
+	// AdminAudit is the Super Admin's own append-only trail (migration 000026):
+	// actions that belong to no firm as well as those that do.
+	AdminAudit AdminAuditModel
 	// Channels is payment_channels: one PayHero channel id belongs to
 	// exactly one product+owner (build-phases.txt 3g-1).
 	Channels ChannelModel
@@ -98,17 +101,18 @@ func NewModelsFromStore(store db.Store, timeout time.Duration) Models {
 func newModels(store, adminStore db.Store, timeout time.Duration) Models {
 	usage := UsageModel{Store: store, Timeout: timeout}
 	return Models{
-		Admins:   AdminModel{Store: store, Timeout: timeout},
-		Managers: ManagerModel{Store: store, Timeout: timeout},
-		Tokens:   TokenModel{Store: store, Timeout: timeout},
-		Plans:    PlanModel{Store: adminStore, Timeout: timeout},
-		Usage:    usage,
-		Modules:  ModuleModel{Store: store, Timeout: timeout},
-		Billing:  BillingModel{Store: store, AdminStore: adminStore, Usage: usage, Timeout: timeout},
-		Staff:    StaffModel{Store: store, AdminStore: adminStore, Timeout: timeout},
-		Audit:    AuditModel{Store: store, Timeout: timeout},
-		Channels: ChannelModel{Store: store, Timeout: timeout},
-		Inbox:    InboxModel{Store: store, AdminStore: adminStore, Timeout: timeout},
+		Admins:     AdminModel{Store: store, Timeout: timeout},
+		Managers:   ManagerModel{Store: store, Timeout: timeout},
+		Tokens:     TokenModel{Store: store, Timeout: timeout},
+		Plans:      PlanModel{Store: adminStore, Timeout: timeout},
+		Usage:      usage,
+		Modules:    ModuleModel{Store: store, Timeout: timeout},
+		Billing:    BillingModel{Store: store, AdminStore: adminStore, Usage: usage, Timeout: timeout},
+		Staff:      StaffModel{Store: store, AdminStore: adminStore, Timeout: timeout},
+		Audit:      AuditModel{Store: store, Timeout: timeout},
+		AdminAudit: AdminAuditModel{Store: store, Timeout: timeout},
+		Channels:   ChannelModel{Store: store, Timeout: timeout},
+		Inbox:      InboxModel{Store: store, AdminStore: adminStore, Timeout: timeout},
 
 		Outbox:    OutboxModel{Store: store, AdminStore: adminStore, Timeout: timeout},
 		Unclaimed: UnclaimedReceiptModel{Store: store, AdminStore: adminStore, Timeout: timeout},

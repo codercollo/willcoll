@@ -22,6 +22,11 @@ const (
 	PaymentStatusUnmatched = "unmatched"
 	PaymentStatusMatched   = "matched"
 	PaymentStatusAllocated = "allocated"
+	// PaymentStatusPending is a hand-entered payment waiting for someone else to
+	// confirm it; it has posted nothing. PaymentStatusRejected is one that was
+	// refused with a reason and never posts (migration 000051).
+	PaymentStatusPending  = "pending"
+	PaymentStatusRejected = "rejected"
 )
 
 // PaymentIntentStatus values (system-design.txt 3.5).

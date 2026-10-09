@@ -45,6 +45,22 @@ THE LOOP (every sub-step)
     Phase 8  Estates P1, handoffs, add-ons ............... [ ]
     Phase 9  Go live (one VPS, first real customer) ...... [ ]
 
+  AUTHORIZATION HARDENING (docs/security/, runs alongside Phases 3-4)
+    C1  Permission catalog + deny-by-default routes ...... [x]
+    C2  Property/product/firm scope via RLS .............. [x]
+    C3  Step-up, pay tokens, service credential, alerts .. [x]
+    C4  Staging isolation, transactional outbox + dead
+        alerts, authz backfill, golden route x role matrix [x] (C4.2 golden:
+        internal/shared/auth/testdata/route_matrix.golden; human copy:
+        docs/security/route-matrix.md)
+    C4.3 Route-matrix review fixes (docs/security/c4-matrix-fixes.md) [x]
+        built, matrix awaiting the user's approval: variant rows for
+        value-dependent rules (routesWithFieldChecks), handler-reached
+        marker (404h/422h/...), pending cash payments + confirm/reject,
+        one shared money-field guard, viewer reads reports on screen (D6),
+        Super Admin step-up + admin_audit_log. Phase 5 and Phase 9 items
+        added below.
+
 
 ================================================================================
 PHASE 0 — HOUSEKEEPING (you, no agent)
@@ -1509,6 +1525,17 @@ PHASE 5 — RENTALS SELLABLE (system-design B.4)
   5k [ ] frontend/platform pages MOVED here from Phase 3 (3l): SMS wallet
          (balance, top-up, ledger; over 5b) and the audit log page
          (owner-only, filterable view of audit_log).
+  5l [ ] Landlord payout details (docs/security/c4-matrix-fixes.md item 7;
+         NOT built, recorded here so 5a does not ship without it): bank
+         account, M-Pesa number, paybill/till used for remittances. Any
+         create or change is owner-only + step-up + owner alert (C3.7
+         outbox), with the old and new values MASKED in the alert. A newly
+         changed payout destination is held for 24 hours before the first
+         remittance uses it (cooling-off period), unless the owner
+         explicitly confirms. Redirecting payouts is the most common fraud
+         in property management. Must land with or before 5a's remittances
+         (and is listed in docs/security/authorization.md section 4 as a
+         planned control).
   BACKLOG (Phase 5, not scheduled to a sub-step): concurrent
          GenerateForPeriod calls for the same property+period should
          serialise on a per-(tenant, property, period) advisory lock and be
@@ -1652,6 +1679,14 @@ PHASE 9 — GO LIVE (one VPS, first real customer)
          every product API -> smoke test (login, a real rent run, the pay
          page, a webhook replay) on the VPS itself, following the same
          steps scripts/rehearse_cutover.sh (3i) already proved locally.
+  9e2 [ ] Super Admin 2FA (TOTP), REQUIRED BEFORE GO-LIVE. The Super Admin
+         account is the most valuable target in the system. C4.3 added
+         step-up (the admin password re-entered, 5-minute window) to
+         suspend/reinstate, unclaimed-receipt resolve and the plan
+         catalog, and an admin_audit_log trail; a password alone is still
+         the only factor at sign-in. Add TOTP enrolment + verification at
+         POST /v1/admin/sessions (and recovery codes) before a real
+         customer's money depends on it.
   9f [ ] Onboard the first real customer: real firm, real units, real
          tenants, a real billing month, real money moving through PayHero
          into a real bank account.

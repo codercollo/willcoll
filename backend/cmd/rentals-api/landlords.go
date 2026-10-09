@@ -3,11 +3,62 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/rentals/data"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/gin-gonic/gin"
 )
+
+// payoutField is one landlord payout-destination field: where the landlord's
+// money is sent. Changing any of them is owner-only, needs step-up, and alerts
+// the owner (docs/security/authorization.md; the 24h cooling-off is a Phase 5
+// remittances item). A payout field added later (M-Pesa number, paybill/till,
+// branch, account reference) is listed here and nowhere else.
+type payoutField struct {
+	name string
+	sent *string // what the request sent; nil when absent
+	now  *string // what the landlord has now
+	// secret fields are shown masked in the alert; the rest are not shown at all.
+	secret bool
+}
+
+func derefOr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// maskPayoutValue shows only the last four characters, "none" for empty.
+func maskPayoutValue(s string) string {
+	switch {
+	case s == "":
+		return "none"
+	case len(s) <= 4:
+		return "****"
+	}
+	return "****" + s[len(s)-4:]
+}
+
+// changedPayoutFields returns the fields the request sends with a value
+// different from the current one (an echo is not a change), and the alert text
+// describing them, e.g. "Acme Ltd: bank account number ****1234 to ****9876".
+func changedPayoutFields(name string, fields []payoutField) (changed bool, target string) {
+	var parts []string
+	for _, f := range fields {
+		if f.sent == nil || *f.sent == derefOr(f.now) {
+			continue
+		}
+		changed = true
+		if f.secret {
+			parts = append(parts, f.name+" "+maskPayoutValue(derefOr(f.now))+" to "+maskPayoutValue(*f.sent))
+		} else {
+			parts = append(parts, f.name+" changed")
+		}
+	}
+	return changed, name + ": " + strings.Join(parts, ", ")
+}
 
 // createLandlordHandler handles POST /v1/landlords.
 func (app *application) createLandlordHandler(c *gin.Context) {
@@ -47,7 +98,22 @@ func (app *application) createLandlordHandler(c *gin.Context) {
 		return
 	}
 
-	if err := app.models.Landlords.Insert(c.Request.Context(), tenantID, landlord); err != nil {
+	// Payout destination set at creation: owner-only, step-up, owner alert.
+	// On a new landlord every non-empty payout field is a change from nothing.
+	payoutChanged, payoutTarget := changedPayoutFields(landlord.Name, []payoutField{
+		{name: "bank name", sent: input.BankName},
+		{name: "bank account name", sent: input.BankAccountName},
+		{name: "bank account number", sent: input.BankAccountNumber, secret: true},
+	})
+	if !app.requireOwnerForPayoutChange(c, payoutChanged) {
+		return
+	}
+	var hooks []data.TxHook
+	if payoutChanged {
+		hooks = append(hooks, app.ownerAlertHook(c, "landlord.payout_created", "new", "A landlord payout destination was changed", payoutTarget, "/landlords"))
+	}
+
+	if err := app.models.Landlords.Insert(c.Request.Context(), tenantID, landlord, hooks...); err != nil {
 		app.serverErrorResponse(c, err)
 		return
 	}
@@ -166,6 +232,17 @@ func (app *application) updateLandlordHandler(c *gin.Context) {
 		return
 	}
 
+	// Payout destination: re-sending the current value is not a change; a
+	// changed one is owner-only with step-up, refused before anything is applied.
+	payoutChanged, payoutTarget := changedPayoutFields(landlord.Name, []payoutField{
+		{name: "bank name", sent: input.BankName, now: landlord.BankName},
+		{name: "bank account name", sent: input.BankAccountName, now: landlord.BankAccountName},
+		{name: "bank account number", sent: input.BankAccountNumber, now: landlord.BankAccountNumber, secret: true},
+	})
+	if !app.requireOwnerForPayoutChange(c, payoutChanged) {
+		return
+	}
+
 	if input.Name != nil {
 		landlord.Name = *input.Name
 	}
@@ -192,7 +269,11 @@ func (app *application) updateLandlordHandler(c *gin.Context) {
 		return
 	}
 
-	if err := app.models.Landlords.Update(c.Request.Context(), landlord); err != nil {
+	var hooks []data.TxHook
+	if payoutChanged {
+		hooks = append(hooks, app.ownerAlertHook(c, "landlord.payout_updated", landlord.ID.String(), "A landlord payout destination was changed", payoutTarget, "/landlords"))
+	}
+	if err := app.models.Landlords.Update(c.Request.Context(), landlord, hooks...); err != nil {
 		switch {
 		case errors.Is(err, data.ErrEditConflict):
 			app.editConflictResponse(c)

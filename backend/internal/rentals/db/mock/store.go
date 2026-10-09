@@ -206,6 +206,21 @@ func (mr *MockStoreMockRecorder) CountPayOTPsSince(ctx, arg any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountPayOTPsSince", reflect.TypeOf((*MockStore)(nil).CountPayOTPsSince), ctx, arg)
 }
 
+// CountPendingPayments mocks base method.
+func (m *MockStore) CountPendingPayments(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountPendingPayments", ctx, tenantID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountPendingPayments indicates an expected call of CountPendingPayments.
+func (mr *MockStoreMockRecorder) CountPendingPayments(ctx, tenantID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountPendingPayments", reflect.TypeOf((*MockStore)(nil).CountPendingPayments), ctx, tenantID)
+}
+
 // CountPendingPaymentsForPeriod mocks base method.
 func (m *MockStore) CountPendingPaymentsForPeriod(ctx context.Context, arg sqlc.CountPendingPaymentsForPeriodParams) (int64, error) {
 	m.ctrl.T.Helper()
@@ -234,6 +249,21 @@ func (m *MockStore) CountRecentPayOTPs(ctx context.Context, arg sqlc.CountRecent
 func (mr *MockStoreMockRecorder) CountRecentPayOTPs(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountRecentPayOTPs", reflect.TypeOf((*MockStore)(nil).CountRecentPayOTPs), ctx, arg)
+}
+
+// CountStalePendingPayments mocks base method.
+func (m *MockStore) CountStalePendingPayments(ctx context.Context, arg sqlc.CountStalePendingPaymentsParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountStalePendingPayments", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountStalePendingPayments indicates an expected call of CountStalePendingPayments.
+func (mr *MockStoreMockRecorder) CountStalePendingPayments(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountStalePendingPayments", reflect.TypeOf((*MockStore)(nil).CountStalePendingPayments), ctx, arg)
 }
 
 // CreateArrearsCommitment mocks base method.
@@ -1564,6 +1594,20 @@ func (mr *MockStoreMockRecorder) MarkAlertRelayed(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertRelayed", reflect.TypeOf((*MockStore)(nil).MarkAlertRelayed), ctx, id)
 }
 
+// MarkPaymentConfirmed mocks base method.
+func (m *MockStore) MarkPaymentConfirmed(ctx context.Context, arg sqlc.MarkPaymentConfirmedParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkPaymentConfirmed", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkPaymentConfirmed indicates an expected call of MarkPaymentConfirmed.
+func (mr *MockStoreMockRecorder) MarkPaymentConfirmed(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkPaymentConfirmed", reflect.TypeOf((*MockStore)(nil).MarkPaymentConfirmed), ctx, arg)
+}
+
 // OnboardingCounts mocks base method.
 func (m *MockStore) OnboardingCounts(ctx context.Context, tenantID uuid.UUID) (sqlc.OnboardingCountsRow, error) {
 	m.ctrl.T.Helper()
@@ -1621,6 +1665,21 @@ func (m *MockStore) PurgePayOTPs(ctx context.Context, arg sqlc.PurgePayOTPsParam
 func (mr *MockStoreMockRecorder) PurgePayOTPs(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PurgePayOTPs", reflect.TypeOf((*MockStore)(nil).PurgePayOTPs), ctx, arg)
+}
+
+// RejectPendingPayment mocks base method.
+func (m *MockStore) RejectPendingPayment(ctx context.Context, arg sqlc.RejectPendingPaymentParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RejectPendingPayment", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RejectPendingPayment indicates an expected call of RejectPendingPayment.
+func (mr *MockStoreMockRecorder) RejectPendingPayment(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RejectPendingPayment", reflect.TypeOf((*MockStore)(nil).RejectPendingPayment), ctx, arg)
 }
 
 // ResolveChannelProperties mocks base method.

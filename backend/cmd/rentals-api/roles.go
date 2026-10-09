@@ -65,6 +65,20 @@ func (app *application) logDenied(c *gin.Context, perm string) {
 // so a caller who may not change the channel never sees it. Reports whether
 // the request may go on.
 func (app *application) requireOwnerForChannelChange(c *gin.Context, changed bool) bool {
+	return app.requireOwnerStepUp(c, changed)
+}
+
+// requireOwnerForPayoutChange is the same rule for a landlord's payout
+// destination (bank details): where the landlord's money is sent is owner-only
+// and needs step-up wherever it can be set (landlords.go).
+func (app *application) requireOwnerForPayoutChange(c *gin.Context, changed bool) bool {
+	return app.requireOwnerStepUp(c, changed)
+}
+
+// requireOwnerStepUp is the shared field guard: when changed, a staff member
+// below owner is refused (403) and the owner or firm login must have an open
+// step-up window. Both payment-channel and payout-destination changes use it.
+func (app *application) requireOwnerStepUp(c *gin.Context, changed bool) bool {
 	if !changed {
 		return true
 	}

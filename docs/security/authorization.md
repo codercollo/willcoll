@@ -1,4 +1,4 @@
-# Authorization model (Phase 4-auth-1 — FINAL, D1-D5 approved; C1 permissions, C2 scopes and C3 step-up/alerts built)
+# Authorization model (Phase 4-auth-1 — FINAL, D1-D6 approved; route matrix APPROVED 2026-10-09; C1 permissions, C2 scopes, C3 step-up/alerts and C4 matrix built)
 
 Status: analysis only; no enforcement code exists for anything marked
 "proposed". Source: `docs/security/_scratch/route-inventory.md` (route sweep)
@@ -66,7 +66,7 @@ today, see section 5).
 | invoices.read | GET .../water/invoices/:period, .../garbage/invoices/:period | accountant |
 | plot_meter.read | GET .../reports/:period/plot-meter | viewer |
 | plot_meter.write | PUT .../reports/:period/plot-meter | officer |
-| reports.read | GET .../reports/:period, .../checks | accountant |
+| reports.read | GET .../reports/:period, .../checks (on-screen only; **viewer**, D6) | viewer |
 | reports.confirm | POST .../reports/:period/confirm, /generate | accountant |
 | receipts.read | GET .../receipts/:period/download | accountant |
 | exports.create | GET .../electricity/deposits.csv, .pdf and every future bulk tenant/ledger export | accountant |
@@ -112,17 +112,19 @@ plus `account.password`. Super Admin has `admin.*` only.
 
 | Permission group | Viewer | Officer | Accountant | Owner | Super Admin |
 |---|---|---|---|---|---|
-| *.read (landlords, properties, onboarding, units, tenants, rent, ledger, water, plot_meter, account, modules, payment_channels) | yes | yes | yes | yes | no |
+| *.read (landlords, properties, onboarding, units, tenants, rent, ledger, water, plot_meter, account, modules, payment_channels), **reports.read (D6)** | yes | yes | yes | yes | no |
 | qr.read, payments.read, charges.preview, deposits.read | no | yes | yes | yes | no |
 | units.write, tenants.write, payments.record, water.write, plot_meter.write | no | yes | yes | yes | no |
-| landlords.write, properties.write, onboarding.import, units.import, leases.write, qr.manage, rent_schedule.write, charges.generate/write, **charges.reverse**, arrears.write, payments.allocate, invoices.read, reports.read/confirm, receipts.read, **exports.create**, sms.send | no | no | yes | yes | no |
+| landlords.write, properties.write, onboarding.import, units.import, leases.write, qr.manage, rent_schedule.write, charges.generate/write, **charges.reverse**, arrears.write, payments.allocate, invoices.read, reports.confirm, receipts.read, **exports.create**, sms.send | no | no | yes | yes | no |
 | properties.delete, **payment_channels.manage**, account.manage, modules.manage, staff.read/manage, billing.read/manage, audit.read | no | no | no | yes | no |
 | account.password | no | no | no | firm login only | no |
 | admin.* | no | no | no | no | yes |
 | session.self, staff.self_password | all roles (staff.self_password: staff only) | | | | session.self |
 
 Viewer explicit denials: exports.create, any bulk tenant phone/ID export,
-sms.send, qr.read, payments.read, charges.preview, deposits.read. Officer explicit denials:
+sms.send, qr.read, payments.read, charges.preview, deposits.read, and every
+report action except reading it on screen (reports.confirm / generate,
+receipts.read, invoices.read, every .csv / .pdf: see D6). Officer explicit denials:
 charges.reverse, payment_channels.manage, staff.*, billing.*, leases.write
 (see D1). Accountant explicit denials: payment_channels.manage,
 staff.manage, billing.manage, account.manage. Super Admin explicitly
@@ -187,14 +189,17 @@ through the DB-backed outbox (see "C3.7 as built").
 | payment_channels.manage (register, test, and the channel field of a property create/update) | Redirects all rent to another till | Permission (owner), then step-up; alert on every change; a channel with receipts is never released | channel *test* is not alerted (no change) |
 | charges.reverse | Erases money evidence | Permission (accountant), then step-up; mandatory reason; alert on every reversal (amount via moneyfmt, entry, reason, link to the unit) | second-person approval, deferred to Phase 8 (opt-in per firm) |
 | staff.manage: invite, role / module_access / property_access change, removal (disable) | Privilege escalation | Permission (owner), then step-up (a rename or phone edit is not gated); sessions of the member ended; alert per kind of change; **owner role granted or revoked by the firm login only (D3)**, a staff owner gets a plain 403 before any prompt; `module_access` can only name products the firm holds (M8, 422); the firm login can never be locked out (it is not a staff row) | |
-| payments.record (cash) | Fake receipts | Officer allowed; audited with actor | daily total summary to the owner |
+| payments.record (cash) | Fake receipts; arrears quietly cleared for a friend | **Pending until confirmed (C4.3):** a payment recorded by anyone who cannot confirm (no `payments.allocate`: the officer) is stored `pending` and posts NOTHING (no ledger entry, balance, arrears, report or receipt, no tenant SMS) until an accountant, the owner or the firm login confirms it; or rejects it with a reason (nothing posts, owner alerted). The recorder never confirms their own entry, whatever role they hold later. Both recorder and confirmer are in the audit trail. See "Payment confirmation as built" | daily total summary to the owner; second-person approval of an accountant's own cash entries (Phase 8) |
+| Money fields on unit / lease / water routes (rent, deposits, service charge, rates, fees) | Quietly lowering what a tenant is charged | Accountant and above for any CHANGED amount (D1), through ONE shared guard; echoing the current value is allowed; a refusal writes nothing. See "Unit money-field guard as built" | |
+| Super Admin: suspend / reinstate a firm, resolve an unclaimed receipt, create / edit / archive / restore a plan | The most valuable account in the system | Permission (admin.*), then **step-up with the ADMIN password** (5-minute window in the admin session); each action writes the Super Admin's own trail (`admin_audit_log`: actor, IP, target, reason or note). See "Super Admin step-up as built" | **Super Admin 2FA (TOTP) before go-live (Phase 9)** |
+| Landlord payout details (bank account, M-Pesa number, paybill / till used for remittances) | Redirecting payouts is the most common fraud in property management | **Planned (Phase 5), not built:** any create or change is owner-only + step-up + owner alert (C3.7 outbox) showing old and new values masked; a newly changed payout destination is held 24 hours before the first remittance uses it (cooling-off) unless the owner explicitly confirms | everything: planned |
 | account.password / PATCH account | Takeover | Current password required; other sessions ended; any step-up window ends with the session | notify email on change |
 | properties.delete | Hides property data | Archive only; owner permission | step-up |
 | billing.manage | Spend | Owner-only | none needed |
 | onboarding.import / units.import | Bulk overwrite | Accountant, audited | row-count confirmation |
 | qr.manage rotate/bulk | Invalidates printed stickers | Accountant | |
 | exports.create / bulk tenant data | PII exfiltration | Accountant; viewer denied | audit reads of exports (M17) |
-| admin.managers.suspend | Outage | Audited as actor_type=admin; all sessions of the firm ended | reason field |
+| admin.managers.suspend | Outage | Audited as actor_type=admin; all sessions of the firm ended; step-up and an optional reason (C4.3) | |
 
 ### Other actors (C3.1-C3.5 as built)
 
@@ -213,6 +218,7 @@ through the DB-backed outbox (see "C3.7 as built").
   claims due rows with `FOR UPDATE SKIP LOCKED` and a 2-minute lease, sends,
   and settles. Failures retry at 30 s, 2 m, 10 m, 30 m, 1 h, 2 h, 4 h, then
   stay `failed`. A restart loses nothing; delivery is at least once.
+  (Superseded by C4.0/C4.1 below: 10 attempts, then `dead`.)
 - Idempotent per event: `UNIQUE (manager_id, event_key)`. A reversal is keyed by
   the entry, everything else by request id + kind + entity.
 - A failed email never fails or rolls back the action (the alert is queued
@@ -223,6 +229,173 @@ through the DB-backed outbox (see "C3.7 as built").
   no phone numbers (`mailer.MaskPhone` exists for any future alert that needs one).
 - Triggers: payment channel change; any reversal; staff role, module_access or
   property_access change; staff removal; staff invite.
+
+### C4.0 as built (transactional outbox, dead alerts)
+
+- **Platform actions** (staff role, module, property, removal; channel changes)
+  enqueue with `EnqueueIn` through a `TxHook` inside the action's own
+  transaction: the alert commits with the action or not at all.
+- **Rentals actions** (charge reversals) cannot share a transaction with the
+  platform database. The alert is written to `willcoll_rentals.alert_outbox`
+  (migration 000049) in the reversal's transaction; a relay job in rentals-api
+  (every 15 s, `alert_relay.go`) hands pending rows to the platform outbox and
+  marks them `relayed`. The platform enqueue is idempotent per (firm, event key),
+  so a crash between the two steps, a second instance or a retry sends one email.
+- **Dead alerts**: after 10 failed attempts a row becomes `dead` (platform
+  `email_outbox`, migration 000024, replaces `failed`; Rentals `alert_outbox`,
+  migration 000050). It is never retried, is logged at error level, and is counted
+  on the System page ("Owner alerts dead", "Rentals alerts dead"). The Rentals
+  relay spaces its attempts with the platform backoff (`next_attempt_at`), so a
+  short platform outage cannot use up the budget.
+- Tests: rollback leaves no alert on either side; crash after commit before the
+  relay still delivers; duplicate relay sends one email; dead after exactly 10
+  attempts and never claimed again (unit and Postgres integration).
+
+### C4.2 golden route x role matrix
+
+`cmd/rentals-api/route_matrix_integration_test.go` and
+`cmd/platform-api/route_matrix_integration_test.go` call EVERY registered route
+as each of ten principals (anonymous, tenant pay token for unit A1, viewer,
+officer, officer scoped to property A, accountant, staff owner, firm login,
+Super Admin, service credential) through the real router and a real database,
+with path parameters from a seeded fixture (property B's resources, except the
+pay routes, which use unit A1). Anything that can change data runs on a
+brand-new fixture, so one principal's call never alters what the next sees. The
+observed status (with `h` when the route's own handler ran, and `step-up` for a
+`step_up_required` refusal; see C4.3 below) is
+compared with `internal/shared/auth/testdata/route_matrix.golden`;
+`docs/security/route-matrix.md` is generated from it. Regenerate only with
+`go test ./cmd/platform-api ./cmd/rentals-api -run RouteMatrix -update`, and read
+the diff: every change in the golden file is a change in who can call what.
+
+Asserted in code (`routematrix.CheckInvariants`), not only in the file:
+anonymous, pay token and service credential never get 2xx on a guarded route;
+viewer never 2xx on a write or on `exports.create`; the Super Admin never 2xx on
+a firm route; the scoped officer always 404 on property B's resources; a pay
+token never 2xx on unit B1's pay routes; the service credential enters
+`/internal/v1/*` and nobody else does; step-up appears on exactly the declared
+routes; and for every guarded route each principal's answer agrees with the
+permission catalog (`StaffPermits`, `FirmLoginPermits`, `AdminPermits`).
+Database-free drift tests also fail a plain `go test` when the golden file and
+the registered routes differ, when a route has neither a permission nor a public
+allowlist entry, when `stepUpGatedRoutes` and `auth.StepUpPermissions`
+disagree, when `route-matrix.md` is stale, or when a catalog permission is
+missing from this document.
+
+The matrix records the access rule, not timing: the Rentals Super Admin health
+and backup pages scan catalog statistics, which on a cold scratch database can
+outlast the per-query timeout and answer 500 / 503, so the Rentals test sets
+`Platform.HealthTimeout` to two minutes. (A first version recorded those cells
+as 500 / 503 and flipped to 200 in a full run; the golden file must not depend
+on what other tests leave in the database.)
+
+### C4.3 as built (matrix review fixes: `docs/security/c4-matrix-fixes.md`)
+
+**An empty body proves nothing about a rule that depends on WHAT is changed**, so
+the matrix also holds *variant rows*, `METHOD /path [variant]`, each the same route
+with a realistic body (`PATCH /v1/staff/:id [role change]`, `PATCH /v1/properties/:id
+[channel change]`, `PATCH /v1/units/:id [rent change]`, ...). Each mutating variant
+runs on a fresh fixture. `routesWithFieldChecks` (one list per API, in
+`route_matrix_integration_test.go`) names every route with a field-level rule and
+the variant row that covers each protected field; drift tests fail when a listed
+row is missing from the golden file, or when a handler's source calls a field-check
+(`requireOwnerForChannelChange`, `staffActorMayNotChangeOwner`, an in-handler
+`stepUpSatisfied`, the money-field guard, the pending-payment rule) but is not listed.
+
+**Cell codes.** `404h`/`422h`/`409h`/`400h`/`503h` = the handler ran (authorization
+let the request through) and returned that code; plain `404` = refused by scope;
+`403` = refused by permission; `401` = not authenticated; `step-up` = refused until
+the password is re-entered; `step-up>200*` (shown `step-up → 2xx*`) = the same request
+repeated with a fresh step-up window then succeeded. The "handler ran" mark is a
+response header (`X-Test-Handler-Reached`) set by `auth.MarkReached` ONLY when an
+API's unexported `markHandlers` field is true; only the matrix tests set it, no
+wrapper is installed otherwise, and tests pin both (off by default; no non-test file
+turns it on).
+
+**Payment confirmation as built (item 3).** `POST /v1/units/:id/rent/payments`
+(cash or bank) stores the payment `pending` when the caller lacks
+`payments.allocate` (the officer): migration `000051_pending_manual_payments`
+(`status` gains `pending`/`rejected`; `pending_ledger_type`, `recorded_by`,
+`recorded_by_role`, `confirmed_by/at`, `rejected_by/at`, `reject_reason`). A pending
+payment names its unit and ledger and posts NOTHING: no transaction header, ledger
+entry, allocation, receipt, balance, arrears figure or report line, and no SMS (hand
+entered payments never send one). It is in `GET /v1/payments/review` (with who
+recorded it and in what role) and counts against "no unallocated payments" in the
+period sanity check. `POST /v1/payments/:id/confirm` (accountant, owner, firm login)
+posts it through the one posting path, exactly once, recording `confirmed_by/at`;
+confirming again is a **409**; the person who recorded it is refused (**403**, "a
+payment cannot be confirmed by the person who recorded it"), a promoted officer
+included. `POST /v1/payments/:id/reject {"reason"}` (same permission) refuses it:
+nothing posts, the row is kept as `rejected` with who, when and why, and an owner
+alert is queued in the same transaction (event key `payment.rejected:<id>`); a
+rejected payment's reference can be entered again. Accountant, owner and firm-login
+payments post at once, as before. The review response carries `summary.pending` and
+`summary.pending_over_48h`, shown on the dashboard. Audit trail: `payment.recorded_pending`
+(actor and role), `payment.confirmed` (confirmer, recorder), `payment.rejected`.
+Still open: second-person approval of an accountant's own cash entries is Phase 8.
+
+**Unit money-field guard as built (item 4).** `PATCH /v1/units/:id` and `POST
+/v1/properties/:id/units` accept only `unit_code` and `meter_number`: a unit has no
+money of its own (rent and deposits live on the lease, rates and fees on the
+property). The one real officer-reachable money field was the per-reading `rate` of
+`PUT /v1/properties/:id/water`, which overrides the water rate for that bill. All of
+these now run ONE guard (`cmd/rentals-api/moneyguard.go`, `refuseMoneyChange`,
+capability `rent_schedule.write` = accountant and above): a request that carries a
+money field (`rent_amount`, `rent_deposit_amount`, `water_deposit_amount`,
+`electricity_deposit_amount`, `service_charge`, `water_rate`, `water_rate_per_unit`,
+`garbage_fee`, or a reading's `rate`) with a CHANGED value gets **403** from anyone below
+accountant and writes nothing (no partial apply); echoing the current value is allowed
+(full-object forms keep working); an accountant sending a changed amount to a unit
+route gets a 422 pointing at the lease. Unit creation by an officer is allowed
+when the money fields are absent or zero and 403 otherwise (the workflow, adding units
+during setup, is unchanged). Every other route that writes unit, lease or property
+money (leases, rent schedule, garbage, electricity, imports) is already accountant
+and above.
+
+**Super Admin step-up as built (item 6).** `POST /v1/sessions/step-up` now works for a
+Super Admin session: the ADMIN password is checked (never a firm's), the window lives
+in the admin session and dies with it, five wrong entries end the session.
+`admin.managers.suspend` (suspend, reinstate), `admin.receipts.resolve` and
+`admin.plans.manage` (create, edit, archive, restore) are in `auth.StepUpPermissions`
+and gated; the drift tests tie routes to that list. Each such action, and each admin
+step-up, appends a row to `admin_audit_log` (migration `000026`): admin id, client IP,
+target firm (when there is one), action, entity and the reason or note; suspend and
+reinstate take an optional `{"reason"}`. The firm's own `audit_log` still gets the
+firm-targeted ones. TOTP 2FA for the Super Admin is a Phase 9 item.
+
+### C4.1 authorization backfill (`devtools authz-backfill`)
+
+`go run ./cmd/devtools authz-backfill --dry-run | --apply` (any ENV; needs
+`PLATFORM_DSN` and `RENTALS_ADMIN_DSN`). Always run the dry run first and read
+the counts. It reports ids only, never names or phones.
+
+**The rule: it may only narrow or keep access, never widen it.** "Access" is
+defined once (`effectiveOf`, `cmd/devtools/authz_plan.go`) from the runtime's own
+rules, and a test compares before and after for every row. Consequences that
+differ from the first wording of the spec:
+
+| Finding | Change | Why |
+|---|---|---|
+| role NULL or not one of the four | role -> viewer **and the account disabled** | an unknown role grants nothing today; viewer alone would grant something |
+| module_access: duplicate or unknown | dropped | no effect on access |
+| module_access: wrong case or spacing ("Rentals") | **dropped, not lowercased**; reported | access is an exact-string match, so lowercasing would grant a product the member does not have |
+| module_access: product the firm no longer holds | **reported only**, kept | M8: existing users are not broken |
+| property_access: ids deleted, archived or of another firm | dropped | narrows only |
+| property_access: nothing live left, or malformed | stored as the nil uuid (no property) | an empty list means every property, so pruning to empty would widen; a malformed value is already closed at runtime |
+| inactive staff with live sessions, sessions of deleted staff | sessions destroyed | |
+| staff whose firm does not exist | disabled, sessions destroyed | no audit row is possible (no firm to attach it to) |
+| active firm login that cannot sign in (no email or password) | **reported only** | expected 0 |
+
+Owners are never restricted, so their property_access is left alone.
+
+Apply writes the staff row (optimistic `version` lock) and one audit row per
+change in one transaction: `actor_type=system`, `actor_name=authz-backfill`,
+action `authz_backfill.<category>`, summary = the rule and counts. Session
+revocation rows are written after the sessions are destroyed, with the number
+really destroyed. It is idempotent: a second run reports 0. It is a devtool and
+not a migration so that nothing changes on deploy before a person has read the
+dry-run counts, and because the property check needs the Rentals database. The
+admin role needed INSERT on `audit_log` for this (platform migration 000025).
 
 ## 5. Mismatches between matrix and today's behaviour
 
@@ -338,5 +511,40 @@ D1-D4 approved (see below). Matrix is final.
   `cmd/platform-api/staff_c38_test.go`.
 - **D4**: the four viewer reductions are accepted and move to **officer**:
   qr.read, payments.read, charges.preview, deposits.read.
+- **D6 (viewer reads reports on screen; C4.3)**: a landlord or auditor given a
+  viewer account expects to see the monthly report. `reports.read` is granted to
+  **viewer** for the on-screen views only (`GET .../reports/:period` and
+  `.../checks`). Generate and confirm (`reports.confirm`), receipt download
+  (`receipts.read`), invoice PDFs (`invoices.read`) and every `.csv` / `.pdf` /
+  export route (`exports.create`) stay accountant and above. The report payload
+  carries property name and location, house numbers, tenant names, per-ledger
+  payment dates and amounts, totals, NOTE:1 / NOTE:2 text and the management fee: all
+  of it already readable by a viewer through the unit, lease and ledger routes. It
+  carries no phone number, ID number or email, so there was nothing to mask; a test
+  (`TestReportPayloadCarriesNoContactData`) fails if a contact-data field is ever added
+  to it without masking it for the viewer first.
 
 With D1-D5 approved, this matrix is final; changes need a new review.
+
+### Route matrix approval (2026-10-09)
+
+The golden route x role matrix (`internal/shared/auth/testdata/route_matrix.golden`,
+rendered in `docs/security/route-matrix.md`) is **approved** by the user on
+2026-10-09, including D6, conditional on:
+
+1. **Landlord payout destination.** The payout fields of `POST /v1/landlords` and
+   `PATCH /v1/landlords/:id` (today `bank_name`, `bank_account_name`,
+   `bank_account_number`; the list is `payoutField` in `cmd/rentals-api/landlords.go`,
+   so an M-Pesa number, paybill/till, branch or account reference is added there)
+   follow the payment-channel rule through the shared field guard
+   (`requireOwnerStepUp`, via `requireOwnerForPayoutChange`): changing one is
+   owner-only (an accountant or below gets 403, nothing written), needs step-up, and
+   queues an owner alert in the same transaction as the save (the account number
+   shown as last four characters, old and new; the other fields as "changed"). Echoing
+   the current value is not a change, and every other landlord field stays
+   accountant. Variant rows: `POST /v1/landlords [with payout]`,
+   `PATCH /v1/landlords/:id [payout change | payout echo | name only]`, listed in
+   `routesWithFieldChecks`. The 24h cooling-off on a changed payout destination stays
+   a Phase 5 item (remittances).
+2. Housekeeping and tooling: no large files in the repo; a PreToolUse hook blocks
+   in-place edits and state-changing git (see CLAUDE.md).

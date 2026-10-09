@@ -44,14 +44,18 @@ type application struct {
 	// routeGuards records every route's permission or public reason, filled
 	// by routes() (internal/shared/auth); the deny-by-default test reads it.
 	routeGuards *auth.RouteTable
-	config      config
-	logger      *slog.Logger
-	db          *sql.DB
-	models      data.Models
-	mailer      mailer.Mailer
-	payhero     stkPusher
-	sms         smsSender
-	payOTPByIP  ipWindowLimiter
+	// markHandlers makes every response say whether the route's own handler ran
+	// (auth.MarkReached). Only the route-matrix tests set it; it is false in every
+	// running binary, and a test pins both facts.
+	markHandlers bool
+	config       config
+	logger       *slog.Logger
+	db           *sql.DB
+	models       data.Models
+	mailer       mailer.Mailer
+	payhero      stkPusher
+	sms          smsSender
+	payOTPByIP   ipWindowLimiter
 	// otpCeilings records each firm that hit its daily pay-OTP SMS ceiling in
 	// the trailing 24h, for the System page.
 	otpCeilings firmCeilingTracker

@@ -166,6 +166,7 @@ func TestResolveUnclaimedReceipt(t *testing.T) {
 	r := openReceipt("RCPT1", "CH-X", "254722000001", 100000)
 	u := f.withUnclaimed(t, r)
 	admin := f.session(t, principalAdmin, fakeAdminID)
+	f.stepUp(t, admin)
 	path := "/v1/admin/unclaimed-receipts/" + r.ID.String() + "/resolve"
 
 	// A note is required: blank and missing are refused, and nothing changes.
@@ -220,6 +221,7 @@ func TestResolveUnclaimedReceiptIsAuditedForTheClaimingFirm(t *testing.T) {
 	u := f.withUnclaimed(t, r)
 	u.claimed["CH-NOW-CLAIMED"] = fakeManagerID
 	admin := f.session(t, principalAdmin, fakeAdminID)
+	f.stepUp(t, admin)
 
 	if w := f.do(http.MethodPost, "/v1/admin/unclaimed-receipts/"+r.ID.String()+"/resolve", `{"note":"replayed after claim"}`, admin); w.Code != http.StatusOK {
 		t.Fatalf("resolve: %d %s", w.Code, w.Body)

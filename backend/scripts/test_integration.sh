@@ -56,6 +56,7 @@ WILLCOLL_TEST_DB_DSN="$(app_dsn "$SCRATCH")" \
 WILLCOLL_TEST_ADMIN_DB_DSN="$(admin_dsn "$SCRATCH")" \
 WILLCOLL_TEST_PLATFORM_DB_DSN="$(platform_app_dsn "$SCRATCH_PLATFORM")" \
 WILLCOLL_TEST_PLATFORM_ADMIN_DB_DSN="$(platform_admin_dsn "$SCRATCH_PLATFORM")" \
+WILLCOLL_TEST_PLATFORM_OWNER_DSN="$(owner_dsn "$SCRATCH_PLATFORM")" \
     go test -count=1 -p 1 -json "$@" >"$results" || status=$?
 
 # The json stream is the source of truth; the summary prints the per-package

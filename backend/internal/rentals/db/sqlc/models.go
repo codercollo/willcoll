@@ -13,15 +13,16 @@ import (
 )
 
 type AlertOutbox struct {
-	ID        uuid.UUID
-	TenantID  uuid.UUID
-	EventKey  string
-	Payload   json.RawMessage
-	Status    string
-	Attempts  int32
-	LastError *string
-	CreatedAt time.Time
-	RelayedAt *time.Time
+	ID            uuid.UUID
+	TenantID      uuid.UUID
+	EventKey      string
+	Payload       json.RawMessage
+	Status        string
+	Attempts      int32
+	LastError     *string
+	CreatedAt     time.Time
+	RelayedAt     *time.Time
+	NextAttemptAt time.Time
 }
 
 type ArrearsCommitment struct {
@@ -146,6 +147,14 @@ type Payment struct {
 	CreatedAt              time.Time
 	AutoAppliedUnconfirmed bool
 	ReviewNote             *string
+	PendingLedgerType      *string
+	RecordedBy             *uuid.UUID
+	RecordedByRole         *string
+	ConfirmedBy            *uuid.UUID
+	ConfirmedAt            *time.Time
+	RejectedBy             *uuid.UUID
+	RejectedAt             *time.Time
+	RejectReason           *string
 }
 
 type PaymentAllocation struct {

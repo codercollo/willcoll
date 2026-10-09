@@ -69,6 +69,14 @@ func (app *application) inviteStaffHandler(c *gin.Context) {
 		return
 	}
 
+	// Inviting grants a role, so it needs a recent password re-entry (D5). Checked
+	// here, after the permission checks above, and not as route middleware: whoever
+	// may never invite this role (D3) gets a plain 403, not a password prompt.
+	if !app.stepUpSatisfied(c) {
+		app.stepUpRequiredResponse(c)
+		return
+	}
+
 	ctx := c.Request.Context()
 	// module_access can only name products the firm actually holds (M8).
 	if errs, err := app.moduleAccessErrors(ctx, tenantID, staff.ModuleAccess); err != nil {

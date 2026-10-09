@@ -162,6 +162,20 @@ func (mr *MockQuerierMockRecorder) ClaimPaymentInbox(ctx, arg any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimPaymentInbox", reflect.TypeOf((*MockQuerier)(nil).ClaimPaymentInbox), ctx, arg)
 }
 
+// CreateAdminAuditLog mocks base method.
+func (m *MockQuerier) CreateAdminAuditLog(ctx context.Context, arg sqlc.CreateAdminAuditLogParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateAdminAuditLog", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateAdminAuditLog indicates an expected call of CreateAdminAuditLog.
+func (mr *MockQuerierMockRecorder) CreateAdminAuditLog(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateAdminAuditLog", reflect.TypeOf((*MockQuerier)(nil).CreateAdminAuditLog), ctx, arg)
+}
+
 // CreateAuditLog mocks base method.
 func (m *MockQuerier) CreateAuditLog(ctx context.Context, arg sqlc.CreateAuditLogParams) error {
 	m.ctrl.T.Helper()
@@ -620,6 +634,21 @@ func (m *MockQuerier) ListActiveStaffByEmail(ctx context.Context, email string) 
 func (mr *MockQuerierMockRecorder) ListActiveStaffByEmail(ctx, email any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListActiveStaffByEmail", reflect.TypeOf((*MockQuerier)(nil).ListActiveStaffByEmail), ctx, email)
+}
+
+// ListAdminAuditLog mocks base method.
+func (m *MockQuerier) ListAdminAuditLog(ctx context.Context, limit int32) ([]sqlc.AdminAuditLog, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAdminAuditLog", ctx, limit)
+	ret0, _ := ret[0].([]sqlc.AdminAuditLog)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAdminAuditLog indicates an expected call of ListAdminAuditLog.
+func (mr *MockQuerierMockRecorder) ListAdminAuditLog(ctx, limit any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAdminAuditLog", reflect.TypeOf((*MockQuerier)(nil).ListAdminAuditLog), ctx, limit)
 }
 
 // ListOpenUnclaimedReceipts mocks base method.

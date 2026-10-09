@@ -47,6 +47,33 @@ func (app *application) auditAdmin(c *gin.Context, targetTenantID uuid.UUID, pro
 	})
 }
 
+// auditAdminAction appends one row to the Super Admin's own trail
+// (admin_audit_log, migration 000026): who (the signed-in admin), from where (the
+// client IP), the target, and a reason or note in summary. Unlike auditAdmin it
+// needs no firm, so it also records actions on the global plan catalog. It does
+// nothing for a request that is not a Super Admin's. targetManager is the firm
+// the action concerned, or nil.
+//
+// summary must never carry a password, a token or a request body.
+func (app *application) auditAdminAction(c *gin.Context, targetManager *uuid.UUID, action, entityType string, entityID *uuid.UUID, summary string) {
+	admin, ok := contextGetAdmin(c)
+	if !ok {
+		return
+	}
+	entry := data.AdminAuditEntry{
+		AdminID: admin.ID, ManagerID: targetManager, Action: action, EntityType: entityType,
+		EntityID: entityID, Summary: summary, IP: c.ClientIP(),
+	}
+	app.background(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := app.models.AdminAudit.Log(ctx, entry); err != nil {
+			app.logger.Error("admin audit log write failed", "action", entry.Action, "entity_type", entry.EntityType, "error", err)
+			app.auditFailures.record(time.Now())
+		}
+	})
+}
+
 func (app *application) writeAudit(tenantID uuid.UUID, entry data.AuditEntry) {
 	app.background(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/codercollo/willcoll/backend/internal/rentals/data"
+	"github.com/codercollo/willcoll/backend/internal/shared/auth"
 	"github.com/codercollo/willcoll/backend/internal/shared/validator"
 	"github.com/codercollo/willcoll/backend/pkg/moneyfmt"
 	"github.com/gin-gonic/gin"
@@ -181,14 +182,27 @@ func (app *application) createRentPaymentHandler(c *gin.Context) {
 		return
 	}
 
+	// Whoever cannot confirm a payment (payments.allocate: accountant and above)
+	// does not get to post one by typing it in. An officer's "cash received" is
+	// held as pending: nothing posts, no balance, report or receipt changes, until
+	// someone else confirms it (POST /payments/:id/confirm). Accountants, owners
+	// and the firm login post at once, as before.
+	recorderID, recorderRole := app.actorIdentity(c)
+	pending := !app.permitted(c, auth.PaymentsAllocate)
 	payment, err := app.models.Rent.PostPayment(c.Request.Context(), tenantID, manager.ID, unitID, data.PaymentInput{
 		Amount: *input.Amount, Source: input.Source, Reference: input.Reference, Note: input.Note, LedgerType: ledgerType,
+		Pending: pending, RecordedBy: recorderID, RecordedByRole: recorderRole,
 	})
 	if err != nil {
 		app.billingErrorResponse(c, err)
 		return
 	}
-	app.audit(c, "rent.payment_recorded", "unit", &unitID, input.Source+" "+input.Amount.Display())
+	if pending {
+		app.audit(c, "payment.recorded_pending", "payment", &payment.PaymentID,
+			input.Source+" "+input.Amount.Display()+" on "+ledgerType+", recorded by "+recorderRole+" "+recorderID.String()+"; awaiting confirmation")
+	} else {
+		app.audit(c, "rent.payment_recorded", "unit", &unitID, input.Source+" "+input.Amount.Display())
+	}
 	if err := app.writeJSON(c, http.StatusCreated, envelope{"payment": payment}, nil); err != nil {
 		app.serverErrorResponse(c, err)
 	}

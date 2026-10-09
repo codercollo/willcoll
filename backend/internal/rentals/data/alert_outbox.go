@@ -81,6 +81,7 @@ type PendingAlert struct {
 // AlertOutboxStats is the System page's view of the queue.
 type AlertOutboxStats struct {
 	Pending                 int `json:"pending"`
+	Dead                    int `json:"dead"`
 	OldestPendingAgeSeconds int `json:"oldest_pending_age_seconds"`
 }
 
@@ -107,9 +108,12 @@ func (m AlertOutboxModel) ListPending(ctx context.Context, batch int) ([]Pending
 	for _, r := range rows {
 		var p AlertPayload
 		if err := json.Unmarshal(r.Payload, &p); err != nil {
-			// A corrupt payload can never be relayed; leave it pending with
-			// the reason, visible on the System page, rather than dropping it.
-			_ = m.Store.MarkAlertRelayFailed(ctx, sqlc.MarkAlertRelayFailedParams{ID: r.ID, LastError: strptr("unreadable payload: " + err.Error())})
+			// A corrupt payload can never be relayed; record the reason and
+			// let it run out its attempts to 'dead' (visible on the System
+			// page) rather than dropping it.
+			_ = m.Store.MarkAlertRelayFailed(ctx, sqlc.MarkAlertRelayFailedParams{
+				ID: r.ID, LastError: strptr("unreadable payload: " + err.Error()), MaxAttempts: AlertMaxAttempts, RetrySeconds: 3600,
+			})
 			continue
 		}
 		out = append(out, PendingAlert{ID: r.ID, TenantID: r.TenantID, Key: r.EventKey, Payload: p, Attempts: int(r.Attempts)})
@@ -124,9 +128,15 @@ func (m AlertOutboxModel) MarkRelayed(ctx context.Context, id uuid.UUID) error {
 	return m.Store.MarkAlertRelayed(ctx, id)
 }
 
+// AlertMaxAttempts is how many times the relay tries to hand an alert to the
+// platform before marking it 'dead': never retried again, logged and counted
+// on the System page.
+const AlertMaxAttempts = 10
+
 // MarkFailed records why an alert could not be relayed this time. It stays
-// pending and is retried on the relay's next tick.
-func (m AlertOutboxModel) MarkFailed(ctx context.Context, id uuid.UUID, relayErr error) error {
+// pending and is retried after retryAfter, unless this was its AlertMaxAttempts-th
+// failure, which marks it 'dead'.
+func (m AlertOutboxModel) MarkFailed(ctx context.Context, id uuid.UUID, retryAfter time.Duration, relayErr error) error {
 	ctx, cancel := withTimeout(ctx, m.Timeout)
 	defer cancel()
 
@@ -134,7 +144,9 @@ func (m AlertOutboxModel) MarkFailed(ctx context.Context, id uuid.UUID, relayErr
 	if len(msg) > 500 {
 		msg = msg[:500]
 	}
-	return m.Store.MarkAlertRelayFailed(ctx, sqlc.MarkAlertRelayFailedParams{ID: id, LastError: &msg})
+	return m.Store.MarkAlertRelayFailed(ctx, sqlc.MarkAlertRelayFailedParams{
+		ID: id, LastError: &msg, MaxAttempts: AlertMaxAttempts, RetrySeconds: int32(retryAfter / time.Second),
+	})
 }
 
 // Stats summarises the queue for the System page.
@@ -146,7 +158,7 @@ func (m AlertOutboxModel) Stats(ctx context.Context) (*AlertOutboxStats, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &AlertOutboxStats{Pending: int(row.Pending), OldestPendingAgeSeconds: int(row.OldestPendingAgeSeconds)}, nil
+	return &AlertOutboxStats{Pending: int(row.Pending), Dead: int(row.Dead), OldestPendingAgeSeconds: int(row.OldestPendingAgeSeconds)}, nil
 }
 
 func strptr(s string) *string { return &s }

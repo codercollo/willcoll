@@ -166,6 +166,7 @@ func TestRenewalNeverMovesTheCap(t *testing.T) {
 func TestSuspensionStillCutsOffInstantlyWithRenewal(t *testing.T) {
 	f, clock := newSlidingFixture(t)
 	admin := f.stampedSession(t, principalAdmin, fakeAdminID)
+	f.stepUp(t, admin)
 	manager, _ := f.login(t, fakeManagerEmail)
 	staff, _ := f.login(t, fakeStaffEmail)
 

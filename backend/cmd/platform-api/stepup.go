@@ -26,16 +26,20 @@ import (
 // re-entries in a row the session is ended (401), so a stolen cookie cannot
 // be used to guess the password here.
 func (app *application) stepUpHandler(c *gin.Context) {
-	if _, isAdmin := contextGetAdmin(c); isAdmin {
-		app.notPermittedResponse(c) // the Super Admin has no firm actions to step up for
-		return
-	}
+	admin, isAdmin := contextGetAdmin(c)
 	manager := contextGetManager(c)
-	if manager.IsAnonymous() || !app.sessionLoaded(c) {
+	switch {
+	case !app.sessionLoaded(c):
 		app.authenticationRequiredResponse(c)
 		return
-	}
-	if manager.Status != data.ManagerStatusActive {
+	case isAdmin:
+		// The Super Admin re-enters the ADMIN password: the credential of the
+		// session itself, never a firm's. The window lives in the same admin
+		// session and dies with it.
+	case manager.IsAnonymous():
+		app.authenticationRequiredResponse(c)
+		return
+	case manager.Status != data.ManagerStatusActive:
 		app.inactiveAccountResponse(c)
 		return
 	}
@@ -57,7 +61,9 @@ func (app *application) stepUpHandler(c *gin.Context) {
 		match bool
 		err   error
 	)
-	if staff := contextGetStaff(c); !staff.IsAnonymous() {
+	if isAdmin {
+		match, err = admin.Password.Matches(input.Password)
+	} else if staff := contextGetStaff(c); !staff.IsAnonymous() {
 		match, err = staff.Password.Matches(input.Password)
 	} else {
 		match, err = manager.Password.Matches(input.Password)
@@ -72,6 +78,7 @@ func (app *application) stepUpHandler(c *gin.Context) {
 	if !match {
 		failures := sm.GetInt(ctx, auth.SessionKeyStepUpFailures) + 1
 		app.audit(c, "", "session.step_up_failed", "session", nil, "wrong password at step-up")
+		app.auditAdminAction(c, nil, "session.step_up_failed", "session", nil, "wrong password at step-up")
 		if failures >= auth.StepUpMaxFailures {
 			if err := sm.Destroy(ctx); err != nil {
 				app.serverErrorResponse(c, err)
@@ -89,6 +96,7 @@ func (app *application) stepUpHandler(c *gin.Context) {
 	sm.Put(ctx, auth.SessionKeyStepUpUntil, until)
 	sm.Remove(ctx, auth.SessionKeyStepUpFailures)
 	app.audit(c, "", "session.step_up", "session", nil, "re-entered password")
+	app.auditAdminAction(c, nil, "session.step_up", "session", nil, "re-entered password")
 
 	if err := app.writeJSON(c, http.StatusOK, envelope{"step_up_until": until}, nil); err != nil {
 		app.serverErrorResponse(c, err)
